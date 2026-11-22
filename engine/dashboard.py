@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import threading
 import time
 import uuid
@@ -226,7 +228,8 @@ async function refreshInner(){
     `<span class="stat-badge">⏳ w kolejce (READY): <b>${st.waiting||0}</b></span>`+
     `<span class="stat-badge ok">🔄 pracują: <b>${st.running||0}</b></span>`+
     `<span class="stat-badge ${st.overdue?'bad':'ok'}">⚠️ spóźnione/stare (&gt;1h w kolejce): <b>${st.overdue||0}</b></span>`+
-    `<span class="stat-badge ${st.running_long?'warn':''}">🐌 długo biegną (&gt;1h): <b>${st.running_long||0}</b></span>`;
+    `<span class="stat-badge ${st.running_long?'warn':''}">🐌 długo biegną (&gt;1h): <b>${st.running_long||0}</b></span>`+
+    (d.sys?`<span class="stat-badge" title="load / CPU / RAM laptopa">🖥️ load <b>${d.sys.load1}</b>/${d.sys.cpus} · 🧠 RAM <b>${d.sys.mem_used_pct}%</b> (wolne ${d.sys.mem_avail_gb}GB)</span>`:'');
   const alerts = visTasks.filter(t=>t.status==='AWAITING_APPROVAL');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
@@ -278,7 +281,8 @@ async function refreshInner(){
     const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
     const prio = `<span class="pico" title="priorytet ${t.priority||'P2'}">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>`;
     const ic = `<span class="ic ic-${t.status}">${d.icons[t.status]||'?'}</span>`;
-    const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>` : '';
+    const res = t.res ? ` <span class="muted" title="zużycie workera (pid ${t.res.pid})">⚙️${t.res.cpu}% 🧠${t.res.rss_mb}MB</span>` : '';
+    const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>${res}` : '';
     tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
       <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> ')+t.status:t.status}</td>
       <td class="muted">${esc(t.substep||'')}</td><td>${t.retry_count}</td>
@@ -288,7 +292,8 @@ async function refreshInner(){
   }
   document.getElementById('awaitCount').textContent = awaiting ? awaiting+' czeka na Ciebie' : '';
   document.getElementById('team').innerHTML = (d.team||[]).map(m => {
-    const cur = m.current ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span></div>` : '<div class="cur muted">— wolny/a —</div>';
+    const curRes = m.current && m.current.res ? ` <span class="muted" title="pid ${m.current.res.pid}">⚙️${m.current.res.cpu}% 🧠${m.current.res.rss_mb}MB</span>` : '';
+    const cur = m.current ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span>${curRes}</div>` : '<div class="cur muted">— wolny/a —</div>';
     return `<div class="pcard ${m.current?'busy':''}" title="rola: ${m.role}">
       <span class="ava">${m.avatar||'🧑‍💻'}</span> <span class="nm">${esc(m.name)}</span>
       <div class="pos">${esc(m.position)} · rola: ${esc(m.role)} · ${esc(m.gender)}</div>
@@ -300,6 +305,7 @@ async function refreshInner(){
   document.getElementById('now').innerHTML = nowCards.length ? nowCards.map(t =>
     `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
+     ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
      <span class="who">${esc(t.persona||t.role||'')} · ${esc(t.project_id||'')}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
   document.getElementById('asks').innerHTML = (d.asks||[]).map(a =>
@@ -413,10 +419,57 @@ def host_info(port: int = 8765) -> dict:
             "hostname": socket.gethostname()}
 
 
+def _proc_stats(claimed_by) -> dict | None:
+    """Zużycie zasobów workera z /proc: średni CPU% od startu procesu + RSS MB.
+    Lekki odczyt (bez ps), None gdy proces już nie żyje."""
+    m = re.search(r"(\d+)$", str(claimed_by or ""))
+    if not m:
+        return None
+    pid = int(m.group(1))
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            parts = f.read().rsplit(")", 1)[1].split()
+        utime, stime, starttime = int(parts[11]), int(parts[12]), int(parts[19])
+        clk = os.sysconf("SC_CLK_TCK")
+        with open("/proc/uptime") as f:
+            uptime = float(f.read().split()[0])
+        elapsed = max(1.0, uptime - starttime / clk)
+        cpu = round(100.0 * (utime + stime) / clk / elapsed, 1)
+        rss_mb = 0.0
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS"):
+                    rss_mb = round(int(line.split()[1]) / 1024, 0)
+                    break
+        return {"pid": pid, "cpu": cpu, "rss_mb": rss_mb}
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _sys_stats() -> dict:
+    """Wskaźniki zasobów całego laptopa: load1, liczba CPU, użycie RAM."""
+    load1 = os.getloadavg()[0]
+    mem = {}
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    mem[k] = int(v.split()[0])
+    except OSError:
+        pass
+    total = mem.get("MemTotal", 1)
+    avail = mem.get("MemAvailable", 0)
+    return {"load1": round(load1, 2), "cpus": os.cpu_count() or 0,
+            "mem_used_pct": round(100.0 * (total - avail) / total, 1),
+            "mem_avail_gb": round(avail / 1024 / 1024, 2)}
+
+
 def snapshot() -> dict:
     # State() jest tanie (współdzielone conn per proces) — nie zamykamy per request
     d = _snapshot(State())
     d["host"] = host_info()
+    d["sys"] = _sys_stats()
     return d
 
 
@@ -445,6 +498,8 @@ def _snapshot(s: State) -> dict:
         tasks[-1]["depth"] = depth(t)
         if t.get("status") == "RUNNING" and t.get("started_at"):
             tasks[-1]["elapsed"] = max(0, time.time() - t["started_at"])
+        if t.get("status") == "RUNNING":
+            tasks[-1]["res"] = _proc_stats(t.get("claimed_by"))
     tasks.sort(key=lambda t: (t["status"] != "AWAITING_APPROVAL", t["status"] != "RUNNING", -(t["updated_at"] or 0)))
     events = s.recent_events(30)
     # statystyki kolejki: ile czeka, ile już "spóźnionych" (READY/AWAITING starsze niż 1h), ile długo biegnie
@@ -470,7 +525,8 @@ def _snapshot(s: State) -> dict:
         p = _pers.persona_full(r["role"])
         cur = r["current"]
         team.append({**p, "tasks": r["tasks"], "merged": r["merged"],
-                     "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority")}
+                     "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority"),
+                                  "res": _proc_stats(cur.get("claimed_by"))}
                                  if cur else None)})
     team.sort(key=lambda x: (x["current"] is None, x["role"]))
     # bezpośrednie zapytania do Vibe (formularz, bez taska) — ostatnie 10 + odpowiedzi z kv
