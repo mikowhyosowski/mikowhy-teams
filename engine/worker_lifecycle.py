@@ -273,7 +273,9 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
         f"Pracujesz w worktree zadania: {worktree} — wszystkie ścieżki podawaj WZGLĘDEM niego.\n"
         "Przeczytaj AGENTS.md i contracts/git-contract.md w katalogu głównym i ich przestrzegaj.\n"
         "NIE rób `git commit`/`git push` — zmiany commituje i pushuje silnik po Twoim `done`.\n"
-        "Pisz po polsku.\n\n"
+        "Pisz po polsku.\n"
+        "ZASADA GŁÓWNA: DZIAŁAJ, NIE ANALIZUJ — wykonujesz zadanie dosłownie wg opisu Sponsora. "
+        "Nie czytaj więcej niż 2-3 plików rozpoznawczych; nie powtarzaj tych samych komend.\n\n"
         "ODPOWIADASZ WYŁĄCZNIE JEDNYM JSON-em (bez żadnego innego tekstu), akcja do wykonania:\n"
         '{"action":"bash","cmd":"..."} — komenda powłoki w worktree (limit 300s)\n'
         '{"action":"write_file","path":"relative/path","content":"..."} — zapis/utworzenie pliku w worktree\n'
@@ -294,9 +296,16 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
     wt_resolved = str(worktree.resolve())
     done = False
     for turn in range(1, max_turns + 1):
-        payload = user0 if turn == 1 else (
-            "Kontynuuj zadanie. Dotychczasowe kroki i wyniki:\n" + "\n".join(history[-14:])
-            + "\n\nTeraz kolejny krok — odpowiadaj WYŁĄCZNIE JSON-em z action.")
+        if turn == 1:
+            payload = user0
+        else:
+            recent = [h[:700] for h in history[-10:]]
+            payload = ("Kontynuuj zadanie. Dotychczasowe kroki i wyniki:\n" + "\n".join(recent)
+                       + "\n\nTeraz kolejny krok — odpowiadaj WYŁĄCZNIE JSON-em z action.")
+            cmds = [h.split("\n", 1)[0] for h in history[-3:] if h.startswith(f"t") and " $ " in h]
+            if len(cmds) >= 2 and cmds[-1] == cmds[-2]:
+                payload += ("\n\nUWAGA: powtarzasz ostatnią komendę — PRZESTAŃ eksplorować. "
+                            "Przejdź od razu do działania: write_file (pliki zadania + raport) i done.")
         try:
             resp = gw.complete_json(system=system, user=payload, step=f"LLM_EXEC-{tid}-t{turn}", model=model)
         except Exception as exc:
