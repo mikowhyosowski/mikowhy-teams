@@ -1,44 +1,87 @@
+import json
+
 import pytest
 
-
-@pytest.fixture
-def dashboard_payload_with_data():
-    return {
-        'videos': [{'id': 'v1', 'title': 'News 1', 'status': 'ready'}],
-        'queue': [{'id': 'j1', 'status': 'processing'}],
-        'stats': {'generated_today': 3, 'failed': 0},
-    }
+from engine.dashboard import create_app
 
 
-@pytest.fixture
-def dashboard_payload_empty():
-    return {'videos': [], 'queue': [], 'stats': {'generated_today': 0, 'failed': 0}}
+@pytest.fixture()
+def app(tmp_path, monkeypatch):
+    """Izolowane srodowisko dashboardu: .agents/runtime i .agents/logs w tmp_path."""
+    runtime = tmp_path / ".agents" / "runtime"
+    logs = tmp_path / ".agents" / "logs"
+    runtime.mkdir(parents=True)
+    logs.mkdir(parents=True)
+    (runtime / "worker-1.response.json").write_text(
+        '{"task": "CHAT-0005", "status": "RUNNING"}', encoding="utf-8"
+    )
+    (logs / "orchestrator.log").write_text(
+        "line-1\nline-2\nline-3\nline-4\nline-5\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("AGENTS_DIR", str(tmp_path / ".agents"))
+    app = create_app()
+    app.config["TESTING"] = True
+    return app
 
 
-def test_dashboard_view_contains_all_key_sections(dashboard_service, dashboard_payload_with_data):
-    view = dashboard_service.build_view(dashboard_payload_with_data)
-    assert set(view.keys()) >= {'videos', 'queue', 'stats'}
-    assert view['videos'] == dashboard_payload_with_data['videos']
-    assert view['queue'] == dashboard_payload_with_data['queue']
-    assert view['stats'] == dashboard_payload_with_data['stats']
+@pytest.fixture()
+def client(app):
+    return app.test_client()
 
 
-def test_dashboard_empty_sections_are_empty_lists_not_null(dashboard_service, dashboard_payload_empty):
-    view = dashboard_service.build_view(dashboard_payload_empty)
-    assert view['videos'] == []
-    assert view['queue'] == []
-    assert view['stats'] == {'generated_today': 0, 'failed': 0}
+def test_health_endpoint_returns_200(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
 
 
-def test_dashboard_render_includes_section_markers_even_when_empty(dashboard_service, dashboard_payload_empty):
-    view = dashboard_service.build_view(dashboard_payload_empty)
-    rendered = dashboard_service.render(view)
-    for section in ('videos', 'queue', 'stats'):
-        assert section in rendered, f'missing section in rendered dashboard: {section}'
+def test_index_renders_runtime_and_logs_sections(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert ".agents/runtime" in body
+    assert ".agents/logs" in body
 
 
-def test_dashboard_regression_no_data_displayed_with_zero_values(dashboard_service):
-    view = dashboard_service.build_view({'videos': [], 'queue': [], 'stats': {'generated_today': 0, 'failed': 0}})
-    rendered = dashboard_service.render(view)
-    assert rendered.strip() != '', 'dashboard rendered empty output despite valid payload'
-    assert '0' in rendered, 'zero-valued stats must still be rendered, not swallowed by falsy checks'
+def test_api_raw_serves_runtime_file_content(client):
+    resp = client.get("/api/raw/worker-1.response.json")
+    assert resp.status_code == 200
+    payload = json.loads(resp.get_data(as_text=True))
+    assert payload["task"] == "CHAT-0005"
+
+
+def test_api_raw_rejects_path_traversal(client):
+    resp = client.get("/api/raw/..%2F..%2Fetc%2Fpasswd")
+    assert resp.status_code in (400, 404)
+
+
+def test_api_raw_returns_404_for_missing_file(client):
+    resp = client.get("/api/raw/missing.response.json")
+    assert resp.status_code == 404
+
+
+def test_api_log_tail_returns_last_n_lines(client):
+    resp = client.get("/api/log/orchestrator.log?n=2")
+    assert resp.status_code == 200
+    lines = resp.get_json()["lines"]
+    assert lines == ["line-4", "line-5"]
+
+
+def test_api_log_tail_defaults_without_n(client):
+    resp = client.get("/api/log/orchestrator.log")
+    assert resp.status_code == 200
+    lines = resp.get_json()["lines"]
+    assert lines[-1] == "line-5"
+    assert len(lines) <= 200
+
+
+def test_api_log_rejects_path_traversal(client):
+    resp = client.get("/api/log/../../etc/passwd")
+    assert resp.status_code in (400, 404)
+
+
+def test_dashboard_lists_file_clickable_content(client):
+    """Klik na plik w .agents/runtime pokazuje jego tresc (naprawa CHAT-0005)."""
+    index = client.get("/").get_data(as_text=True)
+    assert "worker-1.response.json" in index
+    assert "/api/raw/worker-1.response.json" in index
