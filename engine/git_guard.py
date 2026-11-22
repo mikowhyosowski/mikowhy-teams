@@ -206,6 +206,24 @@ def push(branch: str, worktree: Path, remote: str = "origin") -> None:
     run_git(["push", "-u", remote, branch], cwd=worktree, check=False)
 
 
+def sync_with_origin(worktree: Path, base: str, remote: str = "origin") -> None:
+    """TWARDA REGUŁA: przed pushem wyrównaj gałąź zadania z remote base (origin/<base>),
+    żeby nie było konfliktów między branchami. Konflikt -> MergeConflict."""
+    assert_writable(worktree)
+    run_git(["fetch", remote, base], cwd=worktree, check=False)
+    remote_base = f"{remote}/{base}"
+    exists = run_git(["rev-parse", "--verify", "--quiet", remote_base], cwd=worktree, check=False).returncode == 0
+    if not exists:
+        return  # base jeszcze nie na remote — nie ma z czym wyrównywać
+    behind = run_git(["rev-list", "--count", f"HEAD..{remote_base}"], cwd=worktree, check=False).stdout.strip()
+    if behind and int(behind) > 0:
+        proc = run_git(["rebase", remote_base], cwd=worktree, check=False)
+        if proc.returncode != 0:
+            conflicted = run_git(["diff", "--name-only", "--diff-filter=U"], cwd=worktree, check=False).stdout.split()
+            run_git(["rebase", "--abort"], cwd=worktree, check=False)
+            raise MergeConflict(f"konflikt przy wyrównaniu z {remote_base}: {conflicted}")
+
+
 def rebase_onto(worktree: Path, base: str) -> None:
     """Rebase gałęzi zadania na aktualną bazę; konflikt = wyjątek dla mikro-bota."""
     assert_writable(worktree)

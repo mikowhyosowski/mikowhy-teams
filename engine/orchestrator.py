@@ -870,6 +870,9 @@ def main() -> None:
     ap5 = sub.add_parser("note", help="rada Sponsora: ALL (do każdego promptu) lub <task_id>")
     ap6 = sub.add_parser("retry", help="requeue: FAILED/BLOCKED/ESCALATED -> READY")
     ap6.add_argument("task_id")
+    ap7 = sub.add_parser("priority", help="ustaw priorytet zadania: P0 (najwyższy) .. P3")
+    ap7.add_argument("task_id")
+    ap7.add_argument("value", choices=["P0", "P1", "P2", "P3"])
     db = sub.add_parser("dashboard", help="live UI zadań w przeglądarce (read-only), http://127.0.0.1:8765")
     sub.add_parser("scan", help="pre-push review: sekrety/klucze w plikach i historii git + higiena .gitignore")
     sub.add_parser("watch", help="live tail: .agents/runtime (surowe odpowiedzi LLM) + .agents/logs/* w terminalu")
@@ -945,6 +948,9 @@ def main() -> None:
         cmd_decline(args.task_id, args.reason)
     elif args.cmd == "retry":
         cmd_retry(args.task_id)
+    elif args.cmd == "priority":
+        State().set_priority(args.task_id, args.value)
+        print(f"🎯 {args.task_id} -> priorytet {args.value}")
     elif args.cmd == "scan":
         raise SystemExit(cmd_scan())
     elif args.cmd == "watch":

@@ -137,11 +137,13 @@ def main() -> int:
         pid = "mikowhy-teams-self" if (p := _projects.AGENTS / "projects" / "mikowhy-teams-self" / "project.json").exists() else _projects.active_project_id()
         state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
                             "milestone/chat-ops", project_id=pid)
+        prio = "P0" if any(k in low for k in ("pilne", "pilny", "pilna", "asap", "natychmiast", "od razu")) else "P2"
         state.add_task(tid, milestone="CHAT-OPS", phase=4, title=desc[:90], role="llm-executor",
                        scope_paths=[], depends_on=[],
                        acceptance_criteria=(f"Zadanie wykonane w 100% przez LLM; raport dla drużyny w "
                                             f"docs/llm-reports/{tid}.md; zmiany zacommitowane na branchu feature/{tid.lower()}"),
-                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False, mode="llm")
+                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False, mode="llm",
+                       priority=prio)
         state.set_kv(f"llm_desc:{tid}", desc)  # pełny opis Sponsora (tytuł jest skrócony do 90 znaków)
         telegram_gate._call("sendMessage", {"chat_id": chat_id, "text": (
             f"🤖 Stworzyłem zadanie {tid} w trybie LLM (wykona je sam vibe z narzędziami, "

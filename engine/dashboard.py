@@ -42,6 +42,29 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  @keyframes pulse{0%,100%{background:#3d3000}50%{background:#5a4700}}
  tr.flash td{animation:flash 2.5s} .feed div.flash{animation:flash 2.5s}
  @keyframes flash{0%{background:#1f6feb88}100%{background:transparent}}
+ /* żywe ikony / kolory statusów */
+ .ic{display:inline-block}
+ .ic-RUNNING{animation:spin 1s linear infinite;color:#58a6ff}
+ .ic-AWAITING_APPROVAL{animation:pulseIco 1.2s infinite;color:#b08800}
+ .ic-FAILED,.ic-ESCALATED{color:#f85149;animation:pulseIco .8s infinite}
+ .ic-MERGED{color:#3fb950}
+ .ic-READY{color:#8b949e}
+ @keyframes spin{to{transform:rotate(360deg)}}
+ @keyframes pulseIco{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(1.25)}}
+ tr.running td{background:#0d2137}
+ tr.running{box-shadow:inset 3px 0 0 #1f6feb}
+ .prio{font-weight:bold;border-radius:4px;padding:0 5px;font-size:10px}
+ .prio-P0{background:#f85149;color:#fff;animation:pulseIco 1s infinite}
+ .prio-P1{background:#d29922;color:#000}
+ .prio-P2{background:#21262d;color:#8b949e}
+ .prio-P3{background:#161b22;color:#484f58}
+ .live-dot{color:#f85149;animation:pulseIco .7s infinite;font-size:12px}
+ #now{display:flex;gap:8px;flex-wrap:wrap}
+ .nowcard{background:#0d2137;border:1px solid #1f6feb;border-radius:8px;padding:8px 12px;min-width:180px;box-shadow:0 0 10px #1f6feb33}
+ .nowcard b{color:#58a6ff}
+ .nowcard .clock{font-size:16px;color:#3fb950;font-variant-numeric:tabular-nums}
+ .nowcard .who{color:#8b949e;font-size:11px;display:block}
+ .clock{font-variant-numeric:tabular-nums;color:#3fb950}
  .badge{background:#b08800;color:#000;border-radius:4px;padding:0 6px;font-size:11px;font-weight:bold}
  .st{font-weight:bold} .muted{color:#8b949e} .feed{font-size:12px} .feed div{border-bottom:1px solid #21262d;padding:3px 0}
  #ts{color:#8b949e;font-size:11px}
@@ -78,12 +101,14 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    #tasks{display:block;overflow-x:auto}
  }
 </style></head><body>
-<h1>🏭 Dark Factory — live <span id="ts"></span></h1>
+<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span></h1>
+<h2>🔥 Teraz pracują <span class="muted">(zegarki tykają na żywo)</span></h2>
+<div id="now"></div>
 <h2>🔀 Przepływ pracy <span class="muted">(kliknij kafelek = szczegóły zadania)</span></h2>
 <div id="flow"></div>
 <h2>Projekty</h2><div id="projects"></div>
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
-<table id="tasks"><thead><tr><th></th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
+<table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 <h2>⚡ Live — ostatnie wydarzenia (kto przejął / zmiana statusu, auto-refresh 2s)</h2><div class="feed" id="events"></div>
 <h2>💬 Komentarze agentów (feed)</h2><div class="feed" id="comments"></div>
 <h2>📈 Ostatnie eventy</h2><div class="feed" id="metrics"></div>
@@ -110,31 +135,43 @@ async function refresh(){
     const items = byStatus[st]||[];
     const hot = st==='AWAITING_APPROVAL' && items.length, run = st==='RUNNING';
     const chips = items.slice(0,8).map(t =>
-      `<span class="chip" onclick="openTask('${t.id}')"><b>${t.id}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?('⏱'+fmtDur(Date.now()/1000-t.started_at)):''}
+      `<span class="chip" onclick="openTask('${t.id}')"><b>${t.id}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
        <span class="who">${t.persona||t.role||''}</span></span>`).join('') + (items.length>8?`<span class="chip muted">+${items.length-8} więcej…</span>`:'');
     const arrow = i < FLOW.length-1 ? '<span class="arrow">→</span>' : '';
     return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${st} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
   }).join('');
   const tb = document.querySelector('#tasks tbody'); tb.innerHTML = '';
   let awaiting = 0;
-  for(const t of d.tasks){
+  const PRIO = {'P0':0,'P1':1,'P2':2,'P3':3};
+  const sorted = [...d.tasks].sort((a,b)=>(PRIO[b.priority||'P2']-PRIO[a.priority||'P2']) || ((b.status==='RUNNING')-(a.status==='RUNNING')) || ((b.updated_at||0)-(a.updated_at||0)));
+  const nowCards = [];
+  for(const t of sorted){
     if(t.status==='AWAITING_APPROVAL') awaiting++;
+    if(t.status==='RUNNING') nowCards.push(t);
     const tr = tb.insertRow();
     if(t.status==='AWAITING_APPROVAL') tr.className='awaiting';
+    if(t.status==='RUNNING') tr.className=(tr.className?tr.className+' ':'')+'running';
     if(taskStatus[t.id] && taskStatus[t.id] !== t.status){ tr.className = (tr.className?tr.className+' ':'')+'flash'; }
     taskStatus[t.id] = t.status;
     tr.onclick = () => openTask(t.id);
     const ago = Math.round((Date.now()/1000 - t.updated_at)) + 's';
     const indent = '&nbsp;'.repeat((t.depth||0)*4) + ((t.depth||0)?'↳ ':'')
-    const elapsed = t.status==='RUNNING' && t.started_at ? fmtDur(Date.now()/1000 - t.started_at) : '';
-    tr.innerHTML = `<td>${d.icons[t.status]||'?'}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td>${(t.title||'').slice(0,60)}</td>
+    const prio = `<span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>`;
+    const ic = `<span class="ic ic-${t.status}">${d.icons[t.status]||'?'}</span>`;
+    const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>` : '';
+    tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td>${(t.title||'').slice(0,60)}</td>
       <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> ')+t.status:t.status}</td>
       <td class="muted">${t.substep||''}</td><td>${t.retry_count}</td>
       <td class="muted">${t.persona||t.role||''}</td><td class="muted">${t.project_id||''}</td>
-      <td class="muted">${elapsed}</td>
+      <td class="muted">${clock}</td>
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
   }
   document.getElementById('awaitCount').textContent = awaiting ? awaiting+' czeka na Ciebie' : '';
+  document.getElementById('now').innerHTML = nowCards.length ? nowCards.map(t =>
+    `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
+     <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
+     <span class="who">${t.persona||t.role||''} · ${t.project_id||''}</span></div>`).join('')
+    : '<span class="muted">nikt teraz nie pracuje</span>';
   const ev = document.getElementById('events');
   ev.innerHTML = (d.events||[]).map(e => {
     const isNew = e.ts > lastEventTs;
@@ -196,6 +233,12 @@ async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===nul
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
 refresh(); setInterval(refresh, 2000);
 setInterval(() => { const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
+// zegarki tykają co sekundę — widać że coś się dzieje
+setInterval(() => {
+  document.querySelectorAll('.clock[data-started]').forEach(el => {
+    const s = parseFloat(el.dataset.started); if(s > 0) el.textContent = '⏱ ' + fmtDur(Date.now()/1000 - s);
+  });
+}, 1000);
 const _view = view; view = function(u){ document.getElementById('viewer').dataset.url = u; return _view(u); };
 </script></body></html>"""
 
@@ -221,7 +264,7 @@ def _snapshot(s: State) -> dict:
     for t in raw:
         tasks.append({k: t.get(k) for k in ("id", "title", "status", "substep", "retry_count",
                                              "role", "project_id", "branch", "updated_at", "read_only",
-                                             "mode", "parent_task", "started_at", "claimed_by")})
+                                             "mode", "parent_task", "started_at", "claimed_by", "priority")})
         tasks[-1]["pr"] = github_bridge.pr_for_task(t["id"])
         p = personas.persona_for_role(t.get("role") or "")
         tasks[-1]["persona"] = f"{p['name']} · {p['position']}"

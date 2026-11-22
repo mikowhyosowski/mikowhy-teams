@@ -275,6 +275,14 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
     how = git_guard.commit_task(worktree, task["id"], f"feat({task['id'].lower()}): {task['title']}")
     if how == "amended":
         state.record_metric("commit_amended", {"branch": task["branch"]}, task["id"])
+    try:
+        git_guard.sync_with_origin(worktree, base)  # twarda reguła: wyrównaj z origin przed pushem
+    except git_guard.MergeConflict as exc:
+        state.transition(task["id"], READY, substep="1/5_PLAN",
+                         review_notes=f"Konflikt z origin/{base} przed pushem: {exc} — wyrównaj i spróbuj ponownie")
+        state.record_metric("origin_conflict", {"base": base, "error": str(exc)[:200]}, task["id"])
+        _log(task["id"], f"konflikt z origin/{base}: {exc}")
+        return
     git_guard.push(task["branch"], worktree)
     state.add_comment(task["id"], f"worker({task['role']})",
                       f"✅ zrobiłem i zacommitowałem ({lines} linii, branch {task['branch']}) → proszę o Code Review")

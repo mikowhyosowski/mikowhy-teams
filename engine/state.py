@@ -129,6 +129,7 @@ class State:
                 ("tasks", "read_only", "INTEGER NOT NULL DEFAULT 0"),  # zadanie nic nie commituje (audyt/decyzja/plan)
                 ("tasks", "mode", "TEXT DEFAULT 'pipeline'"),  # 'pipeline' (domyślny) | 'llm' — wykonuje sam LLM (vibe z narzędziami)
                 ("tasks", "started_at", "REAL"),  # kiedy worker przejął zadanie (do liczenia czasu pracy)
+                ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
             ):
                 cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -213,19 +214,28 @@ class State:
         repo: str | None = None,
         read_only: bool = False,
         mode: str = "pipeline",
+        priority: str = "P2",
     ) -> str:
         now = time.time()
         self._conn().execute(
             """INSERT INTO tasks(id,milestone,phase,title,role,status,parallel_group,scope_paths,
-               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only,mode)
-               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only,mode,priority)
+               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task_id, milestone, phase, title, role, status, parallel_group,
                 json.dumps(scope_paths or []), json.dumps(depends_on or []),
                 acceptance_criteria, 0, split_depth, parent_task, now, now, project_id, repo, int(read_only), mode,
+                priority,
             ),
         )
         return task_id
+
+    def set_priority(self, task_id: str, priority: str) -> None:
+        if priority not in ("P0", "P1", "P2", "P3"):
+            raise StateError(f"Zły priorytet: {priority} (dozwolone P0..P3)")
+        self._conn().execute("UPDATE tasks SET priority=?, updated_at=? WHERE id=?",
+                             (priority, time.time(), task_id))
+        self.record_metric("task_event", {"event": "priority", "to": priority}, task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         row = self._conn().execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -251,10 +261,13 @@ class State:
         return t
 
     def ready_tasks(self) -> list[dict[str, Any]]:
-        """Zadania READY, których wszystkie zależności są MERGED."""
+        """Zadania READY, których wszystkie zależności są MERGED — sortowane po priorytecie (P0 pierwsze)."""
         tasks = self.list_tasks(status=READY)
         merged = {t["id"] for t in self.list_tasks(status=MERGED)}
-        return [t for t in tasks if set(t["depends_on"]) <= merged]
+        ok = [t for t in tasks if set(t["depends_on"]) <= merged]
+        order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        ok.sort(key=lambda t: (order.get(t.get("priority") or "P2", 2), t.get("created_at") or 0))
+        return ok
 
     def claim_task(self, task_id: str, claimed_by: str) -> dict[str, Any] | None:
         """Atomowe przejęcie: tylko jeśli status nadal READY (ACID, bez fcntl)."""

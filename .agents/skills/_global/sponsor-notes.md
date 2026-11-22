@@ -5,3 +5,5 @@
 - [2026-11-22 18:42] od teraz pamiętać: nigdy nie commituj sekretów do repo, .env tylko lokalnie
 
 - [2026-11-22 21:39] e dla nowych zadan zeby pisac kiedy jest start, kiedy koniec, ile czasu trwalo zadanie. I nowa zasada ze wlasciciel zadania okresla sie i szacuje o ktorej podejmie zadanie
+
+- [2026-11-22 22:40] TWARDA REGUŁA: przed każdym pushem gałąź zadania MUSI być wyrównana z origin (git fetch origin + rebase/merge origin/<base>) — zero konfliktów między branchami. Wszystkie PR-y muszą być przejrzane (code review) przed mergem do master; master przed pracą zawsze dociągnięty z origin (pull --ff-only).
