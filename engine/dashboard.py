@@ -153,7 +153,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    #tasks{display:block;overflow-x:auto}
  }
 </style></head><body>
-<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span></h1>
+<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span></h1>
 <div id="stats"></div>
 <h2>🚨 Wymaga interwencji Sponsora</h2>
 <div id="alerts"></div>
@@ -185,7 +185,11 @@ let lastEventTs = 0;
 const taskStatus = {};
 function fmtDur(s){ s=Math.round(s); const m=Math.floor(s/60), h=Math.floor(m/60); return (h?h+'h ':'')+(m%60)+'m '+(s%60)+'s'; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-async function refresh(){ try{ await refreshInner(); }catch(e){ document.getElementById('ts').textContent = '⚠ błąd odświeżania: '+e; } }
+let refreshPaused = false;
+function setPaused(p){ refreshPaused = p; document.getElementById('pause').textContent = p ? '⏸ odświeżanie wstrzymane — piszesz…' : ''; }
+document.addEventListener('focusin', e => { if(e.target && e.target.matches && e.target.matches('textarea,input')) setPaused(true); });
+document.addEventListener('focusout', e => { if(e.target && e.target.matches && e.target.matches('textarea,input')) { setPaused(false); refresh(); } });
+async function refresh(){ if(refreshPaused) return; try{ await refreshInner(); }catch(e){ document.getElementById('ts').textContent = '⚠ błąd odświeżania: '+e; } }
 async function refreshInner(){
   const r = await fetch('/api/state'); const d = await r.json();
   document.getElementById('ts').textContent = new Date().toLocaleTimeString();
@@ -345,8 +349,8 @@ async function sendAsk(){
 async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'POST', body:'{}'}); refresh(); }
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
-refresh(); setInterval(refresh, 2000);
-setInterval(() => { const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
+refresh(); setInterval(() => { if(!refreshPaused) refresh(); }, 2000);
+setInterval(() => { if (refreshPaused) return; const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
 // zegarki tykają co sekundę — widać że coś się dzieje
 setInterval(() => {
   document.querySelectorAll('.clock[data-started]').forEach(el => {
