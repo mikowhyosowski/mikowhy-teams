@@ -122,6 +122,14 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .ask .q{color:#c9d1d9}
  .ask .a{color:#3fb950;white-space:pre-wrap}
  .ask .run{color:#b08800}
+ /* zakładki (layout) */
+ #tabs{position:sticky;top:0;background:#0d1117;z-index:5;display:flex;gap:6px;overflow-x:auto;padding:6px 0;border-bottom:1px solid #21262d}
+ #tabs button{background:#161b22;border:1px solid #30363d;color:#8b949e;border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;white-space:nowrap}
+ #tabs button.on{background:#1f6feb;color:#fff;border-color:#1f6feb;font-weight:bold}
+ #tabs button:active{transform:scale(.96)}
+ .tabpage{display:none;animation:fadeIn .15s}
+ .tabpage.on{display:block}
+ @keyframes fadeIn{from{opacity:0}to{opacity:1}}
  /* statystyki kolejki + alerty sponsora */
  #stats{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
  .stat-badge{background:#21262d;border:1px solid #30363d;border-radius:14px;padding:3px 12px;font-size:12px}
@@ -163,30 +171,47 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span></h1>
 <div id="stats"></div>
+<nav id="tabs">
+  <button data-tab="overview" onclick="showTab('overview')">📊 Przegląd<span id="navAlert"></span></button>
+  <button data-tab="tasks" onclick="showTab('tasks')">📋 Zadania</button>
+  <button data-tab="team" onclick="showTab('team')">👥 Zespół</button>
+  <button data-tab="chat" onclick="showTab('chat')">💬 Czat Vibe</button>
+  <button data-tab="live" onclick="showTab('live')">⚡ Live</button>
+</nav>
+<section class="tabpage" id="tab-overview">
 <h2>🚨 Wymaga interwencji Sponsora</h2>
 <div id="alerts"></div>
 <h2>🔥 Teraz pracują <span class="muted">(zegarki tykają na żywo)</span></h2>
 <div id="now"></div>
 <h2>🔀 Przepływ pracy <span class="muted">(kliknij kafelek = szczegóły zadania)</span></h2>
 <div id="flow"></div>
-<h2>👥 Zespół <span class="muted">(kto aktualnie nad czym pracuje + krótka historia)</span></h2>
-<div id="team"></div>
 <h2>Projekty</h2><div id="projects"></div>
+</section>
+<section class="tabpage" id="tab-tasks">
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
 <div id="projFilters"></div>
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
-<h2>⚡ Live — ostatnie wydarzenia (kto przejął / zmiana statusu, auto-refresh 2s)</h2><div class="feed" id="events"></div>
+</section>
+<section class="tabpage" id="tab-team">
+<h2>👥 Zespół <span class="muted">(kto aktualnie nad czym pracuje + krótka historia)</span></h2>
+<div id="team"></div>
+</section>
+<section class="tabpage" id="tab-chat">
 <h2>💬 Zapytaj Vibe bezpośrednio <span class="muted">(bez taska — jak `llm`, ale odpowiedź od razu tutaj)</span></h2>
 <textarea id="askbox" placeholder="napisz polecenie / pytanie do Vibe…"></textarea>
 <button id="askBtn" onclick="sendAsk()">Wyślij do Vibe ▶</button>
 <div class="feed" id="asks"></div>
 <h2>💬 Komentarze agentów (feed)</h2><div class="feed" id="comments"></div>
+</section>
+<section class="tabpage" id="tab-live">
+<h2>⚡ Live — ostatnie wydarzenia (kto przejął / zmiana statusu, auto-refresh 2s)</h2><div class="feed" id="events"></div>
 <h2>📈 Ostatnie eventy</h2><div class="feed" id="metrics"></div>
 <h2>🔴 Live — .agents/runtime (surowe odpowiedzi LLM) <button onclick="toggleLive()">▶/⏸</button></h2>
 <div class="feed" id="runtime"></div>
 <h2>📜 Logi procesów (.agents/logs) — klik = tail</h2>
 <div class="feed" id="logs"></div>
 <pre id="viewer" style="background:#0d1117;border:1px solid #30363d;padding:8px;max-height:300px;overflow:auto;font-size:11px"></pre>
+</section>
 <div id="detail"><button onclick="closeDetail()" style="float:right">✖</button><div id="detailBody">wybierz zadanie…</div></div>
 <script>
 let curTask = null;
@@ -291,6 +316,8 @@ async function refreshInner(){
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
   }
   document.getElementById('awaitCount').textContent = awaiting ? awaiting+' czeka na Ciebie' : '';
+  const navA = document.getElementById('navAlert');
+  if(navA) navA.textContent = awaiting ? ' 🚨'+awaiting : '';
   document.getElementById('team').innerHTML = (d.team||[]).map(m => {
     const curRes = m.current && m.current.res ? ` <span class="muted" title="pid ${m.current.res.pid}">⚙️${m.current.res.cpu}% 🧠${m.current.res.rss_mb}MB</span>` : '';
     const cur = m.current ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span>${curRes}</div>` : '<div class="cur muted">— wolny/a —</div>';
@@ -385,6 +412,16 @@ async function sendAsk(){
 async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'POST', body:'{}'}); refresh(); }
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
+// zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
+const TABS = ['overview','tasks','team','chat','live'];
+function showTab(name, push){
+  if(!TABS.includes(name)) name = 'overview';
+  document.querySelectorAll('.tabpage').forEach(el => el.classList.toggle('on', el.id === 'tab-'+name));
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  if(push !== false) history.replaceState(null, '', '#'+name);
+}
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1)||'overview', false));
+showTab(location.hash.slice(1)||'overview', false);
 refresh(); setInterval(() => { if(!refreshPaused) refresh(); }, 2000);
 setInterval(() => { if (refreshPaused) return; const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
 // zegarki tykają co sekundę — widać że coś się dzieje
