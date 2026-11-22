@@ -46,6 +46,7 @@ from engine.state import (
     AWAITING_APPROVAL,
     BLOCKED,
     ESCALATED,
+    FAILED,
     IN_REVIEW,
     MERGED,
     READY,
