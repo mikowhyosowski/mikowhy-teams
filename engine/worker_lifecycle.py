@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 from engine import git_guard, projects, quality_gates, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
 from engine.state import (
+    AWAITING_APPROVAL,
     FAILED,
     IN_REVIEW,
     READY,
@@ -64,15 +65,41 @@ def _llm_step(task: dict, step: str, user_payload: str, model: str) -> dict:
     return gw.complete_json(system=system, user=user_payload, step=step, model=model)
 
 
+def _ask_sponsor(state: State, task: dict, question: str, options: list | None = None) -> None:
+    """ASK_SPONSOR: zadanie nie podejmuje decyzji spoza swoich kompetencji — pyta Sponsora
+    (Telegram topic + komentarz w feedzie) i czeka: AWAITING_APPROVAL/substep=ASK_SPONSOR.
+    Odpowiedź Sponsora ląduje w review_notes (komentarz) i worker rusza dalej po approve."""
+    opts = [str(o) for o in (options or [])][:6]
+    opts_txt = "\n".join(f"- {o}" for o in opts)
+    q = str(question)[:800]
+    state.add_comment(task["id"], f"worker({task['role']})",
+                      f"❓ Pytanie do Sponsora: {q}" + (f"\nOpcje:\n{opts_txt}" if opts_txt else ""))
+    try:
+        telegram_reporter.post_event(state, task,
+                                     f"❓ *Pytanie* `{task['id']}` ({task['role']}): {q}"
+                                     + (f"\nOpcje: {', '.join(opts)}" if opts else "")
+                                     + "\nOdpisz w wątku zadania, potem zatwierdź.")
+    except Exception:
+        pass
+    state.transition(task["id"], AWAITING_APPROVAL, substep="ASK_SPONSOR",
+                     review_notes=f"Pytanie do Sponsora: {q}" + (f" | Opcje: {opts_txt}" if opts_txt else ""))
+    state.record_metric("ask_sponsor", {"question": q[:300], "options": opts}, task["id"])
+    _log(task["id"], f"ASK_SPONSOR: {q[:200]}")
+
+
 def step1_plan(state: State, task: dict) -> None:
-    """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK (z limitowaną głębokością)."""
+    """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK lub ASK_SPONSOR."""
     t0 = time.time()
     state.transition(task["id"], "RUNNING", substep="1/5_PLAN")
+    sponsor_notes = state.recent_comments(5, task_id=task["id"])
+    notes_txt = "\n".join(f"- {c.get('author')}: {str(c.get('text'))[:200]}" for c in sponsor_notes)
     result = _llm_step(
         task, "1/5_PLAN",
         json.dumps({"title": task["title"], "acceptance_criteria": task["acceptance_criteria"],
                     "scope_paths": task["scope_paths"], "split_depth": task["split_depth"],
                     "max_split_depth": MAX_SPLIT_DEPTH,
+                    "review_notes": task.get("review_notes") or "",
+                    "sponsor_comments": notes_txt,
                     "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"plan": "<krótki plan kroków>"} '
                               'lub TYLKO GDY zadanie jest naprawdę za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ...}]}. '
                               'REGUŁA ANTY-SPLIT: NIE dziel, gdy zadanie dotyczy <=3 plików, szacunkowo <=150 linii diffu '
@@ -82,6 +109,9 @@ def step1_plan(state: State, task: dict) -> None:
         model=skill_compiler.model_for_role(task["role"], kind="fast"),
     )
     state.record_metric("step_time", {"step": "1/5_PLAN", "seconds": round(time.time() - t0, 2)}, task["id"])
+    if result.get("signal") == "ASK_SPONSOR":
+        _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
+        return
     if result.get("signal") == "SPLIT_TASK":
         try:
             ids = state.split_task(task["id"], result.get("subtasks", []), max_split_depth=MAX_SPLIT_DEPTH)
@@ -108,6 +138,9 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
     }
     result = _llm_step(task, "2/5_IMPL", json.dumps(payload, ensure_ascii=False),
                        model=skill_compiler.model_for_role(task["role"], kind="strong"))
+    if result.get("signal") == "ASK_SPONSOR":
+        _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
+        return
     files = result.get("files") or {}
     if not files and isinstance(result.get("artifacts"), list):  # fallback: kontrakt roli (artifacts)
         for a in result["artifacts"]:
@@ -294,16 +327,22 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
         '{"action":"write_file","path":"relative/path","content":"..."} — zapis/utworzenie pliku w worktree\n'
         '{"action":"read_file","path":"relative/path"} — odczyt pliku (max 3000 znaków zwrócone)\n'
         '{"action":"list","path":"."} — lista katalogu\n'
+        '{"action":"ask","question":"...","options":["A","B"]} — gdy decyzja wykracza poza Twoje kompetencje '
+        '(kolor/wygląd/UX/priorytet) — NIE zgaduj, zapytaj Sponsora i czekaj\n'
         '{"action":"done","summary":"co zrobiono"} — koniec zadania\n\n'
         f"KONIECZNOŚĆ: przed `done` ZAWSZE zapisz raport drużynie przez write_file do `{report_rel}`:\n"
         f"# {tid} — raport LLM\n## Co zrobiono\n## Zmienione pliki\n## Jak zweryfikować (komendy)\n## Ryzyka / uwagi\n"
         "(max ~120 linii). Dopiero potem wyślij action=done."
     )
+    sponsor_notes = state.recent_comments(5, task_id=tid)
+    notes_txt = "\n".join(f"- {c.get('author')}: {str(c.get('text'))[:250]}" for c in sponsor_notes)
     user0 = (
         f"Zadanie: {tid} — {task['title']}\n\nPełny opis od Sponsora:\n{full_desc}\n\n"
         f"Acceptance criteria: {task.get('acceptance_criteria') or '—'}\n"
         f"Worktree: {worktree} | base: {base} | branch: {task.get('branch')}\n\n"
-        "Wykonaj zadanie krok po kroku (bash/read_file/list/write_file), a na końcu zapisz raport i daj done."
+        "Wykonaj zadanie krok po kroku (bash/read_file/list/write_file), a na końcu zapisz raport i daj done.\n"
+        "NIE podejmuj decyzji wizualnych/produktowych (kolor, wygląd, UX) — dawaj wtedy action=ask.\n"
+        f"Uwagi/odpowiedzi Sponsora:\n{task.get('review_notes') or ''}\n{notes_txt}\n"
     )
     history: list[str] = []
     wt_resolved = str(worktree.resolve())
@@ -364,6 +403,13 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
             except OSError as exc:
                 content = f"błąd listowania: {exc}"
             history.append(f"t{turn} ls {resp.get('path')}\n→\n{content}")
+        elif action == "ask":
+            # decyzja poza kompetencjami LLM — pyta Sponsora i czeka (NIE zgaduje)
+            q = str(resp.get("question", ""))[:800]
+            history.append(f"t{turn} ASK: {q}")
+            _ask_sponsor(state, task, q, resp.get("options") or [])
+            done = True
+            break
         elif action == "done":
             history.append(f"t{turn} DONE: {str(resp.get('summary', ''))[:500]}")
             _log(tid, f"LLM t{turn} done: {str(resp.get('summary',''))[:200]}")
@@ -385,6 +431,10 @@ def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
     model = skill_compiler.model_for_role(task["role"], kind="strong")
     _log(tid, f"LLM_EXEC start (model={model}, worktree={worktree})")
     report_rel = _llm_agent_loop(state, task, worktree, base)
+    task = state.get_task(tid)
+    if task["status"] != "RUNNING":  # ASK_SPONSOR — czekamy na odpowiedź, nie commitujemy
+        _log(tid, "LLM_EXEC zatrzymany: czekamy na Sponsora")
+        return
     report = worktree / report_rel
     if report.exists():
         text = report.read_text(encoding="utf-8", errors="replace")
@@ -430,6 +480,10 @@ def run(task_id: str) -> int:
             return 0
         _tg(state, task_id)
         step2_implement(state, task, worktree)
+        task = state.get_task(task_id)
+        if task["status"] != "RUNNING":  # np. ASK_SPONSOR — czekamy na Sponsora
+            _tg(state, task_id)
+            return 0
         _tg(state, task_id)
         step3_tests(state, task, worktree)
         _tg(state, task_id)

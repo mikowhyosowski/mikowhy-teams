@@ -128,7 +128,7 @@ async function refresh(){
     const indent = '&nbsp;'.repeat((t.depth||0)*4) + ((t.depth||0)?'↳ ':'')
     const elapsed = t.status==='RUNNING' && t.started_at ? fmtDur(Date.now()/1000 - t.started_at) : '';
     tr.innerHTML = `<td>${d.icons[t.status]||'?'}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td>${(t.title||'').slice(0,60)}</td>
-      <td class="st">${t.status==='AWAITING_APPROVAL'?'<span class="badge">TWÓJ RUCH</span> '+t.status:t.status}</td>
+      <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> ')+t.status:t.status}</td>
       <td class="muted">${t.substep||''}</td><td>${t.retry_count}</td>
       <td class="muted">${t.persona||t.role||''}</td><td class="muted">${t.project_id||''}</td>
       <td class="muted">${elapsed}</td>

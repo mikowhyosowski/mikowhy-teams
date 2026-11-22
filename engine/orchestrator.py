@@ -127,6 +127,8 @@ class Orchestrator:
         'auto' = wszystkie zadania; 'auto_readonly' = tylko read_only (zero commitów);
         'manual' (domyślnie) = wszystko czeka na klik Sponsora."""
         for task in self.state.list_tasks(status=AWAITING_APPROVAL):
+            if task.get("substep") == "ASK_SPONSOR":
+                continue  # pytanie do Sponsora NIGDY nie leci auto — tylko człowiek odpowiada
             pid = task.get("project_id") or "mikowhy-teams"
             policy = projects.approval_policy(pid)
             if policy == "auto" or (policy == "auto_readonly" and task.get("read_only")):
