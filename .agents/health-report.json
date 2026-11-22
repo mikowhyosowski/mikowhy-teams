@@ -1,5 +1,5 @@
 {
-  "ts": 1795365806.2896218,
+  "ts": 1795366196.7854958,
   "projects": [
     {
       "project_id": "mikowhy-teams",
@@ -7,7 +7,7 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 9,
+        "target_dirty_files": 2,
         "tasks_by_status": {
           "FAILED": 1
         },
@@ -20,7 +20,7 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 9,
+        "target_dirty_files": 2,
         "tasks_by_status": {
           "FAILED": 2,
           "READY": 2
@@ -47,12 +47,12 @@
     {
       "project": "mikowhy-teams",
       "kind": "target_dirty",
-      "detail": "9 niezacommitowanych zmian w target repo"
+      "detail": "2 niezacommitowanych zmian w target repo"
     },
     {
       "project": "mikowhy-teams-self",
       "kind": "target_dirty",
-      "detail": "9 niezacommitowanych zmian w target repo"
+      "detail": "2 niezacommitowanych zmian w target repo"
     },
     {
       "project": "news-video-generator",

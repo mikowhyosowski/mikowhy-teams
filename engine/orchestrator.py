@@ -600,7 +600,9 @@ def main() -> None:
     h = sub.add_parser("health", help="pełny health check wszystkich projektów + zadania naprawcze; --watch = pętla")
     h.add_argument("--watch", action="store_true", help="pętla: health co --interval sekund (domyślnie HEALTH_INTERVAL/300)")
     h.add_argument("--interval", type=int, default=None, help="interwał pętli w sekundach")
-    sub.add_parser("status", help="stan projektów i zadań (jak pipeline.json)")
+    st = sub.add_parser("status", help="stan projektów i zadań (jak pipeline.json); --watch = żywy podgląd")
+    st.add_argument("--watch", action="store_true", help="pętla: odświeżaj co --interval sekund")
+    st.add_argument("--interval", type=float, default=2.0, help="interwał odświeżania w --watch")
     ap3 = sub.add_parser("approve", help="Sponsor: AWAITING_APPROVAL -> READY")
     ap3.add_argument("task_id")
     ap4 = sub.add_parser("decline", help="Sponsor: AWAITING_APPROVAL -> BLOCKED")
@@ -662,7 +664,15 @@ def main() -> None:
                 print("\nhealth: stop (Ctrl+C)", flush=True)
                 break
     elif args.cmd == "status":
-        cmd_status()
+        if getattr(args, "watch", False):
+            import os as _os
+            while True:
+                _os.system("clear" if _os.name == "posix" else "cls")
+                print(f"🔄 status --watch (co {args.interval}s, Ctrl+C stop) — {time.strftime('%H:%M:%S')}")
+                cmd_status()
+                time.sleep(args.interval)
+        else:
+            cmd_status()
     elif args.cmd == "approve":
         cmd_approve(args.task_id)
     elif args.cmd == "decline":
