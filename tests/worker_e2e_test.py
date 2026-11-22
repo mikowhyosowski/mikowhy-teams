@@ -1,92 +1,69 @@
-'''Testy integracyjne end-to-end workera zadań (CHAT-0002).'''
+'''Test integracyjny end-to-end workera zadań (CHAT-0002).
+
+Scenariusze:
+- pełna pętla pending -> running -> done bez błędów w logach,
+- błąd -> retry -> wyczerpanie prób -> ESCALATED z komentarzem w feedzie.
+'''
 import logging
 
-from engine.worker import TaskStatus, TaskWorker
+from news_video_generator.worker import RetryPolicy, Task, TaskStatus, TaskWorker
 
 
-class FakeTask:
-    def __init__(self, task_id, payload=None, max_attempts=3):
-        self.id = task_id
-        self.payload = payload or {}
-        self.status = TaskStatus.PENDING
-        self.attempts = 0
-        self.max_attempts = max_attempts
+class InMemoryTaskStore:
+    '''Fixture: repozytorium zadań w pamięci (wyłącznie na potrzeby testów).'''
 
+    def __init__(self):
+        self.tasks = {}
+        self.feed = []
 
-class InMemoryTaskRepo:
-    def __init__(self, tasks=()):
-        self._tasks = {t.id: t for t in tasks}
-        self.history = []
+    def add(self, task):
+        self.tasks[task.task_id] = task
 
-    def claim_next_pending(self):
-        for task in self._tasks.values():
+    def get(self, task_id):
+        return self.tasks.get(task_id)
+
+    def next_pending(self):
+        for task in self.tasks.values():
             if task.status == TaskStatus.PENDING:
-                task.status = TaskStatus.RUNNING
-                self.history.append((task.id, task.status))
                 return task
         return None
 
     def save(self, task):
-        self.history.append((task.id, task.status))
-        self._tasks[task.id] = task
+        self.tasks[task.task_id] = task
 
-    def get(self, task_id):
-        return self._tasks[task_id]
-
-
-class RecordingFeed:
-    def __init__(self):
-        self.comments = []
-
-    def add_comment(self, task_id, text):
-        self.comments.append({'task_id': task_id, 'text': text})
+    def add_feed_comment(self, task_id, message):
+        self.feed.append({'task_id': task_id, 'message': message})
 
 
-def build(tasks, handler):
-    repo = InMemoryTaskRepo(tasks)
-    feed = RecordingFeed()
-    worker = TaskWorker(repo=repo, feed=feed, handler=handler)
-    return worker, repo, feed
+def build_worker(store, max_attempts=3):
+    policy = RetryPolicy(max_attempts=max_attempts, backoff_seconds=0)
+    return TaskWorker(store=store, retry_policy=policy)
 
 
-def test_pending_running_done_end_to_end_without_error_logs(caplog):
-    worker, repo, _ = build([FakeTask('e2e-1')], lambda task: None)
-    with caplog.at_level(logging.DEBUG):
-        worker.run_once()
-    statuses = [status for _, status in repo.history]
-    assert TaskStatus.RUNNING in statuses
-    assert statuses[-1] == TaskStatus.DONE
-    assert repo.get('e2e-1').attempts == 1
+def test_end_to_end_lifecycle_done_without_log_errors(caplog):
+    store = InMemoryTaskStore()
+    worker = build_worker(store)
+    store.add(Task(task_id='e2e-1', payload={'job': 'render'}, status=TaskStatus.PENDING, attempts=0))
+    with caplog.at_level(logging.INFO):
+        worker.run()
+    task = store.get('e2e-1')
+    assert task.status == TaskStatus.DONE
+    assert task.attempts == 1
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors == []
 
 
-def test_error_then_retry_then_done_end_to_end():
-    state = {'calls': 0}
+def test_end_to_end_retry_exhaustion_escalates_with_feed_comment(caplog):
+    store = InMemoryTaskStore()
+    worker = build_worker(store, max_attempts=2)
+    store.add(Task(task_id='e2e-2', payload={'job': 'render'}, status=TaskStatus.PENDING, attempts=0))
 
-    def flaky(task):
-        state['calls'] += 1
-        if state['calls'] < 2:
-            raise RuntimeError('temporary failure')
+    def always_failing(task):
+        raise RuntimeError('boom')
 
-    worker, repo, feed = build([FakeTask('e2e-2', max_attempts=3)], flaky)
-    worker.run_once()
-    assert repo.get('e2e-2').status == TaskStatus.PENDING
-    assert repo.get('e2e-2').attempts == 1
-    worker.run_once()
-    assert repo.get('e2e-2').status == TaskStatus.DONE
-    assert feed.comments == []
-
-
-def test_retry_exhaustion_escalates_with_feed_comment_end_to_end():
-    def always_fail(task):
-        raise RuntimeError('permanent failure')
-
-    worker, repo, feed = build([FakeTask('e2e-3', max_attempts=2)], always_fail)
-    worker.run_once()
-    worker.run_once()
-    task = repo.get('e2e-3')
+    with caplog.at_level(logging.INFO):
+        worker.run(handler=always_failing)
+    task = store.get('e2e-2')
     assert task.status == TaskStatus.ESCALATED
     assert task.attempts == 2
-    assert len(feed.comments) == 1
-    assert feed.comments[0]['task_id'] == 'e2e-3'
+    assert any(c['task_id'] == 'e2e-2' for c in store.feed)

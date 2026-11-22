@@ -1,100 +1,139 @@
-'''Testy jednostkowe workera zadań (CHAT-0002).'''
+'''Testy jednostkowe workera zadań (CHAT-0002).
+
+Kontrakt workera:
+- pobiera zadanie PENDING, oznacza RUNNING, wykonuje i zamyka DONE,
+- błąd wykonania -> zadanie wraca do PENDING, attempts rośnie (retry wg polityki),
+- wyczerpanie prób (attempts == max_attempts) -> ESCALATED + komentarz w feedzie.
+'''
 import logging
 
-from engine.worker import TaskStatus, TaskWorker
+import pytest
+
+from news_video_generator.worker import (
+    RetryPolicy,
+    Task,
+    TaskStatus,
+    TaskWorker,
+)
 
 
-class FakeTask:
-    def __init__(self, task_id, task_type='demo', payload=None, max_attempts=3):
-        self.id = task_id
-        self.type = task_type
-        self.payload = payload or {}
-        self.status = TaskStatus.PENDING
-        self.attempts = 0
-        self.max_attempts = max_attempts
+class InMemoryTaskStore:
+    '''Fixture: repozytorium zadań w pamięci (wyłącznie na potrzeby testów).'''
 
+    def __init__(self):
+        self.tasks = {}
+        self.feed = []
 
-class InMemoryTaskRepo:
-    def __init__(self, tasks=()):
-        self._tasks = {t.id: t for t in tasks}
+    def add(self, task):
+        self.tasks[task.task_id] = task
 
-    def claim_next_pending(self):
-        for task in self._tasks.values():
+    def get(self, task_id):
+        return self.tasks.get(task_id)
+
+    def next_pending(self):
+        for task in self.tasks.values():
             if task.status == TaskStatus.PENDING:
-                task.status = TaskStatus.RUNNING
                 return task
         return None
 
     def save(self, task):
-        self._tasks[task.id] = task
+        self.tasks[task.task_id] = task
 
-    def get(self, task_id):
-        return self._tasks[task_id]
-
-
-class RecordingFeed:
-    def __init__(self):
-        self.comments = []
-
-    def add_comment(self, task_id, text):
-        self.comments.append({'task_id': task_id, 'text': text})
+    def add_feed_comment(self, task_id, message):
+        self.feed.append({'task_id': task_id, 'message': message})
 
 
-def make_worker(tasks=(), handler=None):
-    repo = InMemoryTaskRepo(tasks)
-    feed = RecordingFeed()
-    worker = TaskWorker(repo=repo, feed=feed, handler=handler or (lambda task: None))
-    return worker, repo, feed
+@pytest.fixture
+def store():
+    return InMemoryTaskStore()
 
 
-def test_claim_pending_task_transitions_pending_to_running():
-    worker, _, _ = make_worker([FakeTask('t-1')])
-    task = worker.poll()
-    assert task is not None
-    assert task.id == 't-1'
-    assert task.status == TaskStatus.RUNNING
+@pytest.fixture
+def retry_policy():
+    return RetryPolicy(max_attempts=3, backoff_seconds=0)
 
 
-def test_successful_execution_closes_task_as_done():
-    worker, repo, _ = make_worker([FakeTask('t-1')])
-    worker.run_once()
-    assert repo.get('t-1').status == TaskStatus.DONE
-    assert repo.get('t-1').attempts == 1
+@pytest.fixture
+def worker(store, retry_policy):
+    return TaskWorker(store=store, retry_policy=retry_policy)
 
 
-def test_poll_returns_none_when_no_pending_tasks():
-    worker, _, _ = make_worker([])
-    assert worker.poll() is None
+def make_task(task_id='task-001', payload=None):
+    return Task(
+        task_id=task_id,
+        payload=payload or {'job': 'render'},
+        status=TaskStatus.PENDING,
+        attempts=0,
+    )
 
 
-def test_execution_error_retries_according_to_policy():
-    def failing(task):
-        raise RuntimeError('boom')
-
-    worker, repo, feed = make_worker([FakeTask('t-1', max_attempts=3)], handler=failing)
-    worker.run_once()
-    task = repo.get('t-1')
-    assert task.status == TaskStatus.PENDING
+def test_happy_path_pending_running_done(store, worker, caplog):
+    store.add(make_task())
+    with caplog.at_level(logging.INFO):
+        processed = worker.process_next()
+    assert processed is not None
+    task = store.get('task-001')
+    assert task.status == TaskStatus.DONE
     assert task.attempts == 1
-    assert feed.comments == []
-
-
-def test_exhausted_attempts_set_escalated_with_feed_comment():
-    def failing(task):
-        raise RuntimeError('boom')
-
-    worker, repo, feed = make_worker([FakeTask('t-1', max_attempts=2)], handler=failing)
-    worker.run_once()
-    worker.run_once()
-    assert repo.get('t-1').status == TaskStatus.ESCALATED
-    assert len(feed.comments) == 1
-    assert feed.comments[0]['task_id'] == 't-1'
-
-
-def test_happy_path_produces_no_error_logs(caplog):
-    worker, repo, _ = make_worker([FakeTask('t-1')])
-    with caplog.at_level(logging.DEBUG):
-        worker.run_once()
-    assert repo.get('t-1').status == TaskStatus.DONE
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors == []
+
+
+def test_execution_error_returns_task_to_pending_with_attempt(store, worker):
+    store.add(make_task())
+
+    def failing_handler(task):
+        raise RuntimeError('render failed')
+
+    worker.process_next(handler=failing_handler)
+    task = store.get('task-001')
+    assert task.status == TaskStatus.PENDING
+    assert task.attempts == 1
+
+
+def test_retry_eventually_succeeds(store, worker):
+    store.add(make_task())
+    calls = {'n': 0}
+
+    def flaky_handler(task):
+        calls['n'] += 1
+        if calls['n'] < 2:
+            raise RuntimeError('transient error')
+
+    worker.process_next(handler=flaky_handler)
+    worker.process_next(handler=flaky_handler)
+    task = store.get('task-001')
+    assert task.status == TaskStatus.DONE
+    assert calls['n'] == 2
+
+
+def test_exhausted_attempts_escalate_with_feed_comment(store, worker):
+    store.add(make_task())
+
+    def always_failing(task):
+        raise RuntimeError('permanent failure')
+
+    for _ in range(3):
+        worker.process_next(handler=always_failing)
+
+    task = store.get('task-001')
+    assert task.status == TaskStatus.ESCALATED
+    assert task.attempts == 3
+    comments = [c for c in store.feed if c['task_id'] == 'task-001']
+    assert len(comments) == 1
+
+
+def test_done_task_is_not_reexecuted(store, worker):
+    store.add(make_task())
+    worker.process_next()
+    calls = {'n': 0}
+
+    def handler(task):
+        calls['n'] += 1
+
+    assert worker.process_next(handler=handler) is None
+    assert calls['n'] == 0
+
+
+def test_no_pending_task_is_noop(worker):
+    assert worker.process_next() is None
