@@ -1,6 +1,6 @@
 {
   "schema": "dark-factory/pipeline-snapshot@1",
-  "generated_at": 1795354064.2040112,
+  "generated_at": 1795356921.8398376,
   "note": "Snapshot wygenerowany z .agents/state.db (SQLite WAL). Stan operacyjny żyje w state.db; ten plik to artefakt czytelny.",
   "milestones": [
     {
@@ -20,7 +20,7 @@
       "phase": 1,
       "title": "PRD (Gherkin + Edge Cases) dla: Dodaj moduł subskrypcji Stripe z webhookami i panelem statusu",
       "role": "product-owner",
-      "status": "READY",
+      "status": "MERGED",
       "parallel_group": null,
       "scope_paths": [
         "docs/PRD.md"
@@ -30,13 +30,13 @@
       "retry_count": 0,
       "split_depth": 0,
       "parent_task": null,
-      "substep": null,
-      "review_notes": null,
-      "branch": null,
-      "worktree": null,
-      "claimed_by": null,
+      "substep": "done",
+      "review_notes": "{\"verdict\": \"APPROVED\", \"notes\": [{\"rule\": \"Edge Cases jawnie wymienione w szablonie (współbieżność, brak uprawnień) są tylko częściowo pokryte — warto dodać przypadek podwójnego wysłania checkout / równoległej zmiany planu oraz dostępu do cudzej subskrypcji (IDOR) w panelu\", \"where\": \"docs/PRD.md:sekcja Edge Cases\"}]}",
+      "branch": "feature/m1-p1",
+      "worktree": "/home/miko/Projekty/M+/mikowhy-teams/.agents/worktrees/M1-P1",
+      "claimed_by": "worker-1493080",
       "created_at": 1795354064.1582787,
-      "updated_at": 1795354064.1582787
+      "updated_at": 1795356921.8272195
     },
     {
       "id": "M1-P2",
