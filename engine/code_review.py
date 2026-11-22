@@ -31,7 +31,7 @@ def review(task_id: str) -> int:
     if task is None or task["status"] != IN_REVIEW:
         return 1
     milestone = state.get_milestone(task["milestone"])
-    base = milestone["branch"] if milestone else "main"
+    base = milestone["branch"] if milestone else git_guard.default_branch()
     repo = projects.repo_for_task(task, state)  # diff względem fizycznego repo projektu
 
     diff = git_guard.run_git(["diff", f"{base}...{task['branch']}"], cwd=repo, check=False).stdout

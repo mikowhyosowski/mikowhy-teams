@@ -40,7 +40,7 @@ def step0_prepare(state: State, task: dict) -> Path:
     """Krok 0 (Python): izolowany worktree + gałąź feature/<task>.
     Repo worktree = target_repo_path projektu (lub katalog silnika gdy task['repo']=='factory')."""
     milestone = state.get_milestone(task["milestone"])
-    base = milestone["branch"] if milestone else "main"
+    base = milestone["branch"] if milestone else git_guard.default_branch()
     branch = task["branch"] or f"feature/{task['id'].lower()}"
     repo = projects.repo_for_task(task, state)          # multi-project: fizyczne repo na dysku
     git_guard.assert_writable(repo)                      # STRICT READ-ONLY guard

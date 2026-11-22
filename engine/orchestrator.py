@@ -196,10 +196,10 @@ class Orchestrator:
                 telegram_reporter.post_milestone(f"🧪 *QG-3* `{ms['id']}`: ❌ {'; '.join(qg3['problems'][:2])}")
                 continue
             # merge milestone/* -> main
-            git_guard.run_git(["checkout", "main"], cwd=wt, check=False)
-            git_guard.run_git(["pull", "--ff-only", "origin", "main"], cwd=wt, check=False)
+            git_guard.run_git(["checkout", git_guard.default_branch(repo)], cwd=wt, check=False)
+            git_guard.run_git(["pull", "--ff-only", "origin", git_guard.default_branch(repo)], cwd=wt, check=False)
             git_guard.merge_no_ff(wt, ms["branch"], f"Release {ms['id']}: {ms['goal'][:60]}")
-            git_guard.run_git(["push", "origin", "main"], cwd=wt, check=False)
+            git_guard.run_git(["push", "origin", git_guard.default_branch(repo)], cwd=wt, check=False)
             self.state.set_milestone_status(ms["id"], "CLOSED")
             self.state.export_snapshot(project_id=pid)
             git_guard.remove_worktree("_integration", ns=pid, repo=repo)
@@ -448,7 +448,7 @@ def doctor() -> int:
           remotes.splitlines()[0] if remotes else "BRAK remote — push będzie no-op, rebase idzie po lokalnej gałęzi milestonu",
           warn=True)
     head = git_guard.run_git(["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout.strip()
-    check("HEAD na main/master", head in ("main", "master"), head)
+    check("HEAD na domyślnej gałęzi (master)", head == git_guard.default_branch(), head)
 
     # 2. Izolacja worktree: worktree ZADAŃ muszą być poza katalogiem głównym
     #    (główne repo samo w sobie też się listuje — to OK, tam nikt nie pracuje równolegle)

@@ -2,7 +2,7 @@
 Boty LLM NIGDY nie wywołują git. Robi to wyłącznie deterministyczny silnik (engine/git_guard.py).
 
 ## Gałęzie
-- `main` — tylko pełne, zintegrowane kamienie milowe (merge `milestone/*` po QG-3).
+- `master` — tylko pełne, zintegrowane kamienie milowe (merge `milestone/*` po QG-3).
 - `milestone/<ID>` — gałąź integracyjna kamienia milowego (zmiana #3).
 - `feature/<task-id>` — gałąź zadania, tworzona w osobnym `git worktree` (zmiana #1).
 
@@ -21,4 +21,4 @@ Boty LLM NIGDY nie wywołują git. Robi to wyłącznie deterministyczny silnik (
 
 ## Merge
 - Zawsze rebase na aktualną bazę przed mergem; konflikt = mikro-bot + kontrakty.
-- Merge tylko `--no-ff`, tylko do gałęzi milestonu; do `main` wyłącznie `milestone/*` po QG-3.
+- Merge tylko `--no-ff`, tylko do gałęzi milestonu; do `master` wyłącznie `milestone/*` po QG-3.

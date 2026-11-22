@@ -34,6 +34,12 @@ class MergeConflict(GitError):
     pass
 
 
+def default_branch(repo: Path | str = ROOT) -> str:
+    """Aktualna domyślna gałąź repo (u nas: master)."""
+    out = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=False).stdout.strip()
+    return out or "master"
+
+
 def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True) -> subprocess.CompletedProcess:
     proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if check and proc.returncode != 0:
