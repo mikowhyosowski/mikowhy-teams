@@ -191,8 +191,11 @@ class VibeCliGateway(LLMGateway):
             if approval:
                 cmd += ["--approval-policy", approval]
             # jawne env: pełne os.environ (po _load_dotenv) — klucze API, PATH z ~/.local/bin
+            # VIBE_ENABLED_TOOLS usuwamy z env subprocessu (vibe ostrzega o nieparsowalnym formacie);
+            # narzędzia włączamy wyłącznie flagą --enabled-tools powyżej
+            clean_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_ENABLED_TOOLS")}
             return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                                  timeout=self.timeout + 60, env=os.environ.copy())
+                                  timeout=self.timeout + 60, env=clean_env)
 
     def complete(self, *, system: str, user: str, step: str, model: str) -> str:
         alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
