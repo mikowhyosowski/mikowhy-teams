@@ -49,9 +49,9 @@ def route_role(question: str, history: list[dict]) -> tuple[str, str]:
     try:
         gw = get_gateway()
         out = gw.complete_json(
-            system=("Wybierz rolę najlepiej odpowiadającą pytaniu Sponsora. "
-                    "Odpowiedz WYŁĄCZNIE JSON: {\"role\": \"<jedna z listy>\"}. "
-                    "Dostępne role: " + ", ".join(roles)),
+            system=('Z treści polecenia Sponsora wyciągnij specyfikację zadania dla fabryki. '
+                    'Odpowiedz WYŁĄCZNIE JSON: {"title": "...", "acceptance_criteria": "...", "scope_hint": "..."}. '
+                    'Tytuł po polsku, max 90 znaków.'),
             user=json.dumps({"pytanie": question, "ostatnia_historia": history[-4:]},
                             ensure_ascii=False),
             step="ROUTE", model="fast-model")
@@ -63,9 +63,101 @@ def route_role(question: str, history: list[dict]) -> tuple[str, str]:
     return "systems-auditor", "fallback"
 
 
+ACTION_CREATE_TASK = ["stwórz zadanie", "stworz zadanie", "dodaj zadanie", "dodaj task",
+                      "create task", "zróbcie zadanie", "zrobcie zadanie", "rozpisz zadanie",
+                      "napraw to jako zadanie", "stwórz task"]
+ACTION_ADD_RULE = ["dodaj do globalnej reguły", "dodaj globalną regułę", "dodaj globalna regule",
+                   "dodaj regułę", "dodaj regule", "zapamiętaj od teraz", "pamiętaj od teraz",
+                   "add global rule", "globalna zasada"]
+
+
+def build_state_summary(state: State) -> str:
+    """Kompaktowy snapshot fabryki — doklejany do każdego promptu team chatu,
+    żeby pytania typu 'jaki jest stan projektu' miały odpowiedź z żywych danych."""
+    from engine import projects as _projects
+    lines = [f"Aktywny projekt: {_projects.active_project_id()}"]
+    tasks = state.list_tasks()
+    by_status: dict[str, list[str]] = {}
+    for t in tasks:
+        by_status.setdefault(t["status"], []).append(t["id"])
+    for st, ids in sorted(by_status.items()):
+        lines.append(f"  {st}: {len(ids)} — {', '.join(ids[:8])}{'…' if len(ids) > 8 else ''}")
+    for ms in state.list_milestones():
+        lines.append(f"  mileston {ms['id']} [{ms['status']}] ({ms.get('project_id')}): {str(ms.get('goal'))[:70]}")
+    comments = state.recent_comments(3)
+    if comments:
+        lines.append("  ostatnie komentarze: " + " | ".join(f"{c['author']}: {c['text'][:60]}" for c in comments))
+    return "\n".join(lines)
+
+
+def _extract_after(text: str, keywords: list[str]) -> str:
+    low = text.lower()
+    for k in keywords:
+        i = low.find(k)
+        if i >= 0:
+            return text[i + len(k):].strip(" :-–—")
+    # fallback dla luźnych wzorców: wytnij od rzeczownika (reguła/zadanie)
+    for k in ("reguły", "regule", "zasad", "zadanie", "zadania", "task"):
+        i = low.find(k)
+        if i >= 0:
+            return text[i + len(k):].strip(" :-–—") or text
+    return text
+
+
 def main() -> int:
     chat_id, text = sys.argv[1], sys.argv[2]
     state = State()
+    low = text.lower()
+
+    # --- akcja: dodaj globalną regułę (sponsor-notes.md — wstrzykiwane do KAŻDEGO promptu) ---
+    is_add_rule = (any(k in low for k in ("reguł", "regule", "zasad", "rule", "pamiętaj", "zapamiętaj"))
+                   and any(k in low for k in ("dodaj", "add")))
+    if is_add_rule or any(k in low for k in ACTION_ADD_RULE):
+        rule = _extract_after(text, ACTION_ADD_RULE)
+        # wytnij od "żeby..." jeśli jest — reszta to treść reguły
+        i = rule.lower().find("żeby")
+        if i >= 0:
+            rule = rule[i + len("żeby"):].strip(" :-–—")
+        rule = rule.strip(" :-–—.") or text
+        from engine.orchestrator import cmd_note
+        cmd_note("ALL", rule)
+        telegram_gate._call("sendMessage", {"chat_id": chat_id,
+            "text": f"📌 Dodałem do GLOBALNYCH reguł (sponsor-notes.md, leci do każdego promptu botów):\n{rule}".replace("*", "")})
+        state.record_metric("team_chat_rule", {"rule": rule[:200]}, None)
+        return 0
+
+    # --- akcja: stwórz zadanie w fabryce ---
+    is_create_task = (any(k in low for k in ("zadanie", "zadania", "task"))
+                      and any(k in low for k in ("stwórz", "stworz", "dodaj", "zrób", "zrob", "rozpisz", "create", "napraw")))
+    if is_create_task or any(k in low for k in ACTION_CREATE_TASK):
+        from engine import projects as _projects
+        role, how = route_role(text, [])
+        gw = get_gateway()
+        spec = gw.complete_json(
+            system="Z tresci polecenia Sponsora wyciagnij specyfikacje zadania. "
+                    "Odpowiedz WYLACZNIE JSON: {title, acceptance_criteria, scope_hint}. "
+                    "Tytul po polsku, max 90 znakow.",
+            user=text, step="TASK_SPEC", model="fast-model")
+        title = str(spec.get("title") or text)[:90]
+        acc = spec.get("acceptance_criteria")
+        if not isinstance(acc, str):
+            acc = json.dumps(acc, ensure_ascii=False) if acc else "Zadanie wykonane, przeszło lokalny QG i Code Review"
+        acc = acc[:500]
+        n = state.get_kv("chat_task_seq", 0) + 1
+        state.set_kv("chat_task_seq", n)
+        tid = f"CHAT-{n:04d}"
+        pid = _projects.active_project_id()
+        state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
+                            "milestone/chat-ops", project_id=pid)
+        state.add_task(tid, milestone="CHAT-OPS", phase=4, title=title, role=role,
+                       scope_paths=[], depends_on=[], acceptance_criteria=acc,
+                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False)
+        telegram_gate._call("sendMessage", {"chat_id": chat_id,
+            "text": (f"✅ Stworzyłem zadanie {tid} (rola: {role}, projekt: {pid}, status: AWAITING_APPROVAL; "
+                     f"zgodnie z polityką projektu zadanie albo samo pójdzie dalej, albo poczeka na Twój klik). "
+                     f"Tytuł: {title}\nŚledź: `list` / dashboard :8765").replace("*", "")})
+        state.record_metric("team_chat_task", {"task": tid, "role": role}, tid)
+        return 0
     key = f"menu:{chat_id}:thread"
     thread = state.get_kv(key, {"role": None, "history": []}) or {"role": None, "history": []}
     history: list[dict] = thread.get("history", [])
@@ -80,6 +172,9 @@ def main() -> int:
             "acceptance_criteria": "", "retry_count": 0, "review_notes": "",
             "project_id": "mikowhy-teams", "repo": "factory", "read_only": True}
     system = skill_compiler.compile_system_prompt(role, stack=None, task=task)
+    system += "\n\n# Aktualny stan fabryki (live, z state.db):\n" + build_state_summary(state)
+    system += ("\n\n# Styl odpowiedzi: odpowiadaj PO POLSKU, zwięźle, prozą (kilka zdań/bulletów), "
+               "chyba że Sponsor wprost poprosi o JSON/kod.")
     if history:
         system += ("\n\n# Poprzednia rozmowa w tym wątku (kontekst — odpowiadaj spójnie, "
                    "możesz odnieść się do wcześniejszych odpowiedzi):\n"

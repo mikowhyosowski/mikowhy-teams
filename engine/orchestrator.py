@@ -452,6 +452,99 @@ def cmd_approve(task_id: str) -> None:
     print(f"✅ {task_id} -> READY")
 
 
+def cmd_scan() -> int:
+    """Pre-push review: (1) czy w śledzonych plikach nie ma sekretów/kluczy,
+    (2) czy .gitignore przykrywa .env/db/logs/worktrees, (3) czy prawdziwe wartości
+    z .env nie przeciekły do historii git, (4) czy są tylko zamierzone pliki."""
+    import re as _re
+    problems: list[str] = []
+    warns: list[str] = []
+
+    tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.splitlines()
+
+    # 1) zakazane ścieżki wśród śledzonych
+    bad_paths = [f for f in tracked if _re.search(
+        r"(^|/)\.env$|\.pem$|id_rsa|\.key$|credentials|\.p12$|state\.db|\.lock$|/logs/|/worktrees/|/runtime/|__pycache__|\.pyc$", f)]
+    if bad_paths:
+        problems.append(f"śledzone pliki wrażliwe/artefakty: {bad_paths[:10]}")
+
+    # 2) wzorce sekretów w treści śledzonych plików
+    secret_patterns = [
+        ("PRIVATE KEY block", _re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+        ("AWS key", _re.compile(r"AKIA[0-9A-Z]{16}")),
+        ("GitHub PAT", _re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}")),
+        ("OpenAI-style sk-", _re.compile(r"sk-[A-Za-z0-9]{20,}")),
+        ("Telegram token", _re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{30,}\b")),
+        ("generic secret assignment", _re.compile(
+            r"(?i)(api[_-]?key|secret|token|passwd|password)\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{16,}\b")),
+    ]
+    placeholder = _re.compile(r"(?i)(example|placeholder|your[-_]|xxx|<|changeme|dummy|test[-_]?only|\$\{|os\.environ|getenv)")
+    hits = []
+    for f in tracked:
+        if f == ".env.example" or f.endswith(".md"):
+            pass  # .md może cytować nazwy zmiennych; .env.example ma puste wartości — sprawdzamy dalej osobno
+        try:
+            content = (ROOT / f).read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for line_no, line in enumerate(content.splitlines(), 1):
+            if placeholder.search(line):
+                continue
+            for name, rx in secret_patterns:
+                if rx.search(line):
+                    hits.append(f"{f}:{line_no} [{name}] {line.strip()[:80]}")
+    if hits:
+        problems.append("podejrzane sekrety w śledzonych plikach:\n  " + "\n  ".join(hits[:15]))
+
+    # 3) czy PRAWDZIWE wartości z .env są w historii git
+    env_vals = []
+    env_path = ROOT / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                v = v.strip().strip('"').strip("'").split(" #")[0].strip()
+                if len(v) >= 20 and not v.startswith(("<", "your")):
+                    env_vals.append((k, v))
+    for key, val in env_vals:
+        r = subprocess.run(["git", "grep", "-l", "-F", val, "--all"], cwd=ROOT,
+                           capture_output=True, text=True)
+        # git grep --all? użyj rev-list:
+        revs = subprocess.run(["git", "rev-list", "--all"], cwd=ROOT, capture_output=True, text=True).stdout.split()
+        found = []
+        for rev in revs:
+            g = subprocess.run(["git", "grep", "-l", "-F", val, rev], cwd=ROOT, capture_output=True, text=True)
+            if g.returncode == 0 and g.stdout.strip():
+                found.append(rev[:8])
+                break
+        if found:
+            problems.append(f"Wartość {key} znaleziona w historii git (commit {found[0]}) — ROTUJ SEKRET!")
+
+    # 4) .gitignore coverage
+    gi = (ROOT / ".gitignore").read_text() if (ROOT / ".gitignore").exists() else ""
+    for needle in (".env", "state.db", "logs/", "worktrees/", "runtime/", "*.lock"):
+        if needle not in gi:
+            problems.append(f".gitignore nie przykrywa: {needle}")
+
+    # 5) remote
+    rem = subprocess.run(["git", "remote", "-v"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    if not rem:
+        warns.append("brak skonfigurowanego remote (git remote add origin https://github.com/mikowhyosowski/mikowhy-teams.git)")
+
+    print("== SCAN PRE-PUSH ==")
+    print(f"śledzonych plików: {len(tracked)}")
+    for w in warns:
+        print(f"⚠️  {w}")
+    if problems:
+        for pr in problems:
+            print(f"❌ {pr}")
+        print(f"\nWYNIK: FAIL ({len(problems)} problemów)")
+        return 1
+    print("✅ WYNIK: OK — brak sekretów w plikach i historii, .gitignore kompletny, brak artefaktów")
+    return 0
+
+
 def cmd_retry(task_id: str) -> None:
     """Requeue: FAILED/BLOCKED/ESCALATED -> READY (nowa próba od zera)."""
     state = State()
@@ -649,6 +742,7 @@ def main() -> None:
     ap6 = sub.add_parser("retry", help="requeue: FAILED/BLOCKED/ESCALATED -> READY")
     ap6.add_argument("task_id")
     db = sub.add_parser("dashboard", help="live UI zadań w przeglądarce (read-only), http://127.0.0.1:8765")
+    sub.add_parser("scan", help="pre-push review: sekrety/klucze w plikach i historii git + higiena .gitignore")
     db.add_argument("--port", type=int, default=8765)
     db.add_argument("--host", default="127.0.0.1")
     ap5.add_argument("target")
@@ -718,6 +812,8 @@ def main() -> None:
         cmd_decline(args.task_id, args.reason)
     elif args.cmd == "retry":
         cmd_retry(args.task_id)
+    elif args.cmd == "scan":
+        raise SystemExit(cmd_scan())
     elif args.cmd == "dashboard":
         from engine import dashboard
         sys.argv = ["dashboard", "--port", str(args.port), "--host", args.host]
