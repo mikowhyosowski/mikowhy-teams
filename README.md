@@ -17,6 +17,19 @@ python -m engine.orchestrator telegram-poll          # long-poll przycisków 7b
 python -m engine.orchestrator export                 # snapshot pipeline.json
 ```
 
+## Provider LLM (Vibe CLI)
+Domyślnie silnik używa lokalnego **Mistral Vibe CLI** w trybie headless (`engine/llm_gateway.py::VibeCliGateway`):
+`vibe --trust --max-turns 1 --enabled-tools __none__ --system-prompt-file … --prompt-file …`
+— bot nie ma żadnych narzędzi, odpowiada wyłącznie tekstem (JSON), a całą resztą zajmuje się silnik.
+
+| Rola | Model | Zmienna środowiskowa |
+|------|-------|---------------------|
+| fast (testy, boilerplate, plan) | `zai-glm-5-3-flash` (fast SWE) | `VIBE_FAST_MODEL` |
+| strong (architektura, CR, debugger) | `mistral-large-4-0` | `VIBE_STRONG_MODEL` |
+
+Inny provider: `LLM_PROVIDER=stub python -m engine.orchestrator run` lub `register_gateway("nazwa", klasa)`.
+Test bramki: `python -c "from engine.llm_gateway import get_gateway; print(get_gateway().complete_json(system='Odpowiadaj tylko JSON', user='{\"ok\": true}', step='SMOKE', model='fast-model'))"`
+
 ## Struktura
 ```
 repo-root/
