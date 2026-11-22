@@ -1,0 +1,110 @@
+{
+  "schema": "dark-factory/pipeline-snapshot@2",
+  "project_id": "news-video-generator",
+  "target_repo_path": "/home/miko/Projekty/M+/news-video-generator",
+  "read_only": true,
+  "generated_at": 1795358796.5558805,
+  "note": "Snapshot wygenerowany z .agents/state.db (SQLite WAL). Stan operacyjny żyje w state.db; ten plik to artefakt czytelny per projekt.",
+  "milestones": [
+    {
+      "id": "NVG-AUDIT",
+      "title": "Przejecie warstwy samouczenia, VLM visual QA i autonomicznej korekty kodu z news",
+      "goal": "Przejecie warstwy samouczenia, VLM visual QA i autonomicznej korekty kodu z news-video-generator do mikowhy-teams (audyt + plan migracji, read-only na target)",
+      "branch": "milestone/news-video-generator-audit",
+      "status": "OPEN",
+      "created_at": 1795358789.6516716,
+      "merged_at": null,
+      "project_id": "news-video-generator"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "NVG-001",
+      "milestone": "NVG-AUDIT",
+      "phase": 1,
+      "title": "DISCOVERY (read-only): audyt /home/miko/Projekty/M+/news-video-generator — struktura, przepływ news->JSON->TTS/PJM->Remotion->FFmpeg->Telegram, mechanizmy samouczenia (run_visual_loop.sh, visual_qa.py, section_contract.py, GRAVEYARD.md, visual_history)",
+      "role": "systems-auditor",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/projects/news-video-generator/AUDIT_REPORT.md"
+      ],
+      "depends_on": [],
+      "acceptance_criteria": "Raport kompletny; ZERO zapisów w target repo (read-only); wszystko zapisane w mikowhy-teams",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795358796.5400965,
+      "updated_at": 1795358796.5400965,
+      "telegram_thread_id": null,
+      "telegram_summary_msg_id": null,
+      "project_id": "news-video-generator",
+      "repo": "factory"
+    },
+    {
+      "id": "NVG-002",
+      "milestone": "NVG-AUDIT",
+      "phase": 2,
+      "title": "ARCHITECTURE: jak przejąć warstwę samouczenia/VLM visual QA/autokorekty z news-video-generator do mikowhy-teams (skille + kontrakty + zadania)",
+      "role": "solutions-architect",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/projects/news-video-generator/MIGRATION_ADR.md"
+      ],
+      "depends_on": [
+        "NVG-001"
+      ],
+      "acceptance_criteria": "ADR z decyzją per komponent (co odpiąć, co zostawić, co przenieść); QG-2; bez zapisu w target repo",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795358796.5463011,
+      "updated_at": 1795358796.5463011,
+      "telegram_thread_id": null,
+      "telegram_summary_msg_id": null,
+      "project_id": "news-video-generator",
+      "repo": "factory"
+    },
+    {
+      "id": "NVG-003",
+      "milestone": "NVG-AUDIT",
+      "phase": 3,
+      "title": "DECOMPOSITION: atomowe zadania migracyjne NVG-010+ ze scope_paths i acceptance_criteria, wszystkie status=AWAITING_APPROVAL",
+      "role": "tech-lead-planner",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/projects/news-video-generator/MIGRATION_TASKS.md"
+      ],
+      "depends_on": [
+        "NVG-002"
+      ],
+      "acceptance_criteria": "Każde NVG-01x ma scope_paths, acceptance_criteria, status AWAITING_APPROVAL (orchestrator ich nie ruszy przed ręczną akceptacją)",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795358796.5492647,
+      "updated_at": 1795358796.5492647,
+      "telegram_thread_id": null,
+      "telegram_summary_msg_id": null,
+      "project_id": "news-video-generator",
+      "repo": "factory"
+    }
+  ]
+}

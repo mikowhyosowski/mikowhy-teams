@@ -41,39 +41,51 @@ def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True) -> subp
     return proc
 
 
+def assert_writable(repo: Path | str) -> None:
+    """STRICT READ-ONLY dla target repo projektów (np. news-video-generator w fazie audytu)."""
+    from engine import projects
+    projects.assert_writable(repo)
+
+
 # --- Worktree isolation (zmiana #1) ------------------------------------------
-def worktree_path(task_id: str) -> Path:
-    return WORKTREES_ROOT / task_id
+def worktree_path(task_id: str, ns: str = "") -> Path:
+    """Worktree per zadanie; ns = project_id (multi-project), żeby projekty się nie mieszały."""
+    return WORKTREES_ROOT / ns / task_id if ns else WORKTREES_ROOT / task_id
 
 
-def create_worktree(task_id: str, base_branch: str, branch: str) -> Path:
-    """Tworzy izolowany katalog roboczy z własną gałęzią opartą o base_branch."""
+def create_worktree(task_id: str, base_branch: str, branch: str,
+                    repo: Path | str = ROOT, ns: str = "") -> Path:
+    """Tworzy izolowany katalog roboczy z własną gałęzią opartą o base_branch.
+    repo = fizyczne repo projektu (target_repo_path) albo katalog silnika (repo='factory')."""
+    assert_writable(repo)  # STRICT READ-ONLY guard
     WORKTREES_ROOT.mkdir(parents=True, exist_ok=True)
-    path = worktree_path(task_id)
+    path = worktree_path(task_id, ns)
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        run_git(["worktree", "remove", "--force", str(path)], check=False)
-    exists = run_git(["rev-parse", "--verify", "--quiet", branch], check=False).returncode == 0
+        run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
+    exists = run_git(["rev-parse", "--verify", "--quiet", branch], cwd=repo, check=False).returncode == 0
     if exists:
-        run_git(["worktree", "add", str(path), branch])
+        run_git(["worktree", "add", str(path), branch], cwd=repo)
     else:
-        run_git(["worktree", "add", "-b", branch, str(path), base_branch])
+        run_git(["worktree", "add", "-b", branch, str(path), base_branch], cwd=repo)
     return path
 
 
-def integration_worktree(milestone_branch: str) -> Path:
+def integration_worktree(milestone_branch: str, repo: Path | str = ROOT, ns: str = "_integration") -> Path:
     """Wspólny worktree integracyjny dla gałęzi milestonu (QG-3, merge do main)."""
+    assert_writable(repo)
     WORKTREES_ROOT.mkdir(parents=True, exist_ok=True)
-    path = WORKTREES_ROOT / "_integration"
+    path = WORKTREES_ROOT / ns
     if path.exists():
-        run_git(["worktree", "remove", "--force", str(path)], check=False)
-    run_git(["worktree", "add", str(path), milestone_branch])
+        run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
+    run_git(["worktree", "add", str(path), milestone_branch], cwd=repo)
     return path
 
 
-def remove_worktree(task_id: str) -> None:
-    path = worktree_path(task_id)
+def remove_worktree(task_id: str, ns: str = "", repo: Path | str = ROOT) -> None:
+    path = worktree_path(task_id, ns)
     if path.exists():
-        run_git(["worktree", "remove", "--force", str(path)], check=False)
+        run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
 
 
 def list_worktrees() -> list[str]:
@@ -131,16 +143,19 @@ def assert_diff_limit(worktree: Path, base: str, limit: int = MAX_DIFF_LINES) ->
 
 # --- commit / push / rebase / merge -------------------------------------------
 def commit_all(worktree: Path, message: str) -> None:
+    assert_writable(worktree)
     run_git(["add", "-A"], cwd=worktree)
     run_git(["commit", "-m", message], cwd=worktree)
 
 
 def push(branch: str, worktree: Path, remote: str = "origin") -> None:
+    assert_writable(worktree)
     run_git(["push", "-u", remote, branch], cwd=worktree, check=False)
 
 
 def rebase_onto(worktree: Path, base: str) -> None:
     """Rebase gałęzi zadania na aktualną bazę; konflikt = wyjątek dla mikro-bota."""
+    assert_writable(worktree)
     proc = run_git(["rebase", base], cwd=worktree, check=False)
     if proc.returncode != 0:
         conflicted = run_git(["diff", "--name-only", "--diff-filter=U"], cwd=worktree, check=False).stdout.split()
@@ -149,4 +164,5 @@ def rebase_onto(worktree: Path, base: str) -> None:
 
 
 def merge_no_ff(worktree: Path, branch: str, message: str) -> None:
+    assert_writable(worktree)
     run_git(["merge", "--no-ff", branch, "-m", message], cwd=worktree)

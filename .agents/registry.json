@@ -112,6 +112,17 @@
       },
       "status": "ACTIVE",
       "success_rate": 0.0
+    },
+    "systems-auditor": {
+      "persona": "skeptic",
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model",
+        "creative": "strong-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 0.0
     }
   },
   "skills": {

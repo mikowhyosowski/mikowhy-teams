@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, quality_gates, skill_compiler, telegram_reporter
+from engine import git_guard, projects, quality_gates, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
 from engine.state import (
     FAILED,
@@ -37,13 +37,17 @@ def _log(task_id: str, msg: str) -> None:
 
 
 def step0_prepare(state: State, task: dict) -> Path:
-    """Krok 0 (Python): izolowany worktree + gałąź feature/<task>."""
+    """Krok 0 (Python): izolowany worktree + gałąź feature/<task>.
+    Repo worktree = target_repo_path projektu (lub katalog silnika gdy task['repo']=='factory')."""
     milestone = state.get_milestone(task["milestone"])
     base = milestone["branch"] if milestone else "main"
     branch = task["branch"] or f"feature/{task['id'].lower()}"
-    worktree = git_guard.create_worktree(task["id"], base, branch)
+    repo = projects.repo_for_task(task, state)          # multi-project: fizyczne repo na dysku
+    git_guard.assert_writable(repo)                      # STRICT READ-ONLY guard
+    ns = task.get("project_id") or "mikowhy-teams"
+    worktree = git_guard.create_worktree(task["id"], base, branch, repo=repo, ns=ns)
     state.transition(task["id"], "RUNNING", substep="1/5_PLAN", branch=branch, worktree=str(worktree))
-    _log(task["id"], f"worktree={worktree} base={base} branch={branch}")
+    _log(task["id"], f"worktree={worktree} repo={repo} base={base} branch={branch}")
     return worktree
 
 
@@ -275,7 +279,8 @@ def run(task_id: str) -> int:
         return 2
     finally:
         if worktree is not None:
-            git_guard.remove_worktree(task_id)
+            repo = projects.repo_for_task(task, state)
+            git_guard.remove_worktree(task_id, ns=task.get("project_id") or "mikowhy-teams", repo=repo)
 
 
 def main() -> None:

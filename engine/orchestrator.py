@@ -33,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, lessons_gardener, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_reporter
+from engine import git_guard, lessons_gardener, projects, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_reporter
 from engine.state import (
     BLOCKED,
     ESCALATED,
@@ -150,9 +150,11 @@ class Orchestrator:
             if not milestone:
                 continue
             base = milestone["branch"]
+            repo = projects.repo_for_task(task, self.state)  # multi-project: fizyczne repo projektu
+            ns = task.get("project_id") or "mikowhy-teams"
             try:
-                git_guard.run_git(["fetch", "origin"], cwd=ROOT, check=False)
-                wt = git_guard.integration_worktree(base)
+                git_guard.run_git(["fetch", "origin"], cwd=repo, check=False)
+                wt = git_guard.integration_worktree(base, repo=repo, ns=f"{ns}/_integration".strip("/"))
                 git_guard.rebase_onto(wt, task["branch"])  # konflikt -> mikro-bot
                 reg = quality_gates.regression(wt)
                 if not reg.get("ok"):
@@ -169,8 +171,8 @@ class Orchestrator:
                     telegram_reporter.close_topic(
                         self.state, merged,
                         summary=f"Zmergowane do `{base}` ({diff_stat or '—'}). Rola: {merged['role']}, retry: {merged['retry_count']}")
-                git_guard.remove_worktree("_integration")
-                self.state.export_snapshot()  # snapshot po każdym mergu
+                git_guard.remove_worktree("_integration", ns=ns, repo=repo)
+                self.state.export_snapshot(project_id=ns)  # snapshot po każdym mergu
                 lessons_gardener.garden(self.state)  # zmiana #2: co 10 mergy
                 skill_curator.prune_if_needed(self.state)  # Skill Fitness: auto-prune + promocja lekcji
             except git_guard.MergeConflict as exc:
@@ -182,7 +184,9 @@ class Orchestrator:
         for ms in self.state.list_milestones():
             if ms["status"] != "OPEN" or not self.state.milestone_complete(ms["id"]):
                 continue
-            wt = git_guard.integration_worktree(ms["branch"])
+            pid = ms.get("project_id") or "mikowhy-teams"
+            repo = Path(projects.project_config(pid)["target_repo_path"]) if pid != "mikowhy-teams" else ROOT
+            wt = git_guard.integration_worktree(ms["branch"], repo=repo, ns=f"{pid}/_integration".strip("/"))
             qg3 = quality_gates.qg3_integration_e2e(ms["branch"], wt)  # zmiana #3
             if not qg3["ok"]:
                 self.state.set_milestone_status(ms["id"], "OPEN")
@@ -196,8 +200,8 @@ class Orchestrator:
             git_guard.merge_no_ff(wt, ms["branch"], f"Release {ms['id']}: {ms['goal'][:60]}")
             git_guard.run_git(["push", "origin", "main"], cwd=wt, check=False)
             self.state.set_milestone_status(ms["id"], "CLOSED")
-            self.state.export_snapshot()
-            git_guard.remove_worktree("_integration")
+            self.state.export_snapshot(project_id=pid)
+            git_guard.remove_worktree("_integration", ns=pid, repo=repo)
             telegram_reporter.post_milestone(f"🎉 *{ms['id']}* przeszedł QG-3 E2E i został zmergowany do main: {ms['goal'][:80]}")
             self._phase7(ms)
 
@@ -286,6 +290,50 @@ class Orchestrator:
             time.sleep(self.poll)
 
 
+def audit_project(project_id: str, target_repo_path: str, goal: str) -> None:
+    """Rejestruje projekt jako STRICT READ-ONLY i tworzy DAG audytu NVG-001..003.
+
+    Zadania audytu mają repo='factory' — worktree i wszystkie zapisy idą do katalogu
+    silnika (mikowhy-teams/docs/projects/<pid>/), target repo jest tylko czytany.
+    Zadania migracyjne generowane przez NVG-003 mają status AWAITING_APPROVAL.
+    """
+    projects.register_project(project_id, project_id, target_repo_path, read_only=True)
+    projects.set_active_project(project_id)
+    state = State()
+    branch = f"milestone/{project_id.lower()}-audit"
+    state.add_milestone("NVG-AUDIT", goal, branch, title=goal[:80], project_id=project_id)
+    git_guard.run_git(["branch", branch, "main"], check=False)  # gałąź audytu w repo FABRYKI
+    docs_dir = f"docs/projects/{project_id}"
+    chain = [
+        ("NVG-001", 1, "systems-auditor",
+         f"DISCOVERY (read-only): audyt {target_repo_path} — struktura, przepływ news->JSON->TTS/PJM->Remotion->FFmpeg->Telegram, mechanizmy samouczenia (run_visual_loop.sh, visual_qa.py, section_contract.py, GRAVEYARD.md, visual_history)",
+         f"{docs_dir}/AUDIT_REPORT.md",
+         "Raport kompletny; ZERO zapisów w target repo (read-only); wszystko zapisane w mikowhy-teams"),
+        ("NVG-002", 2, "solutions-architect",
+         "ARCHITECTURE: jak przejąć warstwę samouczenia/VLM visual QA/autokorekty z news-video-generator do mikowhy-teams (skille + kontrakty + zadania)",
+         f"{docs_dir}/MIGRATION_ADR.md",
+         "ADR z decyzją per komponent (co odpiąć, co zostawić, co przenieść); QG-2; bez zapisu w target repo"),
+        ("NVG-003", 3, "tech-lead-planner",
+         "DECOMPOSITION: atomowe zadania migracyjne NVG-010+ ze scope_paths i acceptance_criteria, wszystkie status=AWAITING_APPROVAL",
+         f"{docs_dir}/MIGRATION_TASKS.md",
+         "Każde NVG-01x ma scope_paths, acceptance_criteria, status AWAITING_APPROVAL (orchestrator ich nie ruszy przed ręczną akceptacją)"),
+    ]
+    deps: list[str] = []
+    for tid, phase, role, title, scope, acc in chain:
+        state.add_task(tid, milestone="NVG-AUDIT", phase=phase, title=title, role=role,
+                       scope_paths=[scope], depends_on=deps, acceptance_criteria=acc,
+                       project_id=project_id, repo="factory", status=READY)
+        deps = [tid]
+    snap = state.export_snapshot(project_id=project_id)
+    print(f"Projekt {project_id} zarejestrowany (read_only=True, target={target_repo_path})")
+    print(f"Aktywny projekt: {projects.active_project_id()}")
+    print(f"DAG audytu zapisany do {snap}")
+    for t in state.list_tasks():
+        if t.get("project_id") == project_id:
+            print(f"  {t['id']} [{t['status']}] faza={t['phase']} rola={t['role']} repo={t.get('repo')} zależy={t['depends_on']}")
+            print(f"    scope: {t['scope_paths']}")
+
+
 def doctor() -> int:
     """Pre-flight check przed pierwszym przebiegiem produkcyjnym.
     Zwraca 0 gdy wszystkie twarde checki przechodzą (WARN nie blokuje)."""
@@ -364,6 +412,22 @@ def doctor() -> int:
           "skonfigurowane — 1 zadanie = 1 temat, żywa karta, bramka 7b" if tel_ok else
           "brak TELEGRAM_CHAT_ID w .env — ustaw ID supergrupy z Topics (-100...); reporter działa jako no-op", warn=True)
 
+    # 10. Multi-project workspace
+    ap = projects.active_project_id()
+    check("aktywny projekt", True, ap)
+    for p in projects.list_projects():
+        if p["project_id"] == "mikowhy-teams":
+            continue
+        tp = Path(p["target_repo_path"])
+        check(f"projekt `{p['project_id']}`: target_repo_path istnieje", tp.is_dir(), str(tp))
+        ro = projects.is_read_only(tp)
+        check(f"projekt `{p['project_id']}` read_only={p.get('read_only')}", True,
+              "STRICT READ-ONLY — git_guard.assert_writable blokuje zapisy/branchy/checkout w target" if ro
+              else "zapis dozwolony")
+    awaiting = [t["id"] for t in state.list_tasks() if t["status"] == "AWAITING_APPROVAL"]
+    check("AWAITING_APPROVAL nie startuje sam", True,
+          f"zablokowanych zadań: {len(awaiting)} {awaiting[:5]} — orchestrator uruchamia tylko READY")
+
     width = max(len(c[0]) for c in checks)
     failed = 0
     for name, status, detail in checks:
@@ -386,6 +450,16 @@ def main() -> None:
     r.add_argument("--once", action="store_true", help="dry-run: 2 cykle ticków, poczekaj na procesy, wyjdź")
     sub.add_parser("export", help="Eksport snapshotu pipeline.json")
     sub.add_parser("doctor", help="pre-flight check przed produkcją")
+    pa = sub.add_parser("project", help="multi-project workspace")
+    pa.add_argument("action", choices=["list", "add", "use"])
+    pa.add_argument("project_id", nargs="?", default=None)
+    pa.add_argument("path", nargs="?", default=None)
+    pa.add_argument("--read-only", action="store_true")
+    pa.add_argument("--name", default=None)
+    ap2 = sub.add_parser("audit-project", help="zarejestruj projekt read-only + DAG audytu NVG-001..003")
+    ap2.add_argument("project_id")
+    ap2.add_argument("target_repo_path")
+    ap2.add_argument("goal")
     t = sub.add_parser("telegram-poll", help="Long-poll przycisków 7b (Deploy Prod / Rollback)")
     t.add_argument("--once", action="store_true")
     args = ap.parse_args()
@@ -398,6 +472,20 @@ def main() -> None:
         raise SystemExit(doctor())
     elif args.cmd == "export":
         print(State().export_snapshot())
+    elif args.cmd == "project":
+        if args.action == "list":
+            for p in projects.list_projects():
+                mark = "*" if p["project_id"] == projects.active_project_id() else " "
+                print(f"{mark} {p['project_id']:<28} target={p['target_repo_path']} read_only={p.get('read_only', False)}")
+        elif args.action == "add":
+            cfg = projects.register_project(args.project_id, args.name or args.project_id,
+                                            args.path, read_only=args.read_only)
+            print(f"zarejestrowano: {cfg}")
+        elif args.action == "use":
+            projects.set_active_project(args.project_id)
+            print(f"aktywny projekt: {args.project_id}")
+    elif args.cmd == "audit-project":
+        audit_project(args.project_id, args.target_repo_path, args.goal)
     elif args.cmd == "telegram-poll":
         state = State()
         offset = 0

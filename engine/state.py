@@ -27,6 +27,7 @@ MERGED = "MERGED"                  # zmergowane do gałęzi milestonu
 BLOCKED = "BLOCKED"
 FAILED = "FAILED"
 ESCALATED = "ESCALATED"            # człowiek (Product Sponsor) musi podjąć decyzję
+AWAITING_APPROVAL = "AWAITING_APPROVAL"  # zadania migracyjne czekają na ręczną akceptację Product Sponsora
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
     READY: {RUNNING, BLOCKED, ESCALATED},
@@ -35,8 +36,9 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     READY_TO_MERGE: {MERGED, READY, ESCALATED},
     MERGED: set(),
     FAILED: {READY},
-    BLOCKED: {READY, ESCALATED},
+    BLOCKED: {READY, ESCALATED, AWAITING_APPROVAL},
     ESCALATED: {READY},
+    AWAITING_APPROVAL: {READY, BLOCKED, ESCALATED},  # tylko człowiek (zmiana statusu na READY) odblokowuje
 }
 
 SCHEMA = """
@@ -113,11 +115,21 @@ class State:
         self._local = threading.local()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
-            # migracja: pola Telegram Forum Topics per zadanie
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
-            for col, decl in (("telegram_thread_id", "INTEGER"), ("telegram_summary_msg_id", "INTEGER")):
+            # migracje: pola Telegram + multi-project (project_id, repo)
+            for table, col, decl in (
+                ("tasks", "telegram_thread_id", "INTEGER"),
+                ("tasks", "telegram_summary_msg_id", "INTEGER"),
+                ("tasks", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
+                ("tasks", "repo", "TEXT"),  # 'factory' = katalog silnika, NULL = target_repo_path projektu
+                ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
+            ):
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
                 if col not in cols:
-                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            conn.execute("""CREATE TABLE IF NOT EXISTS projects (
+                project_id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                target_repo_path TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0,
+                config TEXT NOT NULL DEFAULT '{}')""")
 
     def set_telegram(self, task_id: str, thread_id: int | None, summary_msg_id: int | None) -> None:
         self._conn().execute(
@@ -136,11 +148,12 @@ class State:
         return conn
 
     # --- milestones ---------------------------------------------------------
-    def add_milestone(self, milestone_id: str, goal: str, branch: str, title: str = "") -> None:
+    def add_milestone(self, milestone_id: str, goal: str, branch: str, title: str = "",
+                      project_id: str = "mikowhy-teams") -> None:
         now = time.time()
         self._conn().execute(
-            "INSERT OR IGNORE INTO milestones(id,title,goal,branch,status,created_at) VALUES(?,?,?,?, 'OPEN', ?)",
-            (milestone_id, title or milestone_id, goal, branch, now),
+            "INSERT OR IGNORE INTO milestones(id,title,goal,branch,status,created_at,project_id) VALUES(?,?,?,?, 'OPEN', ?,?)",
+            (milestone_id, title or milestone_id, goal, branch, now, project_id),
         )
 
     def get_milestone(self, milestone_id: str) -> dict[str, Any] | None:
@@ -172,16 +185,19 @@ class State:
         acceptance_criteria: str = "",
         split_depth: int = 0,
         parent_task: str | None = None,
+        project_id: str = "mikowhy-teams",
+        status: str = READY,
+        repo: str | None = None,
     ) -> str:
         now = time.time()
         self._conn().execute(
             """INSERT INTO tasks(id,milestone,phase,title,role,status,parallel_group,scope_paths,
-               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at)
-               VALUES(?,?,?,?,?, 'READY', ?,?,?,?,?,?,?,?,?)""",
+               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo)
+               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                task_id, milestone, phase, title, role, parallel_group,
+                task_id, milestone, phase, title, role, status, parallel_group,
                 json.dumps(scope_paths or []), json.dumps(depends_on or []),
-                acceptance_criteria, 0, split_depth, parent_task, now, now,
+                acceptance_criteria, 0, split_depth, parent_task, now, now, project_id, repo,
             ),
         )
         return task_id
@@ -313,16 +329,23 @@ class State:
         return self._conn().execute("SELECT COUNT(*) c FROM tasks WHERE status='MERGED'").fetchone()["c"]
 
     # --- snapshot do repo ----------------------------------------------------
-    def export_snapshot(self, path: Path | str = SNAPSHOT_PATH) -> Path:
-        """Eksport czytelnego pipeline.json do repo (koniec milestonu / po mergu)."""
-        path = Path(path)
+    def export_snapshot(self, path: Path | str | None = None, project_id: str | None = None) -> Path:
+        """Eksport czytelnego pipeline.json (koniec milestonu / po mergu).
+        Domyślnie: snapshot AKTYWNEGO projektu do .agents/projects/<pid>/pipeline.json
+        (lub .agents/pipeline.json dla projektu self)."""
+        from engine import projects
+        pid = project_id or projects.active_project_id()
+        path = Path(path) if path else projects.snapshot_path_for(pid)
         path.parent.mkdir(parents=True, exist_ok=True)
         snapshot = {
-            "schema": "dark-factory/pipeline-snapshot@1",
+            "schema": "dark-factory/pipeline-snapshot@2",
+            "project_id": pid,
+            "target_repo_path": projects.project_config(pid)["target_repo_path"],
+            "read_only": projects.project_config(pid).get("read_only", False),
             "generated_at": time.time(),
-            "note": "Snapshot wygenerowany z .agents/state.db (SQLite WAL). Stan operacyjny żyje w state.db; ten plik to artefakt czytelny.",
-            "milestones": self.list_milestones(),
-            "tasks": self.list_tasks(),
+            "note": "Snapshot wygenerowany z .agents/state.db (SQLite WAL). Stan operacyjny żyje w state.db; ten plik to artefakt czytelny per projekt.",
+            "milestones": [m for m in self.list_milestones() if m.get("project_id", "mikowhy-teams") == pid],
+            "tasks": [t for t in self.list_tasks() if t.get("project_id", "mikowhy-teams") == pid],
         }
         path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return path

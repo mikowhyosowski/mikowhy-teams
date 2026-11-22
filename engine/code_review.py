@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, lessons_gardener, skill_compiler, telegram_reporter
+from engine import git_guard, lessons_gardener, projects, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
 from engine.state import IN_REVIEW, READY, READY_TO_MERGE, State
 
@@ -32,8 +32,9 @@ def review(task_id: str) -> int:
         return 1
     milestone = state.get_milestone(task["milestone"])
     base = milestone["branch"] if milestone else "main"
+    repo = projects.repo_for_task(task, state)  # diff względem fizycznego repo projektu
 
-    diff = git_guard.run_git(["diff", f"{base}...{task['branch']}"], cwd=ROOT, check=False).stdout
+    diff = git_guard.run_git(["diff", f"{base}...{task['branch']}"], cwd=repo, check=False).stdout
     tests = state.get_kv(f"tests:{task_id}", {})
     payload = {
         "diff": diff[-60000:],

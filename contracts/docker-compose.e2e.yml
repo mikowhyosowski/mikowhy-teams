@@ -1,15 +1,7 @@
-# Stos E2E dla bramki QG-3 (zmiana #3) — pełna integracja przed milestone/* -> main
-# Używany przez engine/quality_gates.py::qg3_integration_e2e
+# Stos E2E dla bramki QG-3 — pełna integracja przed milestone/* -> main
 services:
   app:
     build: .
-    environment:
-      - ENV=e2e
-    ports:
-      - "8080:8080"
+    ports: ["8080:8080"]
   db:
     image: postgres:17-alpine
-    environment:
-      POSTGRES_PASSWORD: e2e
-  redis:
-    image: redis:7-alpine

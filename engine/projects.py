@@ -1,0 +1,97 @@
+"""Multi-project workspace — każdy projekt ma własny pipeline i target_repo_path.
+
+Struktura:
+  .agents/active_project.json            -> {"active": "<project_id>"}
+  .agents/projects/<project_id>/project.json   -> {"project_id", "name", "target_repo_path", "read_only", ...}
+  .agents/projects/<project_id>/pipeline.json  -> snapshot DAG tego projektu
+
+Projekt "mikowhy-teams" (self) ma target_repo_path = katalog silnika.
+Projekty z "read_only": true (np. news-video-generator w fazie audytu) są
+STRICT READ-ONLY — git_guard.assert_writable() blokuje każdą mutację.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent          # katalog silnika (fabryki)
+AGENTS = ROOT / ".agents"
+SELF_ID = "mikowhy-teams"
+
+
+class ReadOnlyProject(RuntimeError):
+    pass
+
+
+def active_project_id() -> str:
+    p = AGENTS / "active_project.json"
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8")).get("active", SELF_ID)
+    return SELF_ID
+
+
+def set_active_project(project_id: str) -> None:
+    AGENTS.mkdir(parents=True, exist_ok=True)
+    (AGENTS / "active_project.json").write_text(
+        json.dumps({"active": project_id}, indent=2) + "\n", encoding="utf-8")
+
+
+def project_config(project_id: str) -> dict:
+    if project_id == SELF_ID:
+        return {"project_id": SELF_ID, "name": "mikowhy-teams (silnik)",
+                "target_repo_path": str(ROOT), "read_only": False}
+    p = AGENTS / "projects" / project_id / "project.json"
+    if not p.exists():
+        raise KeyError(f"Nieznany projekt: {project_id} (brak {p})")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def register_project(project_id: str, name: str, target_repo_path: str, read_only: bool = False) -> dict:
+    cfg = {"project_id": project_id, "name": name, "target_repo_path": target_repo_path,
+           "read_only": read_only,
+           "created": __import__("time").time(),
+           "pipeline_snapshot": f".agents/projects/{project_id}/pipeline.json"}
+    d = AGENTS / "projects" / project_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "project.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return cfg
+
+
+def list_projects() -> list[dict]:
+    out = [project_config(SELF_ID)]
+    pdir = AGENTS / "projects"
+    if pdir.exists():
+        for d in sorted(pdir.iterdir()):
+            if (d / "project.json").exists():
+                out.append(json.loads((d / "project.json").read_text(encoding="utf-8")))
+    return out
+
+
+def repo_for_task(task: dict, state=None) -> Path:
+    """Repo, w którym żyje worktree danego zadania.
+    task['repo'] == 'factory' -> katalog silnika (np. audyt piszący tylko do mikowhy-teams);
+    inaczej -> target_repo_path projektu."""
+    if task.get("repo") == "factory":
+        return ROOT
+    pid = task.get("project_id") or active_project_id()
+    return Path(project_config(pid)["target_repo_path"])
+
+
+def is_read_only(path: Path | str) -> bool:
+    rp = str(Path(path).resolve())
+    return any(p.get("read_only") and str(Path(p["target_repo_path"]).resolve()) == rp
+               for p in list_projects() if p["project_id"] != SELF_ID)
+
+
+def assert_writable(repo: Path | str) -> None:
+    """STRICT READ-ONLY: rzuca, gdy repo jest celem projektu read_only."""
+    if is_read_only(repo):
+        raise ReadOnlyProject(
+            f"{repo} jest STRICT READ-ONLY (projekt read_only) — żadnych zapisów, branchy, checkoutów. "
+            f"Raporty/plany tylko w katalogu silnika.")
+
+
+def snapshot_path_for(project_id: str) -> Path:
+    if project_id == SELF_ID:
+        return AGENTS / "pipeline.json"
+    return AGENTS / "projects" / project_id / "pipeline.json"

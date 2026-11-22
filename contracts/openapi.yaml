@@ -1,13 +1,9 @@
 # Kontrakt API — FROZEN po QG-2 (zmiana: tylko eskalacja do Solutions Architecta)
 x-frozen: true
-x-frozen-at: null
 openapi: 3.1.0
 info:
   title: Dark Factory API (szkielet kontraktu)
   version: 0.1.0
-  description: >
-    Zamrożony kontrakt czytany przez równoległe boty (backend + frontend).
-    Semantyka jawna: nullable, required, kody błędów, paginacja, daty ISO-8601 UTC.
 security:
   - bearerAuth: []
 paths:
@@ -17,25 +13,9 @@ paths:
       responses:
         "200":
           description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [status]
-                properties:
-                  status: { type: string, enum: [ok] }
-  # x-ratelimit: 100 req/min per IP (audyt QG-2: 429 Too Many Requests)
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-  schemas:
-    Error:
-      type: object
-      required: [code, message]
-      properties:
-        code: { type: string, description: "Stabilny kod błędu, np. VALIDATION_ERROR" }
-        message: { type: string, description: " komunikat dla klienta" }
-# Webhooki (np. Stripe): nagłówek X-Signature weryfikowany przed parsowaniem (QG-2).

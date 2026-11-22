@@ -109,6 +109,18 @@ Konfiguracja: supergrupa z włączonymi **Topics**, bot jako admin (Manage Topic
 Sekrety w `.env` (gitignored): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (`-100…`). Bez nich reporter to no-op.
 Stan per zadanie: kolumny `telegram_thread_id`, `telegram_summary_msg_id` w `state.db` (eksportowane do `pipeline.json`).
 
+## Multi-project workspace
+```
+.agents/active_project.json                  # {"active": "<project_id>"}
+.agents/projects/<project_id>/project.json   # {"target_repo_path": "/abs/path", "read_only": bool, ...}
+.agents/projects/<project_id>/pipeline.json  # snapshot DAG per projekt
+```
+- `python -m engine.orchestrator project list|add|use` — zarządzanie projektami
+- `python -m engine.orchestrator audit-project <id> <target_repo_path> "cel"` — rejestruje projekt jako **STRICT READ-ONLY** i tworzy DAG audytu (NVG-001→003, `repo='factory'` = raporty tylko w katalogu silnika)
+- `engine/projects.py::repo_for_task(task)` — worktree zadania żyje w `target_repo_path` projektu (chyba że `task.repo='factory'`); `git_guard.assert_writable()` blokuje każdą mutację (worktree/commit/rebase/merge/push) w repo read-only
+- Status `AWAITING_APPROVAL` — orchestrator uruchamia tylko `READY`; zadania migracyjne czekają na ręczną zmianę statusu przez Product Sponsora
+- `state.db`: kolumny `project_id` + `repo` na `tasks`/`milestones`; snapshot per aktywny projekt
+
 ## Zasady bezpieczeństwa
 - Boty LLM nie wywołują git ani nie ruszają stanu — robi to silnik (Python).
 - `scope_paths` egzekwowane fizycznie przed każdym commitem; diff > 250 linii odrzucony.
