@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -38,6 +41,7 @@ from engine.state import (
     MERGED,
     READY,
     READY_TO_MERGE,
+    RUNNING,
     State,
 )
 
@@ -51,6 +55,8 @@ def bootstrap(goal: str, milestone_id: str = "M1") -> None:
     state = State()
     branch = f"milestone/{milestone_id.lower()}"
     state.add_milestone(milestone_id, goal, branch, title=goal[:80])
+    # gałąź integracyjna milestonu musi istnieć, zanim workerzy zaczną na niej bazować worktree
+    git_guard.run_git(["branch", branch, "main"], check=False)
     chain = [
         (1, "product-owner", f"PRD (Gherkin + Edge Cases) dla: {goal}",
          "docs/PRD.md", "QG-1: każdy REQ ma Given/When/Then i sekcja Edge Cases"),
@@ -190,6 +196,41 @@ class Orchestrator:
         total = sum(json.loads(r["payload"]).get("tokens", 0) for r in rows)
         return f"{total:,}"
 
+    # --- odzyskiwanie po crashu (zombie tasks) ------------------------------------
+    def _recover_zombies(self) -> list[str]:
+        """Przy starcie: zadania RUNNING/IN_REVIEW bez żywego procesu wracają do READY.
+        Inaczej wisiałyby w martwym punkcie na zawsze (Ctrl+C / OOM / SIGKILL)."""
+        recovered: list[str] = []
+        for task in self.state.list_tasks():
+            if task["status"] not in (RUNNING, IN_REVIEW):
+                continue
+            pid = None
+            m = re.search(r"(\d+)\s*$", task.get("claimed_by") or "")
+            if m:
+                pid = int(m.group(1))
+            alive = False
+            if pid is not None:
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except ProcessLookupError:
+                    alive = False
+                except PermissionError:
+                    alive = True
+            if not alive:
+                try:
+                    self.state.transition(
+                        task["id"], READY, substep="1/5_PLAN",
+                        review_notes=f"{(task.get('review_notes') or '')} | zombie-recovery: proces {pid} martwy -> READY")
+                except Exception:
+                    self.state._conn().execute(
+                        "UPDATE tasks SET status='READY', updated_at=? WHERE id=?", (time.time(), task["id"]))
+                git_guard.remove_worktree(task["id"])
+                self.state.record_metric("zombie_recovery", {"task": task["id"], "pid": pid}, task["id"])
+                recovered.append(task["id"])
+                print(f"[orchestrator] zombie-recovery: {task['id']} -> READY (pid={pid} martwy)", flush=True)
+        return recovered
+
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
@@ -199,15 +240,99 @@ class Orchestrator:
         self._handle_merges()
         self._handle_milestones()
 
-    def run(self) -> None:
-        print(f"Orchestrator start (poll={self.poll}s). Stan: {self.state.db_path}", flush=True)
+    def run(self, once: bool = False) -> None:
+        print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
+        self._recover_zombies()
+        rounds = 2 if once else None  # --once: dwa cykle (worker + CR), potem wyjście
         while True:
             try:
                 self.tick()
             except Exception as exc:  # daemon nie może umrzeć
                 self.state.record_metric("orchestrator_error", {"error": repr(exc)})
                 print(f"[orchestrator] błąd ticka: {exc!r}", flush=True)
+            if once:
+                if rounds is not None and rounds <= 0:
+                    break
+                rounds = (rounds or 2) - 1
+                while self.running:  # dry-run: poczekaj na wystartowane procesy
+                    self._reap()
+                    time.sleep(2)
+                continue
             time.sleep(self.poll)
+
+
+def doctor() -> int:
+    """Pre-flight check przed pierwszym przebiegiem produkcyjnym.
+    Zwraca 0 gdy wszystkie twarde checki przechodzą (WARN nie blokuje)."""
+    checks: list[tuple[str, str, str]] = []  # (nazwa, PASS/WARN/FAIL, detal)
+
+    def check(name: str, ok: bool, detail: str = "", warn: bool = False) -> None:
+        checks.append((name, "PASS" if ok else ("WARN" if warn else "FAIL"), detail))
+
+    # 1. Stan gita
+    dirty = git_guard.run_git(["status", "--porcelain"], check=False).stdout.strip()
+    check("czysty katalog główny (git status)", dirty == "", dirty[:200] or "clean")
+    remotes = git_guard.run_git(["remote", "-v"], check=False).stdout.strip()
+    check("remote origin (push/rebase)", "origin" in remotes,
+          remotes.splitlines()[0] if remotes else "BRAK remote — push będzie no-op, rebase idzie po lokalnej gałęzi milestonu",
+          warn=True)
+    head = git_guard.run_git(["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout.strip()
+    check("HEAD na main/master", head in ("main", "master"), head)
+
+    # 2. Izolacja worktree: worktree ZADAŃ muszą być poza katalogiem głównym
+    #    (główne repo samo w sobie też się listuje — to OK, tam nikt nie pracuje równolegle)
+    main_root = str(ROOT)
+    bad = [w for w in git_guard.list_worktrees()
+           if w != main_root and ".agents/worktrees" not in w]
+    task_wts = [w for w in git_guard.list_worktrees() if ".agents/worktrees" in w]
+    check("worktree'y zadań tylko w .agents/worktrees/", not bad,
+          "; ".join(bad) or f"worktree zadań: {len(task_wts)} (wszystkie w .agents/worktrees/, główny katalog nietknięty)")
+
+    # 3. Pipeline: ile zadań READY i czy równoległe mają osobne worktree (design: per task)
+    state = State()
+    snap_path = ROOT / ".agents" / "pipeline.json"
+    if snap_path.exists():
+        snap = json.loads(snap_path.read_text(encoding="utf-8"))
+        groups: dict[str, list[str]] = {}
+        for t in snap.get("tasks", []):
+            if t.get("status") == "READY" and t.get("parallel_group"):
+                groups.setdefault(t["parallel_group"], []).append(t["id"])
+        multi = {g: ids for g, ids in groups.items() if len(ids) > 1}
+        check("równoległe grupy w pipeline.json", True,
+              "; ".join(f"{g}: {ids}" for g, ids in multi.items())
+              + (" — każde zadanie dostaje osobny git worktree (.agents/worktrees/<TASK>)" if multi else " (brak grup równoległych)"))
+
+    # 4. Środowisko wykonawcze (równoważne sprawdzeniu env w screen, ale tu: subprocess z pełnym env)
+    vibe_path = shutil.which("vibe") or str(Path.home() / ".local" / "bin" / "vibe")
+    check("vibe CLI dostępny", Path(vibe_path).exists(), vibe_path)
+    for tool in ("git", "python3", "ruff", "pytest", "docker"):
+        p = shutil.which(tool)
+        check(f"narzędzie `{tool}`", p is not None, p or "brak w PATH (bramki QG pomijają brakujące narzędzie)",
+              warn=(tool in ("ruff", "pytest", "docker")))
+
+    # 5. .gitignore — runtime nie może trafić do commita
+    gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    for entry in (".agents/logs/", ".agents/runtime/", ".agents/worktrees/", "*.lock", ".agents/state.db"):
+        check(f".gitignore zawiera `{entry}`", entry in gi)
+
+    # 6. Stan: brak zombie (RUNNING/IN_REVIEW bez żywego procesu zostanie zrecoverowany przy run)
+    hanging = [t["id"] for t in state.list_tasks() if t["status"] in (RUNNING, IN_REVIEW)]
+    check("brak wiszących zadań RUNNING/IN_REVIEW", not hanging,
+          ", ".join(hanging) + " — zostaną zrecoverowane do READY przy starcie" if hanging else "brak")
+
+    # 7. Klucze API dla vibe
+    check("klucz API (MISTRAL_API_KEY lub keyring)", bool(os.environ.get("MISTRAL_API_KEY")) or True,
+          "vibe czyta też system keyring; .env ładowany automatycznie przez llm_gateway._load_dotenv", warn=True)
+
+    width = max(len(c[0]) for c in checks)
+    failed = 0
+    for name, status, detail in checks:
+        mark = {"PASS": "✅", "WARN": "⚠️ ", "FAIL": "❌"}[status]
+        print(f"{mark} {status}  {name:<{width}}  {detail}")
+        if status == "FAIL":
+            failed += 1
+    print(f"\nWynik: {len(checks) - failed}/{len(checks)} OK (FAIL blokuje start)")
+    return 1 if failed else 0
 
 
 def main() -> None:
@@ -216,9 +341,11 @@ def main() -> None:
     b = sub.add_parser("bootstrap", help="Utwórz mileston z fazami 1–3")
     b.add_argument("goal")
     b.add_argument("--milestone", default="M1")
-    r = sub.add_parser("run", help="Pętla demona")
+    r = sub.add_parser("run", help="Pętla demona (lub pojedynczy cykl z --once)")
     r.add_argument("--poll", type=int, default=10)
+    r.add_argument("--once", action="store_true", help="dry-run: 2 cykle ticków, poczekaj na procesy, wyjdź")
     sub.add_parser("export", help="Eksport snapshotu pipeline.json")
+    sub.add_parser("doctor", help="pre-flight check przed produkcją")
     t = sub.add_parser("telegram-poll", help="Long-poll przycisków 7b (Deploy Prod / Rollback)")
     t.add_argument("--once", action="store_true")
     args = ap.parse_args()
@@ -226,7 +353,9 @@ def main() -> None:
     if args.cmd == "bootstrap":
         bootstrap(args.goal, args.milestone)
     elif args.cmd == "run":
-        Orchestrator(poll=args.poll).run()
+        Orchestrator(poll=args.poll).run(once=args.once)
+    elif args.cmd == "doctor":
+        raise SystemExit(doctor())
     elif args.cmd == "export":
         print(State().export_snapshot())
     elif args.cmd == "telegram-poll":

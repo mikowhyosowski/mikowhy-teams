@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,75 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME = ROOT / ".agents" / "runtime"
+
+
+def _load_dotenv(path: Path = ROOT / ".env") -> None:
+    """Ładuje .env do os.environ (bez nadpisywania istniejących) — klucze API dla vibe."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _resolve_binary(binary: str) -> str:
+    """Znajdź binary vibe: PATH, potem ~/.local/bin, /usr/local/bin (non-interactive shell może nie mieć ~/.local/bin w PATH)."""
+    if shutil.which(binary):
+        return binary
+    for cand in (Path.home() / ".local" / "bin" / binary, Path("/usr/local/bin") / binary):
+        if cand.exists():
+            return str(cand)
+    return binary  # niech subprocess rzuci czytelny błąd, jeśli naprawdę brak
+
+
+def extract_json(text: str) -> dict[str, Any]:
+    """Wyciąga JSON z wyjścia modelu odpornie na:
+    - bloki markdown ```json ... ``` (również bez znacznika języka),
+    - prozę/stopki diagnostyczne przed i za JSON-em (np. 'Reading API keys...', użycie tokenów),
+    - klamry wewnątrz stringów.
+    Strategia: najpierw fenced block, potem skan z balansem nawiasów od pierwszego '{',
+    fallback: pierwszy '{' do ostatniego '}'."""
+    candidates: list[str] = []
+    for m in re.finditer(r"```(?:json|JSON)?\s*(.*?)```", text, re.DOTALL):
+        candidates.append(m.group(1))
+    candidates.append(text)
+    for cand in candidates:
+        start = cand.find("{")
+        if start == -1:
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(cand)):
+            c = cand[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(cand[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+        end = cand.rfind("}")
+        if end > start:
+            try:
+                return json.loads(cand[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+    raise ValueError(f"Nie udało się wyciągnąć JSON z odpowiedzi ({len(text)} znaków): {text[:300]!r}")
 
 MODEL_ALIASES = {
     "fast-model": os.environ.get("VIBE_FAST_MODEL", "zai-glm-5-3-flash"),
@@ -37,11 +107,10 @@ class LLMGateway:
 
     def complete_json(self, *, system: str, user: str, step: str, model: str) -> dict[str, Any]:
         raw = self.complete(system=system, user=user, step=step, model=model)
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start == -1 or end == -1:
-            raise ValueError(f"LLM nie zwrócił JSON w kroku {step}: {raw[:200]!r}")
-        return json.loads(raw[start : end + 1])
+        try:
+            return extract_json(raw)
+        except ValueError as exc:
+            raise ValueError(f"LLM nie zwrócił czystego JSON w kroku {step}: {exc}") from exc
 
 
 class StubGateway(LLMGateway):
@@ -62,7 +131,8 @@ class VibeCliGateway(LLMGateway):
     """
 
     def __init__(self, binary: str = "vibe", timeout: int = 300):
-        self.binary = binary
+        _load_dotenv()  # klucze API (MISTRAL_API_KEY itp.) zanim odpalimy subprocess
+        self.binary = _resolve_binary(binary)
         self.timeout = timeout
 
     def complete(self, *, system: str, user: str, step: str, model: str) -> str:
@@ -82,7 +152,9 @@ class VibeCliGateway(LLMGateway):
                 "--prompt-file", str(user_file),
                 "--time-limit", str(self.timeout),
             ]
-            proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=self.timeout + 60)
+            # env=None -> dziedziczenie pełnego os.environ (po _load_dotenv); vibe czyta też keyring
+            proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                                  timeout=self.timeout + 60, env=os.environ.copy())
         if proc.returncode != 0:
             raise RuntimeError(
                 f"vibe CLI rc={proc.returncode} (model={alias}, step={step}): {proc.stderr.strip()[-800:]}"

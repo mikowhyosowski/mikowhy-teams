@@ -5,6 +5,7 @@
 .agents/state.db
 .agents/state.db-wal
 .agents/state.db-shm
+*.lock
 
 # Cache / tooling
 __pycache__/
