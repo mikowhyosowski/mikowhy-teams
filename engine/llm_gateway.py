@@ -39,7 +39,11 @@ def _load_dotenv(path: Path = ROOT / ".env") -> None:
         key, value = line.split("=", 1)
         value = value.strip().strip('"').strip("'")
         value = re.split(r"\s+#", value, maxsplit=1)[0].strip()  # obetnij komentarz inline
-        os.environ.setdefault(key.strip(), value)
+        key = key.strip()
+        if key.startswith(("VIBE_", "TELEGRAM_", "HEALTH_")):
+            os.environ[key] = value  # config z .env repo wygrywa (leczy trujące env z shella)
+        else:
+            os.environ.setdefault(key, value)
 
 
 def _resolve_binary(binary: str) -> str:

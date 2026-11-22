@@ -292,7 +292,7 @@ def poll_once(state: State, timeout: int = 0) -> int:
         offset = state.get_kv("tg_offset", 0)
         token = os.environ["TELEGRAM_BOT_TOKEN"]
         q = urllib.parse.urlencode({"offset": offset, "timeout": timeout,
-                                    "allowed_updates": ["message", "callback_query"]})
+                                    "allowed_updates": json.dumps(["message", "callback_query"])})
         try:
             with urllib.request.urlopen(f"{API}/bot{token}/getUpdates?{q}", timeout=timeout + 10) as resp:
                 data = json.loads(resp.read().decode())

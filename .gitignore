@@ -12,3 +12,7 @@ __pycache__/
 *.pyc
 .venv/
 .env
+
+# artefakty health — generowane każdym cyklem, nie śledzimy (nie róbmy target_dirty)
+.agents/health-report.json
+docs/HEALTH.md

@@ -432,6 +432,20 @@ def cmd_approve(task_id: str) -> None:
     print(f"✅ {task_id} -> READY")
 
 
+def cmd_retry(task_id: str) -> None:
+    """Requeue: FAILED/BLOCKED/ESCALATED -> READY (nowa próba od zera)."""
+    state = State()
+    task = state.get_task(task_id)
+    if not task:
+        raise SystemExit(f"Nieznane zadanie: {task_id}")
+    if task["status"] not in (FAILED, BLOCKED, ESCALATED):
+        raise SystemExit(f"{task_id} ma status {task['status']} — retry tylko z FAILED/BLOCKED/ESCALATED")
+    state.transition(task_id, READY, substep="1/5_PLAN", retry_count=0,
+                     review_notes=(task.get("review_notes") or "") + " | requeue (retry)")
+    state.record_metric("sponsor_retry", {"task": task_id}, task_id)
+    print(f"🔁 {task_id} -> READY (retry_count=0)")
+
+
 def cmd_decline(task_id: str, reason: str = "") -> None:
     """Sponsor: AWAITING_APPROVAL -> BLOCKED z uzasadnieniem."""
     state = State()
@@ -612,6 +626,8 @@ def main() -> None:
     ap4.add_argument("task_id")
     ap4.add_argument("reason", nargs="?", default="")
     ap5 = sub.add_parser("note", help="rada Sponsora: ALL (do każdego promptu) lub <task_id>")
+    ap6 = sub.add_parser("retry", help="requeue: FAILED/BLOCKED/ESCALATED -> READY")
+    ap6.add_argument("task_id")
     ap5.add_argument("target")
     ap5.add_argument("text")
     t = sub.add_parser("telegram-poll", help="Long-poll przycisków 7b (Deploy Prod / Rollback)")
@@ -677,6 +693,8 @@ def main() -> None:
         cmd_approve(args.task_id)
     elif args.cmd == "decline":
         cmd_decline(args.task_id, args.reason)
+    elif args.cmd == "retry":
+        cmd_retry(args.task_id)
     elif args.cmd == "policy":
         if args.value:
             cfg = projects.set_approval_policy(args.project_id, args.value)
