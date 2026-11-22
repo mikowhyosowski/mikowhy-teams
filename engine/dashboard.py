@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -53,6 +55,26 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  @keyframes pulseIco{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(1.25)}}
  tr.running td{background:#0d2137}
  tr.running{box-shadow:inset 3px 0 0 #1f6feb}
+ /* kolory wierszy wg statusu — status widać od razu */
+ tr.st-AWAITING_APPROVAL td{background:#3d3000}
+ tr.st-RUNNING td{background:#0d2137}
+ tr.st-IN_REVIEW td{background:#241b38}
+ tr.st-READY_TO_MERGE td{background:#0d3038}
+ tr.st-MERGED td{background:#0d2b1a;color:#6e7681}
+ tr.st-FAILED td,tr.st-ESCALATED td{background:#3d1215}
+ tr.st-BLOCKED td{background:#2b1113;color:#6e7681}
+ tr.st-READY td{background:#11151c}
+ .chip{border-left:3px solid #30363d}
+ .chip.st-RUNNING{border-left-color:#58a6ff}
+ .chip.st-AWAITING_APPROVAL{border-left-color:#b08800}
+ .chip.st-IN_REVIEW{border-left-color:#a371f7}
+ .chip.st-READY_TO_MERGE{border-left-color:#39c5cf}
+ .chip.st-MERGED{border-left-color:#3fb950}
+ .chip.st-FAILED,.chip.st-ESCALATED{border-left-color:#f85149}
+ .chip.st-BLOCKED{border-left-color:#8b949e}
+ .chip.st-READY{border-left-color:#484f58}
+ /* ikony priorytetu — kolejka realizacji */
+ .pico{font-size:13px;margin-right:2px}
  .prio{font-weight:bold;border-radius:4px;padding:0 5px;font-size:10px}
  .prio-P0{background:#f85149;color:#fff;animation:pulseIco 1s infinite}
  .prio-P1{background:#d29922;color:#000}
@@ -86,6 +108,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #detail textarea{width:100%;height:70px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit}
  #detail button{margin:4px 4px 0 0;padding:5px 10px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;cursor:pointer}
  #detail button.ok{background:#1f6feb} #detail button.no{background:#da3633}
+ #askbox{width:100%;height:56px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit;border-radius:6px;padding:6px}
+ #askBtn{margin:6px 0;padding:6px 14px;background:#1f6feb;color:#fff;border:0;border-radius:6px;cursor:pointer}
+ .ask{border-bottom:1px solid #21262d;padding:4px 0;font-size:12px}
+ .ask .q{color:#c9d1d9}
+ .ask .a{color:#3fb950;white-space:pre-wrap}
+ .ask .run{color:#b08800}
  .kv{font-size:12px;margin:2px 0} .kv b{color:#8b949e}
  /* przepływ pracy (kanban statusów) */
  #flow{display:flex;gap:6px;overflow-x:auto;padding:4px 0;align-items:stretch}
@@ -123,6 +151,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 <h2>⚡ Live — ostatnie wydarzenia (kto przejął / zmiana statusu, auto-refresh 2s)</h2><div class="feed" id="events"></div>
+<h2>💬 Zapytaj Vibe bezpośrednio <span class="muted">(bez taska — jak `llm`, ale odpowiedź od razu tutaj)</span></h2>
+<textarea id="askbox" placeholder="napisz polecenie / pytanie do Vibe…"></textarea>
+<button id="askBtn" onclick="sendAsk()">Wyślij do Vibe ▶</button>
+<div class="feed" id="asks"></div>
 <h2>💬 Komentarze agentów (feed)</h2><div class="feed" id="comments"></div>
 <h2>📈 Ostatnie eventy</h2><div class="feed" id="metrics"></div>
 <h2>🔴 Live — .agents/runtime (surowe odpowiedzi LLM) <button onclick="toggleLive()">▶/⏸</button></h2>
@@ -141,6 +173,7 @@ async function refresh(){
   document.getElementById('ts').textContent = new Date().toLocaleTimeString();
   document.getElementById('projects').innerHTML = d.projects.map(p =>
     `<span class="muted">🗂</span> <b>${p.project_id}</b> policy=${p.approval_policy||'manual'} read_only=${p.read_only?1:0} target=${p.target}`).join('<br>');
+  const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
   // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
   const FLOW = ['AWAITING_APPROVAL','READY','RUNNING','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
   const byStatus = {}; for(const t of d.tasks){ (byStatus[t.status] = byStatus[t.status]||[]).push(t); }
@@ -148,7 +181,7 @@ async function refresh(){
     const items = byStatus[st]||[];
     const hot = st==='AWAITING_APPROVAL' && items.length, run = st==='RUNNING';
     const chips = items.slice(0,8).map(t =>
-      `<span class="chip" onclick="openTask('${t.id}')"><b>${t.id}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
+      `<span class="chip st-${st}" onclick="openTask('${t.id}')">${PIC[t.priority||'P2']||''}<b>${t.id}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
        <span class="who">${t.persona||t.role||''}</span></span>`).join('') + (items.length>8?`<span class="chip muted">+${items.length-8} więcej…</span>`:'');
     const arrow = i < FLOW.length-1 ? '<span class="arrow">→</span>' : '';
     return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${st} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
@@ -162,14 +195,16 @@ async function refresh(){
     if(t.status==='AWAITING_APPROVAL') awaiting++;
     if(t.status==='RUNNING') nowCards.push(t);
     const tr = tb.insertRow();
-    if(t.status==='AWAITING_APPROVAL') tr.className='awaiting';
-    if(t.status==='RUNNING') tr.className=(tr.className?tr.className+' ':'')+'running';
-    if(taskStatus[t.id] && taskStatus[t.id] !== t.status){ tr.className = (tr.className?tr.className+' ':'')+'flash'; }
+    tr.className = 'st-' + t.status;
+    if(t.status==='AWAITING_APPROVAL') tr.className+=' awaiting';
+    if(t.status==='RUNNING') tr.className+=' running';
+    if(taskStatus[t.id] && taskStatus[t.id] !== t.status){ tr.className += ' flash'; }
     taskStatus[t.id] = t.status;
     tr.onclick = () => openTask(t.id);
     const ago = Math.round((Date.now()/1000 - t.updated_at)) + 's';
     const indent = '&nbsp;'.repeat((t.depth||0)*4) + ((t.depth||0)?'↳ ':'')
-    const prio = `<span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>`;
+    const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
+    const prio = `<span class="pico" title="priorytet ${t.priority||'P2'}">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>`;
     const ic = `<span class="ic ic-${t.status}">${d.icons[t.status]||'?'}</span>`;
     const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>` : '';
     tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td>${(t.title||'').slice(0,60)}</td>
@@ -191,10 +226,15 @@ async function refresh(){
     </div>`;
   }).join('');
   document.getElementById('now').innerHTML = nowCards.length ? nowCards.map(t =>
-    `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
+    `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
      <span class="who">${t.persona||t.role||''} · ${t.project_id||''}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
+  document.getElementById('asks').innerHTML = (d.asks||[]).map(a =>
+    `<div class="ask"><span class="muted">${new Date(a.ts*1000).toLocaleTimeString()}</span> <span class="q">❯ ${a.q.slice(0,300)}</span>
+     ${a.status==='running'?'<div class="run">⏳ Vibe myśli…</div>':''}
+     ${a.status==='error'?'<div class="a" style="color:#f85149">'+String(a.answer).slice(0,500)+'</div>':''}
+     ${a.status==='done'?'<div class="a">'+String(a.answer).slice(0,1200)+'</div>':''}</div>`).join('');
   const ev = document.getElementById('events');
   ev.innerHTML = (d.events||[]).map(e => {
     const isNew = e.ts > lastEventTs;
@@ -251,6 +291,13 @@ async function sendComment(){
   const txt = document.getElementById('cbox').value.trim(); if(!txt||!curTask) return;
   await fetch('/api/task/'+curTask+'/comment', {method:'POST', body: JSON.stringify({text: txt})});
   document.getElementById('cbox').value=''; refresh();
+}
+async function sendAsk(){
+  const t = document.getElementById('askbox').value.trim(); if(!t) return;
+  document.getElementById('askbox').value = '';
+  document.getElementById('askBtn').disabled = true;
+  try{ await fetch('/api/ask', {method:'POST', body: JSON.stringify({text: t})}); } finally { document.getElementById('askBtn').disabled = false; }
+  refresh();
 }
 async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'POST', body:'{}'}); refresh(); }
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
@@ -315,6 +362,16 @@ def _snapshot(s: State) -> dict:
                      "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority")}
                                  if cur else None)})
     team.sort(key=lambda x: (x["current"] is None, x["role"]))
+    # bezpośrednie zapytania do Vibe (formularz, bez taska) — ostatnie 10 + odpowiedzi z kv
+    asks = []
+    for r in s._conn().execute(
+            "SELECT ts, payload FROM metrics WHERE kind='direct_ask' ORDER BY ts DESC LIMIT 10").fetchall():
+        p = json.loads(r[1])
+        qid = p.get("qid", "")
+        asks.append({"ts": r[0], "qid": qid, "q": p.get("q", ""),
+                     "status": s.get_kv(f"ask_status:{qid}", "running"),
+                     "answer": s.get_kv(f"ask_ans:{qid}", "")})
+    asks.reverse()
     metrics = []
     for r in s._conn().execute(
             "SELECT ts, kind, task_id, payload FROM metrics WHERE kind != 'agent_comment' "
@@ -337,9 +394,29 @@ def _snapshot(s: State) -> dict:
         for f in sorted(logs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
             st = f.stat()
             logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
-        return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team,
+        return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team, "asks": asks,
                 "comments": s.recent_comments(40), "metrics": metrics,
                 "runtime": runtime, "logs": logs}
+
+
+def _run_ask(qid: str, text: str) -> None:
+    """Bezpośrednia sesja vibe (bez taska): odpowiedź Sponsora ląduje w kv i na dashboardzie."""
+    import threading  # noqa: F401  (dla czytelności — wątek poniżej)
+    s = State()
+    try:
+        from engine.llm_gateway import get_gateway
+        from engine.team_chat import build_state_summary
+        system = ("Jesteś Vibe — osobisty asystent Sponsora w Dark Factory (repo mikowhy-teams). "
+                  "Odpowiadasz PO POLSKU, zwięźle, konkretnie, z emoji gdzie pasuje. "
+                  "Masz kontekst stanu fabryki poniżej. Nie tworzysz zadań — tylko odpowiadasz.\n\n"
+                  "# Stan fabryki:\n" + build_state_summary(s))
+        gw = get_gateway()
+        ans = gw.complete(system=system, user=text, step=f"DIRECT-ASK-{qid}", model="strong-model")
+        s.set_kv(f"ask_ans:{qid}", (ans or "")[:6000])
+        s.set_kv(f"ask_status:{qid}", "done")
+    except Exception as exc:
+        s.set_kv(f"ask_ans:{qid}", f"BŁĄD: {exc!r}")
+        s.set_kv(f"ask_status:{qid}", "error")
 
 
 def task_detail(task_id: str) -> dict:
@@ -429,10 +506,22 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in u.path.split("/") if p]  # ['api','task','<id>','<action>']
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
+        if u.path == "/api/ask":
+            # bezpośrednia sesja vibe z formularza — BEZ taska, odpowiedź w wątku na dashboardzie
+            text = str(body.get("text", "")).strip()
+            if not text:
+                self._send(400, b'{"error":"pusty tekst"}', "application/json")
+                return
+            qid = uuid.uuid4().hex[:8]
+            s = State()
+            s.set_kv(f"ask_status:{qid}", "running")
+            s.record_metric("direct_ask", {"qid": qid, "q": text[:500], "status": "running"}, None)
+            threading.Thread(target=_run_ask, args=(qid, text), daemon=True).start()
+            self._send(200, json.dumps({"ok": True, "qid": qid}).encode(), "application/json")
+            return
         if len(parts) == 4 and parts[:2] == ["api", "task"]:
             _, _, tid, action = parts
             from engine.orchestrator import cmd_approve, cmd_decline, cmd_note
-            from engine.state import State
             try:
                 if action == "comment":
                     cmd_note(tid, body.get("text", ""))
