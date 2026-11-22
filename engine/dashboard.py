@@ -38,6 +38,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Dark Factory �
  tbody tr{cursor:pointer} tbody tr:hover{background:#161b22}
  tr.awaiting{background:#3d3000;animation:pulse 1.2s infinite}
  @keyframes pulse{0%,100%{background:#3d3000}50%{background:#5a4700}}
+ tr.flash td{animation:flash 2.5s} .feed div.flash{animation:flash 2.5s}
+ @keyframes flash{0%{background:#1f6feb88}100%{background:transparent}}
  .badge{background:#b08800;color:#000;border-radius:4px;padding:0 6px;font-size:11px;font-weight:bold}
  .st{font-weight:bold} .muted{color:#8b949e} .feed{font-size:12px} .feed div{border-bottom:1px solid #21262d;padding:3px 0}
  #ts{color:#8b949e;font-size:11px}
@@ -53,7 +55,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Dark Factory �
 <h1>🏭 Dark Factory — live <span id="ts"></span></h1>
 <h2>Projekty</h2><div id="projects"></div>
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
-<table id="tasks"><thead><tr><th></th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>rola</th><th>projekt</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
+<table id="tasks"><thead><tr><th></th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
+<h2>⚡ Live — ostatnie wydarzenia (kto przejął / zmiana statusu, auto-refresh 2s)</h2><div class="feed" id="events"></div>
 <h2>💬 Komentarze agentów (feed)</h2><div class="feed" id="comments"></div>
 <h2>📈 Ostatnie eventy</h2><div class="feed" id="metrics"></div>
 <h2>🔴 Live — .agents/runtime (surowe odpowiedzi LLM) <button onclick="toggleLive()">▶/⏸</button></h2>
@@ -64,6 +67,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Dark Factory �
 <div id="detail"><button onclick="closeDetail()" style="float:right">✖</button><div id="detailBody">wybierz zadanie…</div></div>
 <script>
 let curTask = null;
+let lastEventTs = 0;
+const taskStatus = {};
+function fmtDur(s){ s=Math.round(s); const m=Math.floor(s/60), h=Math.floor(m/60); return (h?h+'h ':'')+(m%60)+'m '+(s%60)+'s'; }
 async function refresh(){
   const r = await fetch('/api/state'); const d = await r.json();
   document.getElementById('ts').textContent = new Date().toLocaleTimeString();
@@ -75,15 +81,27 @@ async function refresh(){
     if(t.status==='AWAITING_APPROVAL') awaiting++;
     const tr = tb.insertRow();
     if(t.status==='AWAITING_APPROVAL') tr.className='awaiting';
+    if(taskStatus[t.id] && taskStatus[t.id] !== t.status){ tr.className = (tr.className?tr.className+' ':'')+'flash'; }
+    taskStatus[t.id] = t.status;
     tr.onclick = () => openTask(t.id);
     const ago = Math.round((Date.now()/1000 - t.updated_at)) + 's';
-    tr.innerHTML = `<td>${d.icons[t.status]||'?'}</td><td><b>${t.id}</b></td><td>${(t.title||'').slice(0,60)}</td>
+    const indent = '&nbsp;'.repeat((t.depth||0)*4) + ((t.depth||0)?'↳ ':'')
+    const elapsed = t.status==='RUNNING' && t.started_at ? fmtDur(Date.now()/1000 - t.started_at) : '';
+    tr.innerHTML = `<td>${d.icons[t.status]||'?'}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td>${(t.title||'').slice(0,60)}</td>
       <td class="st">${t.status==='AWAITING_APPROVAL'?'<span class="badge">TWÓJ RUCH</span> '+t.status:t.status}</td>
       <td class="muted">${t.substep||''}</td><td>${t.retry_count}</td>
-      <td class="muted">${t.role||''}</td><td class="muted">${t.project_id||''}</td>
+      <td class="muted">${t.persona||t.role||''}</td><td class="muted">${t.project_id||''}</td>
+      <td class="muted">${elapsed}</td>
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
   }
   document.getElementById('awaitCount').textContent = awaiting ? awaiting+' czeka na Ciebie' : '';
+  const ev = document.getElementById('events');
+  ev.innerHTML = (d.events||[]).map(e => {
+    const isNew = e.ts > lastEventTs;
+    const p = e; const txt = p.event ? p.event : `${p.from||'?'} → ${p.to||'?'}` + (p.claimed_by?(' przez '+p.claimed_by):'');
+    return `<div class="${isNew?'flash':''}" data-ts="${e.ts}"><span class="muted">${new Date(e.ts*1000).toLocaleTimeString()}</span> <b>${e.task_id||''}</b> ${txt} <span class="muted">${(p.branch||p.review_notes||'')?String(p.branch||p.review_notes||'').slice(0,60):''}</span></div>`;
+  }).join('');
+  if((d.events||[]).length) lastEventTs = Math.max(lastEventTs, ...d.events.map(e=>e.ts));
   document.getElementById('comments').innerHTML = d.comments.map(c =>
     `<div><span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span> <b>${c.author}</b> ${c.task_id?('['+c.task_id+']'):''} ${c.text.slice(0,200)}</div>`).join('');
   document.getElementById('metrics').innerHTML = d.metrics.map(m =>
@@ -108,8 +126,11 @@ async function openTask(id, keep){
   const d = t.task;
   let html = `<h3>${t.icons[d.status]||''} ${d.id}</h3>
     <div class="kv"><b>tytuł:</b> ${d.title||''}</div>
-    <div class="kv"><b>status:</b> ${d.status} | <b>substep:</b> ${d.substep||'-'} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}</div>
-    <div class="kv"><b>rola:</b> ${d.role||''} | <b>projekt:</b> ${d.project_id||''} | <b>milestone:</b> ${d.milestone||''}</div>
+    <div class="kv"><b>status:</b> ${d.status} | <b>substep:</b> ${d.substep||'-'} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''}</div>
+    <div class="kv"><b>rola:</b> ${d.role||''} → <b>${d.persona||''}</b> | <b>projekt:</b> ${d.project_id||''} | <b>milestone:</b> ${d.milestone||''}</div>
+    <div class="kv"><b>przejął:</b> ${d.claimed_by||'-'}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''}</div>
+    <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${d.parent_task}');return false" style="color:#58a6ff">${d.parent_task}</a>`:'— (zadanie główne)'}</div>
+    <h2>📜 Historia zmian</h2><div class="feed">${(t.events||[]).map(e=>`<div><span class="muted">${new Date(e.ts*1000).toLocaleTimeString()}</span> ${e.event||((e.from||'?')+' → '+(e.to||'?'))}${(e.claimed_by||e.branch)?(' <span class="muted">'+String(e.claimed_by||e.branch||'').slice(0,60)+'</span>'):''}</div>`).join('')||'brak'}</div>
     <div class="kv"><b>branch:</b> ${d.branch||'-'} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>
     <div class="kv"><b>scope:</b> ${(d.scope_paths||[]).join(', ')||'-'}</div>
     <div class="kv"><b>AC:</b> ${(d.acceptance_criteria||'').slice(0,300)}</div>
@@ -145,13 +166,30 @@ def snapshot() -> dict:
 
 
 def _snapshot(s: State) -> dict:
-    from engine import github_bridge
+    from engine import github_bridge, personas
+    raw = s.list_tasks()
+    by_id = {t["id"]: t for t in raw}
+
+    def depth(t: dict, seen: set | None = None) -> int:
+        seen = seen or set()
+        p = t.get("parent_task")
+        if not p or p in seen or p not in by_id:
+            return 0
+        return 1 + depth(by_id[p], seen | {t["id"]})
+
     tasks = []
-    for t in s.list_tasks():
+    for t in raw:
         tasks.append({k: t.get(k) for k in ("id", "title", "status", "substep", "retry_count",
-                                             "role", "project_id", "branch", "updated_at", "read_only", "mode")})
+                                             "role", "project_id", "branch", "updated_at", "read_only",
+                                             "mode", "parent_task", "started_at", "claimed_by")})
         tasks[-1]["pr"] = github_bridge.pr_for_task(t["id"])
+        p = personas.persona_for_role(t.get("role") or "")
+        tasks[-1]["persona"] = f"{p['name']} · {p['position']}"
+        tasks[-1]["depth"] = depth(t)
+        if t.get("status") == "RUNNING" and t.get("started_at"):
+            tasks[-1]["elapsed"] = max(0, time.time() - t["started_at"])
     tasks.sort(key=lambda t: (t["status"] != "AWAITING_APPROVAL", t["status"] != "RUNNING", -(t["updated_at"] or 0)))
+    events = s.recent_events(30)
     metrics = []
     for r in s._conn().execute(
             "SELECT ts, kind, task_id, payload FROM metrics WHERE kind != 'agent_comment' "
@@ -174,7 +212,7 @@ def _snapshot(s: State) -> dict:
         for f in sorted(logs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
             st = f.stat()
             logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
-        return {"icons": ICON, "projects": projs, "tasks": tasks,
+        return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events,
                 "comments": s.recent_comments(40), "metrics": metrics,
                 "runtime": runtime, "logs": logs}
 
@@ -184,12 +222,16 @@ def task_detail(task_id: str) -> dict:
 
 
 def _task_detail(s: State, task_id: str) -> dict:
-    from engine import github_bridge
+    from engine import github_bridge, personas
     t = s.get_task(task_id)
     if not t:
         return {"error": "nieznane zadanie", "icons": ICON}
     t["pr"] = github_bridge.pr_for_task(task_id)
-    return {"icons": ICON, "task": t, "comments": s.recent_comments(20, task_id=task_id)}
+    t["persona"] = personas.persona_label(t.get("role") or "")
+    if t.get("status") == "RUNNING" and t.get("started_at"):
+        t["elapsed"] = max(0, time.time() - t["started_at"])
+    return {"icons": ICON, "task": t, "comments": s.recent_comments(20, task_id=task_id),
+            "events": s.recent_events(50, task_id=task_id)}
 
 
 class Handler(BaseHTTPRequestHandler):

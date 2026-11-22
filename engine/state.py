@@ -128,6 +128,7 @@ class State:
                 ("tasks", "repo", "TEXT"),  # 'factory' = katalog silnika, NULL = target_repo_path projektu
                 ("tasks", "read_only", "INTEGER NOT NULL DEFAULT 0"),  # zadanie nic nie commituje (audyt/decyzja/plan)
                 ("tasks", "mode", "TEXT DEFAULT 'pipeline'"),  # 'pipeline' (domyślny) | 'llm' — wykonuje sam LLM (vibe z narzędziami)
+                ("tasks", "started_at", "REAL"),  # kiedy worker przejął zadanie (do liczenia czasu pracy)
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
             ):
                 cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -257,13 +258,16 @@ class State:
 
     def claim_task(self, task_id: str, claimed_by: str) -> dict[str, Any] | None:
         """Atomowe przejęcie: tylko jeśli status nadal READY (ACID, bez fcntl)."""
+        now = time.time()
         cur = self._conn().execute(
-            """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?
+            """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?, started_at=?
                WHERE id=? AND status='READY'
                RETURNING *""",
-            (claimed_by, time.time(), task_id),
+            (claimed_by, now, now, task_id),
         )
         row = cur.fetchone()
+        if row:
+            self.record_metric("task_event", {"from": "READY", "to": "RUNNING", "claimed_by": claimed_by}, task_id)
         return self._row_to_task(row) if row else None
 
     def transition(self, task_id: str, new_status: str, **fields: Any) -> dict[str, Any]:
@@ -282,6 +286,9 @@ class State:
             params.append(value)
         params.append(task_id)
         self._conn().execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", params)
+        # historia zmian / live feed na dashboardzie
+        self.record_metric("task_event", {"from": current, "to": new_status,
+                                          **{k: str(v)[:120] for k, v in fields.items()}}, task_id)
         return self.get_task(task_id)  # type: ignore[return-value]
 
     def split_task(self, task_id: str, subtask_specs: list[dict[str, Any]], max_split_depth: int = 1) -> list[str]:
@@ -334,6 +341,18 @@ class State:
 
     def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
         q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"
+        params: list = []
+        if task_id:
+            q += " AND task_id=?"
+            params.append(task_id)
+        q += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn().execute(q, params).fetchall()
+        return [{"ts": r[0], "task_id": r[1], **json.loads(r[2])} for r in rows]
+
+    def recent_events(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
+        """Ostatnie zmiany statusów/zadań (task_event) — live feed + historia na dashboardzie."""
+        q = "SELECT ts, task_id, payload FROM metrics WHERE kind='task_event'"
         params: list = []
         if task_id:
             q += " AND task_id=?"

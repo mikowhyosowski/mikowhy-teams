@@ -21,12 +21,14 @@ Użycie:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -348,14 +350,79 @@ class Orchestrator:
 
     # --- health monitor co HEALTH_INTERVAL ------------------------------------------
     def _maybe_health(self) -> None:
+        # health w osobnym wątku — NIGDY nie blokuje ticka (a tym samym Telegramu)
         last = self.state.get_kv("last_health_ts", 0)
         if time.time() - last >= health_monitor.HEALTH_INTERVAL:
             self.state.set_kv("last_health_ts", time.time())
-            try:
-                report = health_monitor.run(self.state, create_tasks=True)
-                self.state.record_metric("health_check", {"ok": report["ok"], "anomalies": len(report["anomalies"])})
-            except Exception as exc:
-                self.state.record_metric("health_error", {"error": repr(exc)})
+            threading.Thread(target=self._health_bg, daemon=True).start()
+
+    def _health_bg(self) -> None:
+        try:
+            report = health_monitor.run(self.state, create_tasks=True)
+            self.state.record_metric("health_check", {"ok": report["ok"], "anomalies": len(report["anomalies"])})
+        except Exception as exc:
+            self.state.record_metric("health_error", {"error": repr(exc)})
+
+    def _watchdog(self) -> None:
+        """Sprawdza usługi systemd; jak któraś nieaktywna -> restart, a jak dalej nie żyje
+        -> prośba do LLM (zadanie mode='llm') o naprawę."""
+        last = self.state.get_kv("last_watchdog_ts", 0)
+        if time.time() - last < 15:
+            return
+        self.state.set_kv("last_watchdog_ts", time.time())
+        for svc in ("mikowhy-teams", "mikowhy-teams-dashboard"):
+            state_now = subprocess.run(["systemctl", "--user", "is-active", svc],
+                                       capture_output=True, text=True).stdout.strip()
+            if state_now == "active":
+                continue
+            self.state.record_metric("watchdog", {"service": svc, "state": state_now}, None)
+            subprocess.run(["systemctl", "--user", "restart", svc], capture_output=True)
+            time.sleep(2)
+            state2 = subprocess.run(["systemctl", "--user", "is-active", svc],
+                                    capture_output=True, text=True).stdout.strip()
+            if state2 == "active":
+                self.state.record_metric("watchdog", {"service": svc, "action": "restarted", "state": state2}, None)
+                continue
+            # nadal martwa — eskalacja do LLM
+            open_tasks = (self.state.list_tasks(status="AWAITING_APPROVAL")
+                          + self.state.list_tasks(status="READY") + self.state.list_tasks(status="RUNNING"))
+            if any(svc in (t.get("title") or "") for t in open_tasks):
+                continue
+            n = self.state.get_kv("watchdog_seq", 0) + 1
+            self.state.set_kv("watchdog_seq", n)
+            tid = f"FIX-{n:04d}"
+            self.state.add_task(tid, milestone="CHAT-OPS", phase=9, title=f"Napraw usługę {svc} (systemd --user): nieaktywna mimo restartu",
+                                role="principal-debugger", scope_paths=[], depends_on=[],
+                                acceptance_criteria=f"Usługa {svc} aktywna (systemctl --user is-active = active) i przyczyna awarii opisana w raporcie",
+                                project_id="mikowhy-teams-self", repo="factory",
+                                status="AWAITING_APPROVAL", read_only=False, mode="llm")
+            self.state.set_kv(f"llm_desc:{tid}",
+                              f"Usługa systemd --user '{svc}' ma stan '{state2}' mimo restartu. "
+                              f"Zdiagnozuj (systemctl --user status {svc}, journalctl --user -u {svc} -n 100, "
+                              f"logi w .agents/logs/) i napraw tak, żeby była aktywna. "
+                              f"Na końcu zostaw raport docs/llm-reports/{tid}.md.")
+            self.state.record_metric("watchdog_escalation", {"service": svc, "task": tid}, tid)
+            print(f"[orchestrator] 🚨 watchdog: {svc} nieaktywna -> zadanie {tid} dla LLM", flush=True)
+
+    def _cleanup_merged_branches(self) -> None:
+        """Usuwa branche feature/* zmergowane do default branch (zadanie MERGED = zamknięte w pełni)."""
+        for t in self.state.list_tasks(status=MERGED):
+            br = t.get("branch")
+            if not br or not br.startswith("feature/"):
+                continue
+            if self.state.get_kv(f"branch_deleted:{br}"):
+                continue
+            repo = projects.repo_for_task(t, self.state)
+            git_guard.run_git(["fetch", "origin", "--prune"], cwd=repo, check=False)
+            default = git_guard.default_branch(repo)
+            merged = git_guard.run_git(["branch", "--merged", default], cwd=repo, check=False).stdout
+            if br not in merged.split():
+                continue
+            git_guard.run_git(["branch", "-D", br], cwd=repo, check=False)
+            git_guard.run_git(["push", "origin", "--delete", br], cwd=repo, check=False)
+            self.state.set_kv(f"branch_deleted:{br}", time.time())
+            self.state.record_metric("task_event", {"event": "branch_deleted", "branch": br}, t["id"])
+            print(f"[orchestrator] 🧹 usunięto zmergowany branch {br} (zadanie {t['id']})", flush=True)
 
     # --- telegram menu w ticku (run --poll 1 odbiera wiadomości użytkownika) ---------
     def _poll_telegram(self) -> None:
@@ -373,12 +440,26 @@ class Orchestrator:
         self._launch_reviews()
         self._circuit_breakers()
         self._handle_merges()
+        self._cleanup_merged_branches()
         self._handle_milestones()
         self._notify_approvals()
+        self._watchdog()
         self._maybe_health()
         self._poll_telegram()
 
     def run(self, once: bool = False) -> None:
+        # lock pojedynczej instancji — ręczny `run` gdy działa usługa systemd wychodzi od razu
+        # (dwie instancje walczą o worktree/state i jedna z nich kończy "Unicestwiony")
+        lock_path = ROOT / ".agents" / "orchestrator.lock"
+        self._lock_f = open(lock_path, "w")
+        try:
+            fcntl.flock(self._lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_f.write(f"{os.getpid()}\n")
+            self._lock_f.flush()
+        except BlockingIOError:
+            print(f"⚠️ Orkiestrator już działa (lock: {lock_path}). "
+                  f"Kanoniczny runner to usługa: systemctl --user status mikowhy-teams. Wychodzę.", flush=True)
+            sys.exit(0)
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
         self._recover_zombies()
         rounds = 2 if once else None  # --once: dwa cykle (worker + CR), potem wyjście

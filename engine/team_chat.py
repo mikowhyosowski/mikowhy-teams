@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import skill_compiler, telegram_gate
+from engine import personas, skill_compiler, telegram_gate
 from engine.llm_gateway import get_gateway
 from engine.state import State
 
@@ -108,6 +108,16 @@ def main() -> int:
     chat_id, text = sys.argv[1], sys.argv[2]
     state = State()
     low = text.lower()
+
+    # lock per czat — jedna odpowiedź na raz; druga wiadomość podczas generowania dostaje info
+    import fcntl
+    lock_f = open(ROOT / ".agents" / "logs" / f"team_chat.{chat_id}.lock", "w")
+    try:
+        fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        telegram_gate._call("sendMessage", {"chat_id": chat_id,
+            "text": "🤖 Poprzednia odpowiedź jeszcze się generuje — poczekaj na nią (albo napisz «nowe pytanie»)."})
+        return 0
 
     # --- tryb LLM: "llm <opis>" -> zadanie wykonywane w 100% przez LLM (vibe z narzędziami) ---
     if low == "llm" or low.startswith("llm ") or low.startswith("llm\t"):
@@ -218,9 +228,10 @@ def main() -> int:
     except Exception as exc:
         answer = f"(nie udało się uzyskać odpowiedzi: {exc!r})"
 
+    p = personas.persona_for_role(role)
     telegram_gate._call("sendMessage", {
         "chat_id": chat_id,
-        "text": f"👤 {role} (model: {model}) odpowiada [{how}]:\n\n{answer}".replace("*", ""),
+        "text": f"👤 {p['name']} — {p['position']} ({p['gender']}, rola: {role}, model: {model}) odpowiada [{how}]:\n\n{answer}".replace("*", ""),
     })
     history.append({"author": "sponsor", "text": text})
     history.append({"author": role, "text": answer[:2000]})

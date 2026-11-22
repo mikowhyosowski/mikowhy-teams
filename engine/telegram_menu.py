@@ -264,10 +264,12 @@ def handle_text(state: State, chat_id: str, text: str) -> None:
             txt, kb = render(state, chat_id, screen)
             _send(chat_id, f"✅ Zapisano uwagę do {await_['task']}\n\n{txt}", kb)
             return
-        # czat z drużyną: osobny proces, żeby nie blokować ticka orkiestratora
+        # czat z drużyną: osobny proces w osobnej sesji — NIGDY nie blokuje ticka orkiestratora
+        # (lock per czat trzyma sam team_chat — patrz engine/team_chat.py main)
         log = open(ROOT / ".agents" / "logs" / f"team_chat.{chat_id}.log", "a", encoding="utf-8")
         subprocess.Popen([sys.executable, "-m", "engine.team_chat", chat_id, text],
-                         cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT)
+                         cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
+                         start_new_session=True)  # odczepiony od ticka, nie ubija się z nim
         _send(chat_id, "🤖 Kieruję do zespołu… odpowiedź przyjdzie jako wiadomość z podpisem (kto odpisał). "
                        "Napisz «nowe pytanie», żeby zacząć nowy temat.")
 
