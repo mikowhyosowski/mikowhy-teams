@@ -74,7 +74,10 @@ def step1_plan(state: State, task: dict) -> None:
                     "scope_paths": task["scope_paths"], "split_depth": task["split_depth"],
                     "max_split_depth": MAX_SPLIT_DEPTH,
                     "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"plan": "<krótki plan kroków>"} '
-                              'lub jeśli zadanie za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ...}]}. '
+                              'lub TYLKO GDY zadanie jest naprawdę za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ...}]}. '
+                              'REGUŁA ANTY-SPLIT: NIE dziel, gdy zadanie dotyczy <=3 plików, szacunkowo <=150 linii diffu '
+                              'i ma <3 punktów AC — wtedy wolisz jeden solidny plan i jedna paczka zmian (więcej zmian, mniej commitów). '
+                              'Split max 3 podzadania, tylko gdy to osobne, niezależne części. '
                               'NIE osadzaj treści plików — tylko plan.'}, ensure_ascii=False),
         model=skill_compiler.model_for_role(task["role"], kind="fast"),
     )
@@ -228,7 +231,17 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         state.transition(task["id"], READY, substep="1/5_PLAN",
                          review_notes=f"Odrzucono przed CR: {exc}")
         return
-    git_guard.commit_all(worktree, f"feat({task['id'].lower()}): {task['title']}")
+    if lines == 0:
+        # pusty diff = brak realnej zmiany — NIE commitujemy pustego commita (koniec z '0 linii diffu')
+        git_guard.run_git(["checkout", "--", "."], cwd=worktree, check=False)
+        state.transition(task["id"], READY, substep="1/5_PLAN",
+                         review_notes="Pusty diff względem bazy — worker nie wprowadził realnej zmiany (odrzucono przed commitem)")
+        state.record_metric("empty_diff_rejected", {}, task["id"])
+        _log(task["id"], "pusty diff (0 linii) — odrzucono przed commitem")
+        return
+    how = git_guard.commit_task(worktree, task["id"], f"feat({task['id'].lower()}): {task['title']}")
+    if how == "amended":
+        state.record_metric("commit_amended", {"branch": task["branch"]}, task["id"])
     git_guard.push(task["branch"], worktree)
     state.add_comment(task["id"], f"worker({task['role']})",
                       f"✅ zrobiłem i zacommitowałem ({lines} linii, branch {task['branch']}) → proszę o Code Review")

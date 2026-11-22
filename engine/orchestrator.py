@@ -209,7 +209,19 @@ class Orchestrator:
                     self.state.transition(task["id"], READY,
                                           review_notes=f"Regresja po rebase: {reg.get('output', '')[-500:]}")
                     continue
-                git_guard.merge_no_ff(wt, task["branch"], f"Merge {task['id']} into {base}")
+                if task.get("parent_task"):
+                    # subtask: squash do JEDNEGO commita pod rodzicem (mniej commitów na milestone)
+                    parent = self.state.get_task(task["parent_task"]) or task
+                    git_guard.run_git(["merge", "--squash", task["branch"]], cwd=wt, check=False)
+                    staged = git_guard.run_git(["diff", "--cached", "--quiet"], cwd=wt, check=False).returncode != 0
+                    if staged:
+                        git_guard.run_git(["commit", "-m",
+                                           f"feat({parent['id'].lower()}): {parent['title'][:60]} [{task['id']}]"],
+                                          cwd=wt)
+                    else:
+                        self.state.record_metric("squash_empty", {"task": task["id"]}, task["id"])
+                else:
+                    git_guard.merge_no_ff(wt, task["branch"], f"Merge {task['id']} into {base}")
                 git_guard.run_git(["push", "origin", base], cwd=wt, check=False)
                 self.state.transition(task["id"], MERGED)
                 self.state.record_metric("merge", {"milestone": task["milestone"]}, task["id"])

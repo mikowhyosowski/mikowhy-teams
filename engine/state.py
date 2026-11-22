@@ -291,8 +291,11 @@ class State:
                                           **{k: str(v)[:120] for k, v in fields.items()}}, task_id)
         return self.get_task(task_id)  # type: ignore[return-value]
 
+    MAX_SUBTASKS = 3  # więcej zmian w jednym commicie, mniej podzadań/commitów
+
     def split_task(self, task_id: str, subtask_specs: list[dict[str, Any]], max_split_depth: int = 1) -> list[str]:
-        """Zmiana #7: SPLIT_TASK dozwolony tylko do głębokości max_split_depth."""
+        """Zmiana #7: SPLIT_TASK dozwolony tylko do głębokości max_split_depth.
+        Dodatkowo: max MAX_SUBTASKS podzadań (reszta odpada — anty-fragmentacja)."""
         task = self.get_task(task_id)
         if task is None:
             raise StateError(task_id)
@@ -300,6 +303,8 @@ class State:
             raise StateError(
                 f"Osiągnięto max_split_depth={max_split_depth} dla {task_id} — brak dalszych podziałów"
             )
+        if len(subtask_specs) > self.MAX_SUBTASKS:
+            subtask_specs = subtask_specs[: self.MAX_SUBTASKS]
         ids: list[str] = []
         for i, spec in enumerate(subtask_specs):
             child_id = f"{task_id}{chr(ord('a') + i)}"

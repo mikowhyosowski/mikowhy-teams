@@ -184,6 +184,23 @@ def commit_all(worktree: Path, message: str) -> None:
     run_git(["commit", "-m", message], cwd=worktree)
 
 
+def commit_task(worktree: Path, task_id: str, message: str) -> str:
+    """Commit zadania odporny na retry: jeśli ostatni commit na gałęzi już należy do tego
+    zadania (retry), robimy --amend zamiast kolejnego duplikatu. Zwraca 'amended'|'committed'."""
+    assert_writable(worktree)
+    run_git(["add", "-A"], cwd=worktree)
+    staged = run_git(["status", "--porcelain"], cwd=worktree, check=False).stdout.strip()
+    if not staged:
+        raise RuntimeError("Brak zmian w scope_paths — LLM nie wyprodukował żadnego pliku ze scope_paths "
+                           "(enforce_scope wszystko cofnął albo odpowiedź nie miała klucza files)")
+    last = run_git(["log", "-1", "--format=%s"], cwd=worktree, check=False).stdout.lower()
+    if f"({task_id.lower()})" in last:
+        run_git(["commit", "--amend", "--no-edit"], cwd=worktree)
+        return "amended"
+    run_git(["commit", "-m", message], cwd=worktree)
+    return "committed"
+
+
 def push(branch: str, worktree: Path, remote: str = "origin") -> None:
     assert_writable(worktree)
     run_git(["push", "-u", remote, branch], cwd=worktree, check=False)
