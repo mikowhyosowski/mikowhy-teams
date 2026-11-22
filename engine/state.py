@@ -35,7 +35,7 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     IN_REVIEW: {READY_TO_MERGE, READY, ESCALATED},
     READY_TO_MERGE: {MERGED, READY, ESCALATED},
     MERGED: set(),
-    FAILED: {READY},
+    FAILED: {READY, ESCALATED},  # auto-eskalacja po 3 próbach (circuit breaker)
     BLOCKED: {READY, ESCALATED, AWAITING_APPROVAL},
     ESCALATED: {READY},
     AWAITING_APPROVAL: {READY, BLOCKED, ESCALATED},  # tylko człowiek (zmiana statusu na READY) odblokowuje
