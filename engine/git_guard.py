@@ -10,6 +10,7 @@ LLM nigdy nie wywołuje git — robi to wyłącznie ten moduł.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -79,8 +80,11 @@ def create_worktree(task_id: str, base_branch: str, branch: str,
     WORKTREES_ROOT.mkdir(parents=True, exist_ok=True)
     path = worktree_path(task_id, ns)
     path.parent.mkdir(parents=True, exist_ok=True)
+    run_git(["worktree", "prune"], cwd=repo, check=False)  # usuń rejestracje zaginionych katalogów
     if path.exists():
         run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
     exists = run_git(["rev-parse", "--verify", "--quiet", branch], cwd=repo, check=False).returncode == 0
     if exists:
         run_git(["worktree", "add", str(path), branch], cwd=repo)
@@ -94,8 +98,11 @@ def integration_worktree(milestone_branch: str, repo: Path | str = ROOT, ns: str
     assert_writable(repo)
     WORKTREES_ROOT.mkdir(parents=True, exist_ok=True)
     path = WORKTREES_ROOT / ns
+    run_git(["worktree", "prune"], cwd=repo, check=False)  # usuń rejestracje zaginionych katalogów
     if path.exists():
         run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
     run_git(["worktree", "add", str(path), milestone_branch], cwd=repo)
     return path
 
