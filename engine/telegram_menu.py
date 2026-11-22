@@ -16,6 +16,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -130,6 +132,11 @@ def _task_text(state: State, task_id: str) -> str:
     ]
     if t.get("review_notes"):
         lines.append(f"📝 notes: {t['review_notes'][:400]}")
+    comments = state.recent_comments(limit=5, task_id=task_id)
+    if comments:
+        lines.append("💬 ostatnie komentarze agentów:")
+        for c in reversed(comments):
+            lines.append(f"  • {c['author']}: {c['text'][:120]}")
     return "\n".join(lines)
 
 
@@ -252,8 +259,16 @@ def handle_text(state: State, chat_id: str, text: str) -> None:
     elif cmd == "health":
         txt, kb = render(state, chat_id, "health")
         _send(chat_id, txt, kb)
+    elif cmd in ("nowe pytanie", "new", "reset", "nowy wątek"):
+        state.set_kv(f"menu:{chat_id}:thread", {"role": None, "history": []})
+        _send(chat_id, "🆕 Nowy wątek — następna Twoja wiadomość poleci do drużyny (auto-routing do roli).", _main_kb())
     else:
-        _send(chat_id, f"❓ Nie rozumiem: `{text}`\nKomendy: start, list, list READY, status, health", _main_kb())
+        # czat z drużyną: osobny proces, żeby nie blokować ticka orkiestratora
+        log = open(ROOT / ".agents" / "logs" / f"team_chat.{chat_id}.log", "a", encoding="utf-8")
+        subprocess.Popen([sys.executable, "-m", "engine.team_chat", chat_id, text],
+                         cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT)
+        _send(chat_id, "🤖 Kieruję do zespołu… odpowiedź przyjdzie jako wiadomość z podpisem (kto odpisał). "
+                       "Napisz «nowe pytanie», żeby zacząć nowy temat.")
 
 
 def _handle_legacy_callback(state: State, cb_id: str, data: str) -> None:

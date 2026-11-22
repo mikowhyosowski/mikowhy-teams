@@ -227,6 +227,8 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         return
     git_guard.commit_all(worktree, f"feat({task['id'].lower()}): {task['title']}")
     git_guard.push(task["branch"], worktree)
+    state.add_comment(task["id"], f"worker({task['role']})",
+                      f"✅ zrobiłem i zacommitowałem ({lines} linii, branch {task['branch']}) → proszę o Code Review")
     state.transition(task["id"], IN_REVIEW, substep="done")
     state.record_metric("diff_lines", {"lines": lines}, task["id"])
     _log(task["id"], f"commit OK ({lines} linii diffu) -> IN_REVIEW")

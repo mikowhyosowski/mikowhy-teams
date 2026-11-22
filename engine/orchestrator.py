@@ -629,6 +629,9 @@ def main() -> None:
     ap5 = sub.add_parser("note", help="rada Sponsora: ALL (do każdego promptu) lub <task_id>")
     ap6 = sub.add_parser("retry", help="requeue: FAILED/BLOCKED/ESCALATED -> READY")
     ap6.add_argument("task_id")
+    db = sub.add_parser("dashboard", help="live UI zadań w przeglądarce (read-only), http://127.0.0.1:8765")
+    db.add_argument("--port", type=int, default=8765)
+    db.add_argument("--host", default="127.0.0.1")
     ap5.add_argument("target")
     ap5.add_argument("text")
     t = sub.add_parser("telegram-poll", help="Long-poll przycisków 7b (Deploy Prod / Rollback)")
@@ -696,6 +699,10 @@ def main() -> None:
         cmd_decline(args.task_id, args.reason)
     elif args.cmd == "retry":
         cmd_retry(args.task_id)
+    elif args.cmd == "dashboard":
+        from engine import dashboard
+        sys.argv = ["dashboard", "--port", str(args.port), "--host", args.host]
+        dashboard.main()
     elif args.cmd == "policy":
         if args.value:
             cfg = projects.set_approval_policy(args.project_id, args.value)
