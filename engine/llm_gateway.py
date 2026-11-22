@@ -200,11 +200,17 @@ class VibeCliGateway(LLMGateway):
 
     def complete(self, *, system: str, user: str, step: str, model: str) -> str:
         alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
+        enabled = os.environ.get("VIBE_ENABLED_TOOLS", "__none__")
+        attempts = 3 if enabled == "__none__" else 2  # bez tooli: model czasem mimo zakazu próbuje tooli — retry z mocniejszym przypomnieniem
         proc = self._run_once(system, user, alias, step)
-        if proc.returncode != 0:  # np. rc=3 turn_limit po odmowie toola — jedna próba z dopiskiem
-            proc = self._run_once(
-                system, user + "\n\nREMINDER: no tools available. Reply with plain text JSON only.",
-                alias, step)
+        for i in range(1, attempts):
+            if proc.returncode == 0:
+                break
+            reminder = ("\n\nREMINDER: You have NO tools. Do NOT emit any tool calls. "
+                        "Reply with plain text JSON only, nothing else.")
+            if i == attempts - 1 and enabled == "__none__":
+                system = system[:4000]  # ostatnia próba: krótszy prompt = mniej okazji do halucynacji tooli
+            proc = self._run_once(system, user + reminder * i, alias, step)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"vibe CLI rc={proc.returncode} (model={alias}, step={step}): {proc.stderr.strip()[-800:]}"
