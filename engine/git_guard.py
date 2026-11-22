@@ -119,7 +119,12 @@ def enforce_scope(worktree: Path, scope_paths: list[str]) -> list[str]:
         if f in allowed:
             continue
         if code == "??":
-            (worktree / f).unlink(missing_ok=True)
+            p = worktree / f
+            if p.is_dir():  # nieśledzony katalog (np. docs/projects/<pid>/) — usuń rekurencyjnie
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
         else:
             run_git(["checkout", "--", f], cwd=worktree, check=False)
         reverted.append(f)
