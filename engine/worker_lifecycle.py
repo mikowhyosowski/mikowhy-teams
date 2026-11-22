@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, quality_gates, skill_compiler
+from engine import git_guard, quality_gates, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
 from engine.state import (
     FAILED,
@@ -222,32 +222,55 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
     _log(task["id"], f"commit OK ({lines} linii diffu) -> IN_REVIEW")
 
 
+def _tg(state: State, task_id: str, extra: str = "") -> None:
+    """Aktualizacja żywej karty w temacie Telegram (no-op gdy brak env)."""
+    t = state.get_task(task_id)
+    if t:
+        telegram_reporter.update_progress(state, t, extra=extra)
+
+
 def run(task_id: str) -> int:
     state = State()
     task = state.claim_task(task_id, claimed_by=f"worker-{os.getpid()}")
     if task is None:
         _log(task_id, "zadanie niedostępne do przejęcia")
         return 1
+    telegram_reporter.ensure_topic(state, task)
     worktree: Path | None = None
     try:
         worktree = step0_prepare(state, task)
+        _tg(state, task_id, "worktree gotowy")
         base = state.get_milestone(task["milestone"])["branch"]
         step1_plan(state, task)
         task = state.get_task(task_id)  # split może zmienić status
         if task["status"] != "RUNNING":
+            telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
             return 0
+        _tg(state, task_id)
         step2_implement(state, task, worktree)
+        _tg(state, task_id)
         step3_tests(state, task, worktree)
+        _tg(state, task_id)
         step4_quality_gate(state, task, worktree, base)
         task = state.get_task(task_id)
-        if task["status"] == "RUNNING":
-            step45_simplify(state, task, worktree, base)
-            task = state.get_task(task_id)
+        if task["status"] != "RUNNING":
+            telegram_reporter.post_event(state, task, f"❌ lokalny QG nie przeszedł: {(task.get('review_notes') or '')[:300]}")
+            _tg(state, task_id)
+            return 0
+        step45_simplify(state, task, worktree, base)
+        task = state.get_task(task_id)
         if task["status"] == "RUNNING":
             step5_commit(state, task, worktree, base)
+        task = state.get_task(task_id)
+        if task and task["status"] == "IN_REVIEW":
+            _tg(state, task_id, "commit OK → IN_REVIEW (czeka na Code Review)")
         return 0
     except Exception as exc:  # deterministyczny fallback — nigdy cicha śmierć
         state.transition(task_id, FAILED, review_notes=repr(exc))
+        t = state.get_task(task_id)
+        if t:
+            telegram_reporter.post_event(state, t, f"💥 FAILED: `{exc!r}`")
+            telegram_reporter.update_progress(state, t)
         _log(task_id, f"FAILED: {exc!r}")
         return 2
     finally:

@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, lessons_gardener, skill_compiler
+from engine import git_guard, lessons_gardener, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
 from engine.state import IN_REVIEW, READY, READY_TO_MERGE, State
 
@@ -53,12 +53,21 @@ def review(task_id: str) -> int:
         state.record_metric("cr_approved", {"verdict": verdict}, task_id)
         skill_compiler.promote_role_if_probation(task["role"])  # zmiana #5
         skill_compiler.record_skill_usage(task, "APPROVED")     # Skill Fitness Score
+        t = state.get_task(task_id)
+        if t:
+            telegram_reporter.post_event(state, t, f"✅ CR *APPROVED* za {task['retry_count'] + 1}. próbą → READY_TO_MERGE")
+            telegram_reporter.update_progress(state, t)
         return 0
 
     # REJECTED — system sam się uczy (zmiana #2: lekcja per-stack, nie globalnie)
     notes = verdict.get("notes", [])
     state.transition(task_id, READY, retry_count=task["retry_count"] + 1,
                      review_notes=json.dumps(verdict, ensure_ascii=False))
+    t = state.get_task(task_id)
+    if t:
+        reasons = "; ".join((n.get("rule", str(n)) if isinstance(n, dict) else str(n)) for n in notes)[:500]
+        telegram_reporter.post_event(state, t, f"🔍 CR *REJECTED* (próba {task['retry_count'] + 1}): {reasons}")
+        telegram_reporter.update_progress(state, t)
     for note in notes:
         rule = note.get("rule") if isinstance(note, dict) else str(note)
         if rule:

@@ -113,6 +113,16 @@ class State:
         self._local = threading.local()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # migracja: pola Telegram Forum Topics per zadanie
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+            for col, decl in (("telegram_thread_id", "INTEGER"), ("telegram_summary_msg_id", "INTEGER")):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
+
+    def set_telegram(self, task_id: str, thread_id: int | None, summary_msg_id: int | None) -> None:
+        self._conn().execute(
+            "UPDATE tasks SET telegram_thread_id=?, telegram_summary_msg_id=?, updated_at=? WHERE id=?",
+            (thread_id, summary_msg_id, time.time(), task_id))
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -227,7 +237,7 @@ class State:
         params: list[Any] = [new_status, time.time()]
         for key, value in fields.items():
             if key not in {"substep", "review_notes", "branch", "worktree", "role", "retry_count", "claimed_by"}:
-                raise StateError(f"Nieznane pole: {key}")
+                raise StateError(f"Nieznane pole: {key}")  # telegram_* ustawia osobno set_telegram
             sets.append(f"{key}=?")
             params.append(value)
         params.append(task_id)

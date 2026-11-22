@@ -33,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, lessons_gardener, quality_gates, skill_compiler, skill_curator, telegram_gate
+from engine import git_guard, lessons_gardener, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_reporter
 from engine.state import (
     BLOCKED,
     ESCALATED,
@@ -131,11 +131,17 @@ class Orchestrator:
                 telegram_gate.send_message(
                     f"⚠️ *Circuit breaker* dla `{task['id']}` — przełączam na `{PRINCIPAL_ROLE}` "
                     f"(pełna historia {task['retry_count']} odrzuceń).")
+                telegram_reporter.post_event(self.state, task,
+                                             f"⚠️ *Circuit breaker* (retry>={task['retry_count']}) → rola `{PRINCIPAL_ROLE}`")
             elif task["retry_count"] >= CIRCUIT_BREAKER_RETRIES + 2 and task["role"] == PRINCIPAL_ROLE:
                 self.state.transition(task["id"], ESCALATED)
                 telegram_gate.send_message(
                     f"🚨 *ESKALACJA* `{task['id']}` — nawet Principal Debugger poległ. "
                     f"Bloker: {task.get('review_notes', '')[:300]}")
+                t = self.state.get_task(task["id"])
+                if t:
+                    telegram_reporter.post_event(self.state, t, "🚨 *ESCALATED* — nawet Principal Debugger poległ. Czeka Product Sponsor.")
+                    telegram_reporter.update_progress(self.state, t)
 
     # --- faza 6: merge do gałęzi milestonu --------------------------------------
     def _handle_merges(self) -> None:
@@ -157,6 +163,12 @@ class Orchestrator:
                 git_guard.run_git(["push", "origin", base], cwd=wt, check=False)
                 self.state.transition(task["id"], MERGED)
                 self.state.record_metric("merge", {"milestone": task["milestone"]}, task["id"])
+                merged = self.state.get_task(task["id"])
+                if merged:
+                    diff_stat = git_guard.run_git(["diff", "--shortstat", f"{base}~1", base], cwd=wt, check=False).stdout.strip()
+                    telegram_reporter.close_topic(
+                        self.state, merged,
+                        summary=f"Zmergowane do `{base}` ({diff_stat or '—'}). Rola: {merged['role']}, retry: {merged['retry_count']}")
                 git_guard.remove_worktree("_integration")
                 self.state.export_snapshot()  # snapshot po każdym mergu
                 lessons_gardener.garden(self.state)  # zmiana #2: co 10 mergy
@@ -174,8 +186,9 @@ class Orchestrator:
             qg3 = quality_gates.qg3_integration_e2e(ms["branch"], wt)  # zmiana #3
             if not qg3["ok"]:
                 self.state.set_milestone_status(ms["id"], "OPEN")
-                telegram_gate.send_message(
-                    f"❌ *QG-3 nie przeszło* dla `{ms['id']}`: {'; '.join(qg3['problems'][:3])}")
+                msg = f"❌ *QG-3 nie przeszło* dla `{ms['id']}`: {'; '.join(qg3['problems'][:3])}"
+                telegram_gate.send_message(msg)
+                telegram_reporter.post_milestone(f"🧪 *QG-3* `{ms['id']}`: ❌ {'; '.join(qg3['problems'][:2])}")
                 continue
             # merge milestone/* -> main
             git_guard.run_git(["checkout", "main"], cwd=wt, check=False)
@@ -185,6 +198,7 @@ class Orchestrator:
             self.state.set_milestone_status(ms["id"], "CLOSED")
             self.state.export_snapshot()
             git_guard.remove_worktree("_integration")
+            telegram_reporter.post_milestone(f"🎉 *{ms['id']}* przeszedł QG-3 E2E i został zmergowany do main: {ms['goal'][:80]}")
             self._phase7(ms)
 
     def _phase7(self, ms: dict) -> None:
@@ -342,6 +356,13 @@ def doctor() -> int:
     check("Skill harvester (registry.skills)", True,
           f"{len(skills)} skilli ({sum(1 for v in skills.values() if v.get('status') == 'ACTIVE')} ACTIVE, "
           f"{len(quar)} QUARANTINED)" + (f" — kwarantanna: {quar}" if quar else ""), warn=bool(quar))
+
+    # 9. Telegram (Forum Topics + bramka 7b)
+    from engine import telegram_reporter
+    tel_ok = telegram_reporter.enabled()
+    check("Telegram: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID (forum)", tel_ok,
+          "skonfigurowane — 1 zadanie = 1 temat, żywa karta, bramka 7b" if tel_ok else
+          "brak TELEGRAM_CHAT_ID w .env — ustaw ID supergrupy z Topics (-100...); reporter działa jako no-op", warn=True)
 
     width = max(len(c[0]) for c in checks)
     failed = 0

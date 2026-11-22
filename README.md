@@ -95,6 +95,20 @@ repo-root/
 - Auto-prune: gdy plik `*-lessons.md` przekroczy 50 reguł, curator promuje top-5 (po powtórzeniach)
   do odpowiedniego `stacks/*.md` / `roles/*.md` i przycina lekcje do limitu 30.
 
+## Telegram — Forum Topics (1 zadanie = 1 temat)
+`engine/telegram_reporter.py` (Bot API: `createForumTopic` / `editMessageText` / `pinChatMessage` / `editForumTopic` / `closeForumTopic`):
+
+- **Temat = zadanie**: nazwa żyje ze statusem (`⏳ [TASK-002] … (2/5_IMPL)` → `🔍 …` → `✅ …`)
+- **Przypięta Karta Stanu**: pierwsza wiadomość w wątku, aktualizowana tylko przez `editMessageText`
+  (pasek `[■■■□□] 3/5`, rola/model, branch, lista podzadań `↳`) — zero spamu powiadomień
+- **Eventy w wątku** tylko przy kamieniach milowych: SPLIT_TASK, CR REJECTED (z regułą), circuit breaker, ESCALATED, MERGED z shortstatem
+- **close_topic**: `✅` + `closeForumTopic` po mergu (wątek archiwizowany, wciąż czytelny)
+- Milestony (QG-3, 7a/7b) → wiadomość na główny temat grupy; bramka 7b ([🚀 Deploy Prod]) nadal w `telegram_gate.py`
+
+Konfiguracja: supergrupa z włączonymi **Topics**, bot jako admin (Manage Topics / Send / Edit / Pin).
+Sekrety w `.env` (gitignored): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (`-100…`). Bez nich reporter to no-op.
+Stan per zadanie: kolumny `telegram_thread_id`, `telegram_summary_msg_id` w `state.db` (eksportowane do `pipeline.json`).
+
 ## Zasady bezpieczeństwa
 - Boty LLM nie wywołują git ani nie ruszają stanu — robi to silnik (Python).
 - `scope_paths` egzekwowane fizycznie przed każdym commitem; diff > 250 linii odrzucony.
