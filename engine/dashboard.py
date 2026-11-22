@@ -56,6 +56,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Dark Factory �
 <table id="tasks"><thead><tr><th></th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>rola</th><th>projekt</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 <h2>💬 Komentarze agentów (feed)</h2><div class="feed" id="comments"></div>
 <h2>📈 Ostatnie eventy</h2><div class="feed" id="metrics"></div>
+<h2>🔴 Live — .agents/runtime (surowe odpowiedzi LLM) <button onclick="toggleLive()">▶/⏸</button></h2>
+<div class="feed" id="runtime"></div>
+<h2>📜 Logi procesów (.agents/logs) — klik = tail</h2>
+<div class="feed" id="logs"></div>
+<pre id="viewer" style="background:#0d1117;border:1px solid #30363d;padding:8px;max-height:300px;overflow:auto;font-size:11px"></pre>
 <div id="detail"><button onclick="closeDetail()" style="float:right">✖</button><div id="detailBody">wybierz zadanie…</div></div>
 <script>
 let curTask = null;
@@ -84,7 +89,18 @@ async function refresh(){
   document.getElementById('metrics').innerHTML = d.metrics.map(m =>
     `<div><span class="muted">${new Date(m.ts*1000).toLocaleTimeString()}</span> ${m.kind} ${m.task_id||''} <span class="muted">${(m.payload||'').slice(0,100)}</span></div>`).join('');
   if(curTask) openTask(curTask, true);
+  document.getElementById('runtime').innerHTML = (d.runtime||[]).map(f =>
+    `<div><a href="#" onclick="view('/api/raw/'+encodeURIComponent(f.name));return false" style="color:#58a6ff">${f.name}</a> <span class="muted">${f.size}B, ${f.age}s temu</span></div>`).join('');
+  document.getElementById('logs').innerHTML = (d.logs||[]).map(f =>
+    `<div><a href="#" onclick="view('/api/log/'+encodeURIComponent(f.name)+'?n=60');return false" style="color:#58a6ff">${f.name}</a> <span class="muted">${(f.size/1024).toFixed(1)}KB, ${f.age}s temu</span></div>`).join('');
 }
+async function view(url){
+  const r = await fetch(url); const t = await r.text();
+  document.getElementById('viewer').textContent = t;
+  document.getElementById('viewer').scrollTop = 1e9;
+}
+function toggleLive(){ liveOn = !liveOn; }
+let liveOn = true;
 async function openTask(id, keep){
   curTask = id;
   const r = await fetch('/api/task/'+id); const t = await r.json();
@@ -118,6 +134,8 @@ async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
 refresh(); setInterval(refresh, 2000);
+setInterval(() => { const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
+const _view = view; view = function(u){ document.getElementById('viewer').dataset.url = u; return _view(u); };
 </script></body></html>"""
 
 
@@ -140,8 +158,21 @@ def snapshot() -> dict:
         projs.append({"project_id": p["project_id"], "target": p.get("target_repo_path"),
                       "read_only": bool(p.get("read_only")),
                       "approval_policy": p.get("approval_policy", "manual")})
+    runtime_dir = ROOT / ".agents" / "runtime"
+    runtime = []
+    if runtime_dir.exists():
+        for f in sorted(runtime_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
+            st = f.stat()
+            runtime.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
+    logs_dir = ROOT / ".agents" / "logs"
+    logs = []
+    if logs_dir.exists():
+        for f in sorted(logs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
+            st = f.stat()
+            logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
     return {"icons": ICON, "projects": projs, "tasks": tasks,
-            "comments": s.recent_comments(40), "metrics": metrics}
+            "comments": s.recent_comments(40), "metrics": metrics,
+            "runtime": runtime, "logs": logs}
 
 
 def task_detail(task_id: str) -> dict:
@@ -173,6 +204,23 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self._send(200, json.dumps(snapshot(), ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
+        elif u.path.startswith("/api/raw/"):
+            name = u.path.rsplit("/", 1)[-1]
+            f = (ROOT / ".agents" / "runtime" / name)
+            if f.exists() and f.parent.resolve() == (ROOT / ".agents" / "runtime").resolve():
+                self._send(200, f.read_text(encoding="utf-8", errors="replace")[-8000:].encode(), "text/plain; charset=utf-8")
+            else:
+                self._send(404, b"not found", "text/plain")
+        elif u.path.startswith("/api/log/"):
+            name = u.path.rsplit("/", 1)[-1]
+            q = parse_qs(u.query)
+            n = int(q.get("n", ["50"])[0])
+            f = (ROOT / ".agents" / "logs" / name)
+            if f.exists() and f.parent.resolve() == (ROOT / ".agents" / "logs").resolve():
+                lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+                self._send(200, ("\n".join(lines[-n:])).encode(), "text/plain; charset=utf-8")
+            else:
+                self._send(404, b"not found", "text/plain")
         elif u.path.startswith("/api/task/"):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),

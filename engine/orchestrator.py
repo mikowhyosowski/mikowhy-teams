@@ -760,6 +760,7 @@ def main() -> None:
     ap6.add_argument("task_id")
     db = sub.add_parser("dashboard", help="live UI zadań w przeglądarce (read-only), http://127.0.0.1:8765")
     sub.add_parser("scan", help="pre-push review: sekrety/klucze w plikach i historii git + higiena .gitignore")
+    sub.add_parser("watch", help="live tail: .agents/runtime (surowe odpowiedzi LLM) + .agents/logs/* w terminalu")
     gh = sub.add_parser("gh", help="GitHub bridge: setup | push <branch> | pr <head> <base> <tytul> | protect | status")
     gh.add_argument("action")
     gh.add_argument("args", nargs="*")
@@ -834,6 +835,28 @@ def main() -> None:
         cmd_retry(args.task_id)
     elif args.cmd == "scan":
         raise SystemExit(cmd_scan())
+    elif args.cmd == "watch":
+        import os as _os
+        rt = ROOT / ".agents" / "runtime"; lg = ROOT / ".agents" / "logs"
+        seen_rt, seen_lg = {}, {}
+        print("🔴 watch — Ctrl+C stop. Sekcja [runtime] = surowe odpowiedzi LLM, [log] = logi procesów\n")
+        while True:
+            for d, seen, tag in ((rt, seen_rt, "runtime"), (lg, seen_lg, "log")):
+                if not d.exists():
+                    continue
+                for f in sorted(d.iterdir(), key=lambda x: x.stat().st_mtime):
+                    st = f.stat()
+                    key = (tag, f.name)
+                    if key not in seen or seen[key] != (st.st_mtime, st.st_size):
+                        seen[key] = (st.st_mtime, st.st_size)
+                        try:
+                            tail = f.read_text(encoding="utf-8", errors="replace").splitlines()[-3:]
+                        except Exception:
+                            tail = ["<unreadable>"]
+                        print(f"[{tag}] {f.name} ({st.st_size}B)")
+                        for l in tail:
+                            print("   ", l[:180])
+            time.sleep(2)
     elif args.cmd == "gh":
         from engine import github_bridge as gb
         act = args.action
