@@ -281,3 +281,22 @@ def get_gateway() -> LLMGateway:
     if cls is None:
         raise RuntimeError(f"Nieznany LLM_PROVIDER={name!r}; dostępne: {sorted(_REGISTRY)}")
     return cls()
+
+
+def make_sponsor_title(technical_title: str, context: str = "") -> str:
+    """Tytuł zadania WYŚWIETLANY Sponsorowi — krótki (max ~70 znaków), prostymi słowami,
+    bez żargonu technicznego. LLM (fast); fallback = techniczny tytuł."""
+    try:
+        gw = get_gateway()
+        out = gw.complete_json(
+            system=("Przepisz techniczny tytuł zadania na tytuł dla Sponsora (osoby nietechnicznej): "
+                    "krótko (max 70 znaków), proste słowa, bez skrótów i żargonu, po polsku. "
+                    "Odpowiedz WYŁĄCZNIE JSON: {\"title\": \"...\"}."),
+            user=f"Tytuł techniczny: {technical_title}\nKontekst: {context[:300]}",
+            step="SPONSOR_TITLE", model="fast-model")
+        t = str(out.get("title", "")).strip()
+        if 5 <= len(t) <= 90:
+            return t
+    except Exception:
+        pass
+    return technical_title[:70]

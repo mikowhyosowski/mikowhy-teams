@@ -130,6 +130,7 @@ class State:
                 ("tasks", "mode", "TEXT DEFAULT 'pipeline'"),  # 'pipeline' (domyślny) | 'llm' — wykonuje sam LLM (vibe z narzędziami)
                 ("tasks", "started_at", "REAL"),  # kiedy worker przejął zadanie (do liczenia czasu pracy)
                 ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
+                ("tasks", "title_sponsor", "TEXT"),  # tytuł wyświetlany Sponsorowi — krótko, prostymi słowami
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
             ):
                 cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -215,17 +216,18 @@ class State:
         read_only: bool = False,
         mode: str = "pipeline",
         priority: str = "P2",
+        title_sponsor: str | None = None,
     ) -> str:
         now = time.time()
         self._conn().execute(
             """INSERT INTO tasks(id,milestone,phase,title,role,status,parallel_group,scope_paths,
-               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only,mode,priority)
-               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only,mode,priority,title_sponsor)
+               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task_id, milestone, phase, title, role, status, parallel_group,
                 json.dumps(scope_paths or []), json.dumps(depends_on or []),
                 acceptance_criteria, 0, split_depth, parent_task, now, now, project_id, repo, int(read_only), mode,
-                priority,
+                priority, title_sponsor or title,
             ),
         )
         return task_id

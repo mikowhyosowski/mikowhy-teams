@@ -138,7 +138,10 @@ def main() -> int:
         state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
                             "milestone/chat-ops", project_id=pid)
         prio = "P0" if any(k in low for k in ("pilne", "pilny", "pilna", "asap", "natychmiast", "od razu")) else "P2"
+        from engine.llm_gateway import make_sponsor_title
+        sponsor_title = make_sponsor_title(desc[:90], desc)
         state.add_task(tid, milestone="CHAT-OPS", phase=4, title=desc[:90], role="llm-executor",
+                       title_sponsor=sponsor_title,
                        scope_paths=[], depends_on=[],
                        acceptance_criteria=(f"Zadanie wykonane w 100% przez LLM; raport dla drużyny w "
                                             f"docs/llm-reports/{tid}.md; zmiany zacommitowane na branchu feature/{tid.lower()}"),
@@ -192,9 +195,11 @@ def main() -> int:
         pid = _projects.active_project_id()
         state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
                             "milestone/chat-ops", project_id=pid)
+        from engine.llm_gateway import make_sponsor_title
         state.add_task(tid, milestone="CHAT-OPS", phase=4, title=title, role=role,
                        scope_paths=[], depends_on=[], acceptance_criteria=acc,
-                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False)
+                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False,
+                       title_sponsor=make_sponsor_title(title, text))
         telegram_gate._call("sendMessage", {"chat_id": chat_id,
             "text": (f"✅ Stworzyłem zadanie {tid} (rola: {role}, projekt: {pid}, status: AWAITING_APPROVAL; "
                      f"zgodnie z polityką projektu zadanie albo samo pójdzie dalej, albo poczeka na Twój klik). "

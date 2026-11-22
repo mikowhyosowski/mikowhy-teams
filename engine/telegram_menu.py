@@ -123,7 +123,8 @@ def _task_text(state: State, task_id: str) -> str:
         return f"❌ Nieznane zadanie: {task_id}"
     icon = ICON.get(t["status"], "?")
     lines = [
-        f"{icon} *{t['id']}* — {t['title']}",
+        f"{icon} *{t['id']}* — {t.get('title_sponsor') or t['title']}",
+        f"   (tech: {t['title'][:80]})" if t.get('title_sponsor') and t.get('title_sponsor') != t['title'] else "",
         f"Status: *{t['status']}* | faza: {t['phase']} | rola: {t['role']}",
         f"Projekt: {t.get('project_id')} (approval_policy: {projects.approval_policy(t.get('project_id') or 'mikowhy-teams')}) | repo: {t.get('repo') or 'target'} | read_only: {'TAK — zero commitów' if t.get('read_only') else 'nie'} | milestone: {t['milestone']}",
         f"Zależy od: {t['depends_on']} | substep: {t.get('substep')} | branch: {t.get('branch')}",

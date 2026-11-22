@@ -200,7 +200,7 @@ async function refreshInner(){
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
        <b>${t.substep==='ASK_SPONSOR'?'❓ ODPOWIEDZ':'🚨 TWÓJ RUCH'}</b> <b>${esc(t.id)}</b>
-       <div>${esc((t.title||'').slice(0,80))}</div>
+       <div>${esc((t.title_sponsor||t.title||'').slice(0,80))}</div>
        <div class="muted">${esc((t.review_notes||'').slice(0,120))}</div>
        <div class="muted">czeka ${fmtDur(t.age||0)} · ${esc(t.persona||t.role||'')}</div>
      </div>`).join('') : '<span class="muted">nic nie czeka na Twoją decyzję ✅</span>';
@@ -240,7 +240,7 @@ async function refreshInner(){
     const prio = `<span class="pico" title="priorytet ${t.priority||'P2'}">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>`;
     const ic = `<span class="ic ic-${t.status}">${d.icons[t.status]||'?'}</span>`;
     const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>` : '';
-    tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td>${esc((t.title||'').slice(0,60))}</td>
+    tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
       <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> ')+t.status:t.status}</td>
       <td class="muted">${esc(t.substep||'')}</td><td>${t.retry_count}</td>
       <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted">${esc(t.project_id||'')}</td>
@@ -303,7 +303,8 @@ async function openTask(id, keep){
   if(keep && document.getElementById('detailBody').dataset.key === key) return;
   document.getElementById('detailBody').dataset.key = key;
   let html = `<h3>${t.icons[d.status]||''} ${esc(d.id)}</h3>
-    <div class="kv"><b>tytuł:</b> ${esc(d.title||'')}</div>
+    <div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
+    <div class="kv muted" style="font-size:10px">tech: ${esc(d.title||'')}</div>
     <div class="kv"><b>status:</b> ${esc(d.status)} | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> ${esc(d.priority||'P2')}</div>
     <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${esc(d.project_id||'')} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
     <div class="kv"><b>przejął:</b> ${esc(d.claimed_by||'-')}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''}</div>
@@ -373,7 +374,7 @@ def _snapshot(s: State) -> dict:
         tasks.append({k: t.get(k) for k in ("id", "title", "status", "substep", "retry_count",
                                              "role", "project_id", "branch", "updated_at", "read_only",
                                              "mode", "parent_task", "started_at", "claimed_by", "priority",
-                                             "review_notes", "created_at")})
+                                             "review_notes", "created_at", "title_sponsor")})
         tasks[-1]["age"] = max(0, time.time() - (t.get("updated_at") or t.get("created_at") or time.time()))
         tasks[-1]["pr"] = github_bridge.pr_for_task(t["id"])
         p = personas.persona_for_role(t.get("role") or "")
