@@ -162,19 +162,28 @@ class VibeCliGateway(LLMGateway):
     def _run_once(self, system: str, user: str, alias: str, step: str) -> subprocess.CompletedProcess:
         RUNTIME.mkdir(parents=True, exist_ok=True)
         safe_step = "".join(c if c.isalnum() or c in "-_" else "_" for c in step)
+        # VIBE_ENABLED_TOOLS: domyślnie "__none__" (bot bez narzędzi — determinizm silnika).
+        # Żeby bot mógł sam uruchamiać Pythona: VIBE_ENABLED_TOOLS=file_system.bash,file_system.read,file_system.write
+        enabled_tools = os.environ.get("VIBE_ENABLED_TOOLS", "__none__")
+        approval = os.environ.get("VIBE_APPROVAL_POLICY", "")  # np. smart-approve / auto-approve gdy narzędzia włączone
         with tempfile.TemporaryDirectory(dir=RUNTIME, prefix=f"gw-{safe_step}-") as tmp:
             sys_file = Path(tmp) / "system.md"
             user_file = Path(tmp) / "user.md"
-            sys_file.write_text(system + self.NO_TOOLS_NOTE, encoding="utf-8")
+            note = self.NO_TOOLS_NOTE if enabled_tools == "__none__" else (
+                "\n\n## Narzędzia\nMasz dostęp do włączonych narzędzi (VIBE_ENABLED_TOOLS). "
+                "Możesz uruchamiać kod, ALE ostateczny output musi być czystym JSON-em.")
+            sys_file.write_text(system + note, encoding="utf-8")
             user_file.write_text(user, encoding="utf-8")
             cmd = [
                 self.binary, "--trust", "--max-turns", "3",
                 "--model", alias, "--output", "text",
-                "--enabled-tools", "__none__",
+                "--enabled-tools", enabled_tools,
                 "--system-prompt-file", str(sys_file),
                 "--prompt-file", str(user_file),
                 "--time-limit", str(self.timeout),
             ]
+            if approval:
+                cmd += ["--approval-policy", approval]
             # jawne env: pełne os.environ (po _load_dotenv) — klucze API, PATH z ~/.local/bin
             return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                   timeout=self.timeout + 60, env=os.environ.copy())

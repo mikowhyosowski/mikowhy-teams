@@ -45,6 +45,13 @@ Domyślnie silnik używa lokalnego **Mistral Vibe CLI** w trybie headless (`engi
 | strong (architektura, CR, debugger) | `mistral-large-4-0` | `VIBE_STRONG_MODEL` |
 
 Inny provider: `LLM_PROVIDER=stub python -m engine.orchestrator run` lub `register_gateway("nazwa", klasa)`.
+
+Żeby bot mógł **sam uruchamiać Pythona** przez vibe CLI (domyślnie wyłączone — `__none__`):
+```bash
+# w .env:
+VIBE_ENABLED_TOOLS=file_system.bash,file_system.read,file_system.write
+VIBE_APPROVAL_POLICY=smart-approve    # auto-approve = pełna autonomia (ostrożnie)
+```
 Test bramki: `python -c "from engine.llm_gateway import get_gateway; print(get_gateway().complete_json(system='Odpowiadaj tylko JSON', user='{\"ok\": true}', step='SMOKE', model='fast-model'))"`
 
 ## Struktura
