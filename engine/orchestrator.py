@@ -442,7 +442,7 @@ def cmd_retry(task_id: str) -> None:
     if task["status"] not in (FAILED, BLOCKED, ESCALATED):
         raise SystemExit(f"{task_id} ma status {task['status']} — retry tylko z FAILED/BLOCKED/ESCALATED")
     state.transition(task_id, READY, substep="1/5_PLAN", retry_count=0,
-                     review_notes=(task.get("review_notes") or "") + " | requeue (retry)")
+                     review_notes="requeue (retry) — stare review_notes wyczyszczone")
     state.record_metric("sponsor_retry", {"task": task_id}, task_id)
     print(f"🔁 {task_id} -> READY (retry_count=0)")
 

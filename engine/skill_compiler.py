@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -151,8 +152,22 @@ def compile_system_prompt(role: str, stack: list[str] | None, task: dict) -> str
                 "builder": "Jesteś pragmatycznym inżynierem — prosty, nudny, niezawodny kod."}
         parts.append(f"# Persona: {persona}\n{desc.get(persona, persona)}")
     parts.append("# Zamrożone kontrakty (FROZEN — tylko do odczytu)\n" + json.dumps(load_contracts(), ensure_ascii=False))
-    parts.append("# Zadanie (JSON)\n" + json.dumps(task, ensure_ascii=False, default=str))
+    parts.append("# Zadanie (JSON)\n" + json.dumps(_sanitize_task(task), ensure_ascii=False, default=str))
     return "\n\n---\n\n".join(parts)
+
+
+_NOISE = re.compile(r"(?i)(tool call denied|turn_limit|vibe CLI rc=|approval policy|keyring|IsADirectoryError|GitError)")
+
+
+def _sanitize_task(task: dict) -> dict:
+    """Nie wstrzykuj surowych błędów CLI/review do promptu — model zaczyna je 'pamiętać' jako fakty.
+    review_notes czyścimy z linii-błędów i obcinamy do ~800 znaków."""
+    t = dict(task)
+    rn = t.get("review_notes") or ""
+    if rn:
+        lines = [l for l in rn.splitlines() if l.strip() and not _NOISE.search(l)]
+        t["review_notes"] = "\n".join(lines)[-800:]
+    return t
 
 
 # ============================================================================
