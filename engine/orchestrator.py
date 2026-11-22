@@ -33,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, lessons_gardener, quality_gates, telegram_gate
+from engine import git_guard, lessons_gardener, quality_gates, skill_compiler, skill_curator, telegram_gate
 from engine.state import (
     BLOCKED,
     ESCALATED,
@@ -60,8 +60,11 @@ def bootstrap(goal: str, milestone_id: str = "M1") -> None:
     chain = [
         (1, "product-owner", f"PRD (Gherkin + Edge Cases) dla: {goal}",
          "docs/PRD.md", "QG-1: każdy REQ ma Given/When/Then i sekcja Edge Cases"),
-        (2, "solutions-architect", f"ADR + zamrożone kontrakty dla: {goal}",
-         "docs/adr/, contracts/", "QG-2: OpenAPI/JSON Schema valid + audyt security; kontrakty FROZEN"),
+        (1.5, "ideation-challenger", f"ARCH_OPTIONS: 3 skrajnie różne warianty architektury dla: {goal}",
+         "docs/adr/0001-arch-options.md",
+         "3 warianty: Boring & Bulletproof / Performance Edge-First / Wildcard UX-Delight, każdy z trade-offami i rekomendacją"),
+        (2, "solutions-architect", f"ADR + zamrożone kontrakty dla: {goal} (wybór z ARCH_OPTIONS)",
+         "docs/adr/, contracts/", "QG-2: OpenAPI/JSON Schema valid + audyt security; kontrakty FROZEN; ADR uzasadnia wybór wariantu"),
         (2.5, "tech-lead-planner", "Faza 2.5 Scaffolding: zależności, puste migracje, szkielety routerów/DI",
          "manifesty zależności, migrations/, szkielety modułów",
          "Brak równoległej edycji plików współdzielonych; lockfile bez konfliktów"),
@@ -74,8 +77,15 @@ def bootstrap(goal: str, milestone_id: str = "M1") -> None:
         state.add_task(tid, milestone=milestone_id, phase=phase, title=title, role=role,
                        scope_paths=[scope], depends_on=deps, acceptance_criteria=acc)
         deps = [tid]
+    # Skill Harvester: raz przy tworzeniu milestonu — skan zależności i pobranie skilli
+    try:
+        report = skill_compiler.ensure_stack_skills(allow_llm=False)  # deterministycznie; LLM-synteza w fazie HR
+        print(f"Skill harvester: {len(report['harvested'])} pobranych, {len(report['quarantined'])} w kwarantannie, "
+              f"{len(report['needs_synthesis'])} do syntezy LLM: {report['needs_synthesis']}")
+    except Exception as exc:
+        print(f"Skill harvester — błąd (kontynuacja offline): {exc}")
     state.export_snapshot()
-    print(f"Zbootstrapowano mileston {milestone_id} ({branch}) z fazami 1, 2, 2.5, 3. Cel: {goal}")
+    print(f"Zbootstrapowano mileston {milestone_id} ({branch}) z fazami 1, 1.5(ARCH_OPTIONS), 2, 2.5, 3. Cel: {goal}")
 
 
 class Orchestrator:
@@ -150,6 +160,7 @@ class Orchestrator:
                 git_guard.remove_worktree("_integration")
                 self.state.export_snapshot()  # snapshot po każdym mergu
                 lessons_gardener.garden(self.state)  # zmiana #2: co 10 mergy
+                skill_curator.prune_if_needed(self.state)  # Skill Fitness: auto-prune + promocja lekcji
             except git_guard.MergeConflict as exc:
                 self.state.transition(task["id"], READY, review_notes=f"Konflikt: {exc}")
                 self.state.record_metric("merge_conflict", {"task": task["id"]}, task["id"])
@@ -323,6 +334,14 @@ def doctor() -> int:
     # 7. Klucze API dla vibe
     check("klucz API (MISTRAL_API_KEY lub keyring)", bool(os.environ.get("MISTRAL_API_KEY")) or True,
           "vibe czyta też system keyring; .env ładowany automatycznie przez llm_gateway._load_dotenv", warn=True)
+
+    # 8. Harvester skilli
+    reg = skill_compiler.load_registry()
+    skills = reg.get("skills", {})
+    quar = [k for k, v in skills.items() if v.get("status") == "QUARANTINED"]
+    check("Skill harvester (registry.skills)", True,
+          f"{len(skills)} skilli ({sum(1 for v in skills.values() if v.get('status') == 'ACTIVE')} ACTIVE, "
+          f"{len(quar)} QUARANTINED)" + (f" — kwarantanna: {quar}" if quar else ""), warn=bool(quar))
 
     width = max(len(c[0]) for c in checks)
     failed = 0

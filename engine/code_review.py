@@ -52,6 +52,7 @@ def review(task_id: str) -> int:
         state.transition(task_id, READY_TO_MERGE, review_notes=json.dumps(verdict, ensure_ascii=False))
         state.record_metric("cr_approved", {"verdict": verdict}, task_id)
         skill_compiler.promote_role_if_probation(task["role"])  # zmiana #5
+        skill_compiler.record_skill_usage(task, "APPROVED")     # Skill Fitness Score
         return 0
 
     # REJECTED — system sam się uczy (zmiana #2: lekcja per-stack, nie globalnie)
@@ -63,6 +64,7 @@ def review(task_id: str) -> int:
         if rule:
             lessons_gardener.add_lesson(stack="python-3.14-async", rule=rule, task_id=task_id)
     state.record_metric("cr_reject", {"retry": task["retry_count"] + 1, "notes": notes}, task_id)
+    skill_compiler.record_skill_usage(task, "REJECTED")         # Skill Fitness Score
 
     if task["retry_count"] + 1 >= CIRCUIT_BREAKER_RETRIES:
         # Circuit breaker: orchestrator podmieni rolę na principal-debugger

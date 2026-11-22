@@ -69,6 +69,32 @@ repo-root/
 | 7 | SPLIT_TASK fork-bomba / przepełnione zadania | `max_split_depth=1` + `MAX_DIFF_LINES=250` odrzucany przed CR | `engine/state.py::split_task`, `engine/git_guard.py` |
 | 8 | fcntl na płaskim JSON — deadlocki, uszkodzenia | SQLite WAL `.agents/state.db`, atomowe `UPDATE ... RETURNING`, snapshot `pipeline.json` do repo | `engine/state.py` |
 
+## Warstwa skilli — 3 mechanizmy
+
+### 1. Skill Harvester & Curated Registry (`engine/skill_compiler.py::ensure_stack_skills`)
+- Skan zależności (`pyproject.toml` / `package.json` / `composer.json`) → Priorytet 1: pobranie gotowych reguł
+  z zaufanych repo (`PatrickJS/awesome-cursorrules`, `anthropics/skills`) przez GitHub API → `.agents/skills/stacks/<dep>-harvested.md`
+  z nagłówkiem proweniencji (źródło + sha256).
+- **Kwarantanna**: każdy zewnętrzny skill ląduje najpierw w `.agents/skills/_staging/`, gdzie deterministyczny
+  `security_scan_skill()` szuka prompt injection (ignore previous instructions, ukryte komentarze HTML, base64 bloby,
+  socjotechnika). QUARANTINED nie trafia do produkcji — jest w `registry.json` z ustaleniami.
+- Priorytet 2: brak gotowego skilla → synteza LLM (`synthesize_skill`, max 150 linii „Rób X / Nigdy nie rób Y”), status PROBATION.
+
+### 2. Wymuszona kreatywność (osobno od rygoru)
+- **ARCH_OPTIONS (Faza 1.5)**: zadanie `ideation-challenger` przed Fazą 2 generuje 3 skrajnie różne warianty
+  (Boring & Bulletproof / Performance Edge-First / Wildcard UX-Delight) do `docs/adr/0001-arch-options.md`;
+  dopiero `solutions-architect` wybiera wariant i zamraża kontrakty.
+- **Cognitive diversity**: `registry.json` ma persony per rola — `creator` (product-owner, frontend-dev, ideation-challenger)
+  vs `skeptic` (code-reviewer, security-auditor, principal-debugger) vs `builder`.
+- **Simplification Pass** (`worker_lifecycle.py::step45_simplify`): po zielonym QG, dla diffów > 80 linii —
+  „ta sama logika, ~30% mniej linii”; jeśli QG po uproszczeniu pada → automatyczny revert.
+
+### 3. Skill Fitness Score (`engine/skill_curator.py` + `metrics.jsonl`)
+- Każdy werdykt CR dopisuje do `.agents/metrics.jsonl`: które pliki skilli były wstrzyknięte + `first_pass` (czy CR za 1. razem).
+- `skill_fitness_report()` = per-skill fitness (first_pass / uses).
+- Auto-prune: gdy plik `*-lessons.md` przekroczy 50 reguł, curator promuje top-5 (po powtórzeniach)
+  do odpowiedniego `stacks/*.md` / `roles/*.md` i przycina lekcje do limitu 30.
+
 ## Zasady bezpieczeństwa
 - Boty LLM nie wywołują git ani nie ruszają stanu — robi to silnik (Python).
 - `scope_paths` egzekwowane fizycznie przed każdym commitem; diff > 250 linii odrzucony.

@@ -14,3 +14,10 @@ src/<pakiet>/__init__.py, api/, services/, repos/, models.py, schemas.py
 tests/unit, tests/integration, tests/e2e (QG-3)
 migrations/  (Alembic)
 ```
+
+## Lekcje wypromowane przez Skill_Curator (fitness)
+- reguła antywzorzec 0 (powtórzenia: 7)
+- reguła antywzorzec 1 (powtórzenia: 7)
+- reguła antywzorzec 2 (powtórzenia: 7)
+- reguła antywzorzec 3 (powtórzenia: 7)
+- reguła antywzorzec 4 (powtórzenia: 7)

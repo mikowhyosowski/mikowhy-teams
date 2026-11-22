@@ -160,6 +160,49 @@ def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> N
     state.transition(task["id"], FAILED, review_notes="QG nieprzechodzony po lokalnych poprawkach")
 
 
+def step45_simplify(state: State, task: dict, worktree: Path, base: str) -> None:
+    """Simplification Pass (opcjonalny, tylko złożone zadania): kod działa i QG zielone
+    -> LLM dostaje kod i ma zaproponować tę samą logikę idiomatycznie, o ~30% mniej linii.
+    Jeśli po uproszczeniu lokalny QG pada — revert do wersji przed uproszczeniem."""
+    try:
+        lines = git_guard.diff_line_count(worktree, base)
+    except git_guard.GitError:
+        return
+    if lines < 80:  # tylko większe zmiany mają sens
+        return
+    code = {p: (worktree / p).read_text(encoding="utf-8")
+            for p in task["scope_paths"] if (worktree / p).exists()}
+    if not code:
+        return
+    state.transition(task["id"], "RUNNING", substep="4.5_SIMPLIFY")
+    payload = {"code": code, "diff_lines": lines,
+               "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"files": {"<path ze scope_paths>": "<uproszczona treść>"}}. '
+                         'TA SAMA logika i testy, idiomatycznie, ok. 30% mniej linii. Żadnego innego klucza.'}
+    try:
+        res = _llm_step(task, "4.5_SIMPLIFY", json.dumps(payload, ensure_ascii=False),
+                        model=skill_compiler.model_for_role(task["role"], kind="strong"))
+    except RuntimeError:
+        return  # LLM niedostępny — pomijamy uproszczenie
+    files = res.get("files") or {}
+    files = {p: c for p, c in files.items() if p in task["scope_paths"]}
+    if not files:
+        return
+    backup = {p: (worktree / p).read_text(encoding="utf-8") for p in files if (worktree / p).exists()}
+    for rel, content in files.items():
+        (worktree / rel).write_text(content, encoding="utf-8")
+    results = quality_gates.local_gates(worktree)
+    if any(not r["ok"] for r in results if not r.get("skipped")):
+        for p, c in backup.items():  # revert
+            (worktree / p).write_text(c, encoding="utf-8")
+        state.record_metric("simplify_reverted", {"task": task["id"]}, task["id"])
+        _log(task["id"], "simplify: QG po uproszczeniu padło -> revert")
+        return
+    after = git_guard.diff_line_count(worktree, base)
+    state.record_metric("simplify_applied", {"before": lines, "after": after}, task["id"])
+    _log(task["id"], f"simplify: {lines} -> {after} linii diffu")
+    state.transition(task["id"], "RUNNING", substep="5/5_COMMIT")
+
+
 def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
     """Krok 5 (Python): scope_paths + limit diffu + commit + push -> IN_REVIEW."""
     reverted = git_guard.enforce_scope(worktree, task["scope_paths"])
@@ -197,6 +240,9 @@ def run(task_id: str) -> int:
         step3_tests(state, task, worktree)
         step4_quality_gate(state, task, worktree, base)
         task = state.get_task(task_id)
+        if task["status"] == "RUNNING":
+            step45_simplify(state, task, worktree, base)
+            task = state.get_task(task_id)
         if task["status"] == "RUNNING":
             step5_commit(state, task, worktree, base)
         return 0
