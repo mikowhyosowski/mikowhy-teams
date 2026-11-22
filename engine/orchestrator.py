@@ -561,7 +561,9 @@ def main() -> None:
     ap2.add_argument("--prefix", default="NVG")
     ap2.add_argument("--no-read-only", action="store_true", help="projekt z zapisem (np. self)")
     ap2.add_argument("--later-awaiting", action="store_true", help="tylko pierwsze zadanie READY, reszta AWAITING_APPROVAL")
-    sub.add_parser("health", help="pełny health check wszystkich projektów + zadania naprawcze")
+    h = sub.add_parser("health", help="pełny health check wszystkich projektów + zadania naprawcze; --watch = pętla")
+    h.add_argument("--watch", action="store_true", help="pętla: health co --interval sekund (domyślnie HEALTH_INTERVAL/300)")
+    h.add_argument("--interval", type=int, default=None, help="interwał pętli w sekundach")
     sub.add_parser("status", help="stan projektów i zadań (jak pipeline.json)")
     ap3 = sub.add_parser("approve", help="Sponsor: AWAITING_APPROVAL -> READY")
     ap3.add_argument("task_id")
@@ -599,9 +601,27 @@ def main() -> None:
         audit_project(args.project_id, args.target_repo_path, args.goal,
                       prefix=args.prefix, read_only=not args.no_read_only, later_awaiting=args.later_awaiting)
     elif args.cmd == "health":
-        rep = health_monitor.run(State(), create_tasks=True)
-        print(json.dumps({"ok": rep["ok"], "anomalies": rep["anomalies"],
-                          "global": rep["global"]}, indent=2, ensure_ascii=False, default=str)[:3000])
+        interval = args.interval or health_monitor.HEALTH_INTERVAL
+        while True:
+            state = State()
+            rep = health_monitor.run(state, create_tasks=True)
+            n = len(rep["anomalies"])
+            print(f"\n🩺 {time.strftime('%H:%M:%S')} health: {'✅ OK' if rep['ok'] else f'⚠️ {n} anomalii'} "
+                  f"(telegram={rep['global'].get('telegram_ok')}, vibe={rep['global'].get('vibe_ok')}, "
+                  f"zombie={len(rep['global'].get('zombie_tasks', []))}, stale_wt={len(rep['global'].get('stale_worktrees', []))})",
+                  flush=True)
+            for a in rep["anomalies"]:
+                print(f"   - [{a['project']}] {a['kind']}: {a['detail'][:110]}", flush=True)
+            if not args.watch:
+                print(json.dumps({"ok": rep["ok"], "anomalies": rep["anomalies"], "global": rep["global"]},
+                                 indent=2, ensure_ascii=False, default=str)[:3000])
+                break
+            print(f"   … następny check za {interval}s (Ctrl+C stop)", flush=True)
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                print("\nhealth: stop (Ctrl+C)", flush=True)
+                break
     elif args.cmd == "status":
         cmd_status()
     elif args.cmd == "approve":
