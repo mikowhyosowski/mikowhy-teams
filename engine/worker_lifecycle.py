@@ -89,10 +89,17 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
         "plan": (ROOT / ".agents" / "runtime" / f"{task['id']}.plan.md").read_text(encoding="utf-8"),
         "contracts": contracts,
         "scope_paths": task["scope_paths"],
+        "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"files": {"<path dokładnie ze scope_paths>": "<pełna treść pliku>"}}. '
+                  'Żadnych innych kluczy, żadnego tekstu poza JSON.',
     }
     result = _llm_step(task, "2/5_IMPL", json.dumps(payload, ensure_ascii=False),
                        model=skill_compiler.model_for_role(task["role"], kind="strong"))
-    for rel, content in result.get("files", {}).items():
+    files = result.get("files") or {}
+    if not files and isinstance(result.get("artifacts"), list):  # fallback: kontrakt roli (artifacts)
+        for a in result["artifacts"]:
+            if isinstance(a, dict) and a.get("path"):
+                files[a["path"]] = a.get("content", "")
+    for rel, content in files.items():
         if rel not in task["scope_paths"]:
             raise PermissionError(f"Plik spoza scope_paths: {rel}")
         target = worktree / rel
@@ -107,10 +114,13 @@ def step3_tests(state: State, task: dict, worktree: Path) -> None:
     t0 = time.time()
     code_files = {p: (worktree / p).read_text(encoding="utf-8")
                   for p in task["scope_paths"] if (worktree / p).exists()}
-    payload = {"code": code_files, "acceptance_criteria": task["acceptance_criteria"]}
+    payload = {"code": code_files, "acceptance_criteria": task["acceptance_criteria"],
+               "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"test_files": {"tests/<plik>_test.py": "<kod testu>"}}. '
+                         'Żadnych innych kluczy, żadnego tekstu poza JSON.'}
     result = _llm_step(task, "3/5_TEST", json.dumps(payload, ensure_ascii=False),
                        model=skill_compiler.model_for_role(task["role"], kind="fast"))
-    for rel, content in result.get("test_files", {}).items():
+    test_files = result.get("test_files") or {}
+    for rel, content in test_files.items():
         target = worktree / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
