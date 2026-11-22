@@ -135,6 +135,18 @@ class Orchestrator:
                                          {"policy": policy, "project": pid, "read_only": bool(task.get("read_only"))},
                                          task["id"])
 
+    # --- auto-retry FAILED (limitowane: retry_count < 3, potem circuit breaker) ---
+    def _auto_retry_failed(self) -> None:
+        """FAILED -> READY automatycznie, max 3 próby (potem _circuit_breakers eskaluje).
+        Fabryka sama się podnosi po przejściowych błędach LLM/infra."""
+        for task in self.state.list_tasks(status=FAILED):
+            if task["retry_count"] >= CIRCUIT_BREAKER_RETRIES:
+                continue
+            self.state.transition(task["id"], READY, substep="1/5_PLAN",
+                                  retry_count=task["retry_count"] + 1,
+                                  review_notes="auto-retry po FAILED (próba %d)" % (task["retry_count"] + 2))
+            self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
+
     # --- faza 4: workery -------------------------------------------------------
     def _launch_workers(self) -> None:
         for task in self.state.ready_tasks():
@@ -326,6 +338,7 @@ class Orchestrator:
     def tick(self) -> None:
         self._reap()
         self._auto_approve()
+        self._auto_retry_failed()
         self._launch_workers()
         self._launch_reviews()
         self._circuit_breakers()
