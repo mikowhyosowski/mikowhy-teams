@@ -56,9 +56,16 @@ def extract_json(text: str) -> dict[str, Any]:
     - klamry wewnątrz stringów.
     Strategia: najpierw fenced block, potem skan z balansem nawiasów od pierwszego '{',
     fallback: pierwszy '{' do ostatniego '}'."""
+    # sanityzacja klasycznych błędów LLM: \' nie jest legalnym escapem w JSON
+    text = text.replace("\\'", "'")
     candidates: list[str] = []
+    # zamknięte bloki fence
     for m in re.finditer(r"```(?:json|JSON)?\s*(.*?)```", text, re.DOTALL):
         candidates.append(m.group(1))
+    # niezamknięty fence (ucięte przez time-limit) — bierz wszystko po otwierającym ```
+    m_open = re.search(r"```(?:json|JSON)?\s*", text)
+    if m_open and not re.search(r"```(?:json|JSON)?\s*.*?```", text, re.DOTALL):
+        candidates.append(text[m_open.end():])
     candidates.append(text)
     for cand in candidates:
         start = cand.find("{")
@@ -135,26 +142,40 @@ class VibeCliGateway(LLMGateway):
         self.binary = _resolve_binary(binary)
         self.timeout = timeout
 
-    def complete(self, *, system: str, user: str, step: str, model: str) -> str:
-        alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
+    # model może mimo wszystko spróbować wywołać tool (odmowa = kolejny turn) — stąd max-turns 3
+    NO_TOOLS_NOTE = (
+        "\n\n## Tryb headless — BRAK narzędzi\n"
+        "NIE wywołuj żadnych tooli (bash, edycja plików, itp.). Całą resztą zajmuje się "
+        "deterministyczny silnik. Odpowiadasz WYŁĄCZNIE tekstem (najlepiej JSON) — to Twój jedyny output."
+    )
+
+    def _run_once(self, system: str, user: str, alias: str, step: str) -> subprocess.CompletedProcess:
         RUNTIME.mkdir(parents=True, exist_ok=True)
         safe_step = "".join(c if c.isalnum() or c in "-_" else "_" for c in step)
         with tempfile.TemporaryDirectory(dir=RUNTIME, prefix=f"gw-{safe_step}-") as tmp:
             sys_file = Path(tmp) / "system.md"
             user_file = Path(tmp) / "user.md"
-            sys_file.write_text(system, encoding="utf-8")
+            sys_file.write_text(system + self.NO_TOOLS_NOTE, encoding="utf-8")
             user_file.write_text(user, encoding="utf-8")
             cmd = [
-                self.binary, "--trust", "--max-turns", "1",
+                self.binary, "--trust", "--max-turns", "3",
                 "--model", alias, "--output", "text",
                 "--enabled-tools", "__none__",
                 "--system-prompt-file", str(sys_file),
                 "--prompt-file", str(user_file),
                 "--time-limit", str(self.timeout),
             ]
-            # env=None -> dziedziczenie pełnego os.environ (po _load_dotenv); vibe czyta też keyring
-            proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+            # jawne env: pełne os.environ (po _load_dotenv) — klucze API, PATH z ~/.local/bin
+            return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                   timeout=self.timeout + 60, env=os.environ.copy())
+
+    def complete(self, *, system: str, user: str, step: str, model: str) -> str:
+        alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
+        proc = self._run_once(system, user, alias, step)
+        if proc.returncode != 0:  # np. rc=3 turn_limit po odmowie toola — jedna próba z dopiskiem
+            proc = self._run_once(
+                system, user + "\n\nREMINDER: no tools available. Reply with plain text JSON only.",
+                alias, step)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"vibe CLI rc={proc.returncode} (model={alias}, step={step}): {proc.stderr.strip()[-800:]}"
