@@ -243,6 +243,13 @@ class Orchestrator:
             git_guard.run_git(["pull", "--ff-only", "origin", git_guard.default_branch(repo)], cwd=wt, check=False)
             git_guard.merge_no_ff(wt, ms["branch"], f"Release {ms['id']}: {ms['goal'][:60]}")
             git_guard.run_git(["push", "origin", git_guard.default_branch(repo)], cwd=wt, check=False)
+            # GitHub: po merge'u milestonu wypchnij też master (PR-y feature są już na GH)
+            try:
+                from engine import github_bridge
+                if github_bridge.enabled():
+                    github_bridge.push_master()
+            except Exception:
+                pass
             self.state.set_milestone_status(ms["id"], "CLOSED")
             self.state.export_snapshot(project_id=pid)
             git_guard.remove_worktree("_integration", ns=pid, repo=repo)
@@ -592,6 +599,14 @@ def cmd_note(target: str, text: str) -> None:
         state._conn().execute(
             "UPDATE tasks SET review_notes=?, updated_at=? WHERE id=?",
             ((task.get("review_notes") or "") + f"\n[Sponsor] {text}", time.time(), target))
+    # jeśli task ma PR na GitHubie — komentarz Sponsora leci też tam (autor: właściciel GITHUB_TOKEN)
+    try:
+        from engine import github_bridge
+        pr = github_bridge.pr_for_task(target)
+        if pr:
+            github_bridge.post_comment(pr, f"💬 **Sponsor ({target}):** {text}")
+    except Exception:
+        pass
         print(f"📝 rada dodana do {target}: {text[:80]}")
 
 
@@ -743,6 +758,9 @@ def main() -> None:
     ap6.add_argument("task_id")
     db = sub.add_parser("dashboard", help="live UI zadań w przeglądarce (read-only), http://127.0.0.1:8765")
     sub.add_parser("scan", help="pre-push review: sekrety/klucze w plikach i historii git + higiena .gitignore")
+    gh = sub.add_parser("gh", help="GitHub bridge: setup | push <branch> | pr <head> <base> <tytul> | protect | status")
+    gh.add_argument("action")
+    gh.add_argument("args", nargs="*")
     db.add_argument("--port", type=int, default=8765)
     db.add_argument("--host", default="127.0.0.1")
     ap5.add_argument("target")
@@ -814,6 +832,26 @@ def main() -> None:
         cmd_retry(args.task_id)
     elif args.cmd == "scan":
         raise SystemExit(cmd_scan())
+    elif args.cmd == "gh":
+        from engine import github_bridge as gb
+        act = args.action
+        if act == "setup":
+            gb.ensure_remote()
+            print("remote origin:", subprocess.run(["git", "remote", "get-url", "origin"], cwd=ROOT,
+                  capture_output=True, text=True).stdout.strip())
+            if gb.push_master():
+                print("✅ master wypchnięty na GitHub")
+        elif act == "push":
+            raise SystemExit(0 if gb.push(args.args[0]) else 1)
+        elif act == "pr":
+            head, base, title = args.args[0], args.args[1], " ".join(args.args[2:])
+            gb.push(head)
+            print("PR nr:", gb.open_pr(head, base, title))
+        elif act == "protect":
+            gb.protect("master")
+            print("branch protection ustawione (best effort)")
+        elif act == "status":
+            print("enabled:", gb.enabled(), "| repo:", gb.repo())
     elif args.cmd == "dashboard":
         from engine import dashboard
         sys.argv = ["dashboard", "--port", str(args.port), "--host", args.host]
