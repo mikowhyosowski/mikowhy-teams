@@ -43,6 +43,12 @@ def step0_prepare(state: State, task: dict) -> Path:
     base = milestone["branch"] if milestone else git_guard.default_branch()
     branch = task["branch"] or f"feature/{task['id'].lower()}"
     repo = projects.repo_for_task(task, state)          # multi-project: fizyczne repo na dysku
+    # fallback: gdy gałąź milestonu jeszcze nie istnieje (np. FIX z health) — leć z głównej gałęzi
+    if base != git_guard.default_branch(repo):
+        chk = git_guard.run_git(["rev-parse", "--verify", "--quiet", base], cwd=repo, check=False)
+        if chk.returncode != 0:
+            _log(task["id"], f"base {base} nie istnieje — fallback do {git_guard.default_branch(repo)}")
+            base = git_guard.default_branch(repo)
     git_guard.assert_writable(repo)                      # STRICT READ-ONLY guard
     ns = task.get("project_id") or "mikowhy-teams"
     worktree = git_guard.create_worktree(task["id"], base, branch, repo=repo, ns=ns)
