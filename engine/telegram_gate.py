@@ -12,12 +12,27 @@ import json
 import os
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 API = "https://api.telegram.org"
 
 
+def _load_env() -> None:
+    env = Path(__file__).resolve().parent.parent / ".env"
+    if env.exists():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_env()
+
+
 def _enabled() -> bool:
+    _load_env()
     return bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
 
 
@@ -34,7 +49,7 @@ def send_message(text: str, reply_markup: dict | None = None) -> dict[str, Any] 
         print(f"[telegram-gate] (wyłączone) {text}", flush=True)
         return None
     payload: dict[str, Any] = {"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text,
-                               "parse_mode": "Markdown"}
+                               }
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     return _call("sendMessage", payload)

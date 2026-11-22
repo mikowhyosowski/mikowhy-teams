@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from engine import git_guard, lessons_gardener, projects, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_reporter
 from engine.state import (
+    AWAITING_APPROVAL,
     BLOCKED,
     ESCALATED,
     IN_REVIEW,
@@ -260,6 +261,21 @@ class Orchestrator:
                 print(f"[orchestrator] zombie-recovery: {task['id']} -> READY (pid={pid} martwy)", flush=True)
         return recovered
 
+    # --- powiadomienia o AWAITING_APPROVAL na Telegramu (przyciski) ---------------
+    def _notify_approvals(self) -> None:
+        for task in self.state.list_tasks(status=AWAITING_APPROVAL):
+            key = f"tg_approve_notified:{task['id']}"
+            if self.state.get_kv(key):
+                continue
+            self.state.set_kv(key, True)
+            telegram_gate.send_message(
+                f"🕒 *{task['id']}* czeka na akceptację (AWAITING_APPROVAL)\n"
+                f"{task['title']}\nScope: `{task['scope_paths']}`",
+                reply_markup={"inline_keyboard": [[
+                    {"text": "✅ Akceptuj → READY", "callback_data": f"approve_task:{task['id']}"},
+                    {"text": "🛑 Odrzuć → BLOCKED", "callback_data": f"decline_task:{task['id']}"},
+                ]]})
+
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
@@ -268,6 +284,7 @@ class Orchestrator:
         self._circuit_breakers()
         self._handle_merges()
         self._handle_milestones()
+        self._notify_approvals()
 
     def run(self, once: bool = False) -> None:
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
@@ -332,6 +349,72 @@ def audit_project(project_id: str, target_repo_path: str, goal: str) -> None:
         if t.get("project_id") == project_id:
             print(f"  {t['id']} [{t['status']}] faza={t['phase']} rola={t['role']} repo={t.get('repo')} zależy={t['depends_on']}")
             print(f"    scope: {t['scope_paths']}")
+
+
+def cmd_status() -> None:
+    """Printuje aktywny projekt i stan wszystkich zadań (per projekt)."""
+    from engine import projects
+    state = State()
+    print(f"Aktywny projekt: {projects.active_project_id()}")
+    for ms in state.list_milestones():
+        print(f"\n🎯 {ms['id']} [{ms['status']}] projekt={ms.get('project_id')} — {ms['goal'][:70]}")
+        for t in state.milestone_tasks(ms["id"]):
+            icon = telegram_reporter.STATUS_ICON.get(t["status"], "?")
+            print(f"  {icon} {t['id']:<12} [{t['status']:<18}] faza={t['phase']} rola={t['role']} "
+                  f"repo={t.get('repo') or 'target'} zależy={t['depends_on']}")
+            if t.get("substep"):
+                print(f"      ↳ substep={t['substep']} branch={t.get('branch')}")
+
+
+def cmd_approve(task_id: str) -> None:
+    """Sponsor: AWAITING_APPROVAL -> READY (orchestrator może ruszyć)."""
+    state = State()
+    task = state.get_task(task_id)
+    if not task:
+        raise SystemExit(f"Nieznane zadanie: {task_id}")
+    if task["status"] != AWAITING_APPROVAL:
+        raise SystemExit(f"{task_id} ma status {task['status']} — approve tylko z AWAITING_APPROVAL")
+    state.transition(task_id, READY, substep="1/5_PLAN",
+                     review_notes=(task.get("review_notes") or "") + " | zaakceptowane przez Sponsora (CLI)")
+    state.record_metric("sponsor_approve", {"task": task_id}, task_id)
+    telegram_reporter.post_event(state, state.get_task(task_id), "✅ zaakceptowane przez Sponsora → READY")
+    print(f"✅ {task_id} -> READY")
+
+
+def cmd_decline(task_id: str, reason: str = "") -> None:
+    """Sponsor: AWAITING_APPROVAL -> BLOCKED z uzasadnieniem."""
+    state = State()
+    task = state.get_task(task_id)
+    if not task:
+        raise SystemExit(f"Nieznane zadanie: {task_id}")
+    state.transition(task_id, BLOCKED, review_notes=f"ODRZUCONE przez Sponsora: {reason}")
+    state.record_metric("sponsor_decline", {"task": task_id, "reason": reason}, task_id)
+    telegram_reporter.post_event(state, state.get_task(task_id), f"🛑 odrzucone przez Sponsora: {reason}")
+    print(f"🛑 {task_id} -> BLOCKED ({reason})")
+
+
+def cmd_note(target: str, text: str) -> None:
+    """Rada Sponsora: ALL -> .agents/skills/_global/sponsor-notes.md (wstrzykiwane do każdego promptu),
+    albo <task_id> -> review_notes zadania."""
+    state = State()
+    line = f"\n- [{time.strftime('%Y-%m-%d %H:%M')}] {text}\n"
+    if target == "ALL":
+        p = ROOT / ".agents" / "skills" / "_global" / "sponsor-notes.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        header = "# sponsor-notes.md — rady Product Sponsora (wstrzykiwane do KAŻDEGO promptu botów)\n"
+        existing = p.read_text(encoding="utf-8") if p.exists() else header
+        if header.strip() not in existing:
+            existing = header + "\n" + existing
+        p.write_text(existing.rstrip() + "\n" + line, encoding="utf-8")
+        print(f"📝 rada dodana do sponsor-notes.md (ALL): {text[:80]}")
+    else:
+        task = state.get_task(target)
+        if not task:
+            raise SystemExit(f"Nieznane zadanie: {target} (użyj ALL dla notatki globalnej)")
+        state._conn().execute(
+            "UPDATE tasks SET review_notes=?, updated_at=? WHERE id=?",
+            ((task.get("review_notes") or "") + f"\n[Sponsor] {text}", time.time(), target))
+        print(f"📝 rada dodana do {target}: {text[:80]}")
 
 
 def doctor() -> int:
@@ -460,6 +543,15 @@ def main() -> None:
     ap2.add_argument("project_id")
     ap2.add_argument("target_repo_path")
     ap2.add_argument("goal")
+    sub.add_parser("status", help="stan projektów i zadań (jak pipeline.json)")
+    ap3 = sub.add_parser("approve", help="Sponsor: AWAITING_APPROVAL -> READY")
+    ap3.add_argument("task_id")
+    ap4 = sub.add_parser("decline", help="Sponsor: AWAITING_APPROVAL -> BLOCKED")
+    ap4.add_argument("task_id")
+    ap4.add_argument("reason", nargs="?", default="")
+    ap5 = sub.add_parser("note", help="rada Sponsora: ALL (do każdego promptu) lub <task_id>")
+    ap5.add_argument("target")
+    ap5.add_argument("text")
     t = sub.add_parser("telegram-poll", help="Long-poll przycisków 7b (Deploy Prod / Rollback)")
     t.add_argument("--once", action="store_true")
     args = ap.parse_args()
@@ -486,21 +578,38 @@ def main() -> None:
             print(f"aktywny projekt: {args.project_id}")
     elif args.cmd == "audit-project":
         audit_project(args.project_id, args.target_repo_path, args.goal)
+    elif args.cmd == "status":
+        cmd_status()
+    elif args.cmd == "approve":
+        cmd_approve(args.task_id)
+    elif args.cmd == "decline":
+        cmd_decline(args.task_id, args.reason)
+    elif args.cmd == "note":
+        cmd_note(args.target, args.text)
     elif args.cmd == "telegram-poll":
         state = State()
         offset = 0
         while True:
             offset, callbacks = telegram_gate.poll_updates(offset)
             for cb in callbacks:
-                action, approval_id = cb["data"].split(":", 1)
+                action, _, ref = cb["data"].partition(":")
                 if action == "approve":
-                    state.resolve_approval(approval_id, "APPROVED")
+                    state.resolve_approval(ref, "APPROVED")
                     telegram_gate.answer_callback(cb["id"], "Deploy prod zatwierdzony 🚀")
-                    telegram_gate.send_message(f"🚀 *Deploy PROD* zatwierdzony dla `{approval_id}` — startuję Faza 7b prod.")
+                    telegram_gate.send_message(f"🚀 *Deploy PROD* zatwierdzony dla `{ref}` — startuję Faza 7b prod.")
                 elif action == "decline":
-                    state.resolve_approval(approval_id, "DECLINED")
+                    state.resolve_approval(ref, "DECLINED")
                     telegram_gate.answer_callback(cb["id"], "Rollback / uwagi zapisane 🛑")
-                    telegram_gate.send_message(f"🛑 *Rollback* dla `{approval_id}` — produkcja wstrzymana.")
+                    telegram_gate.send_message(f"🛑 *Rollback* dla `{ref}` — produkcja wstrzymana.")
+                elif action == "approve_task":
+                    try:
+                        cmd_approve(ref)
+                        telegram_gate.answer_callback(cb["id"], f"{ref} → READY ✅")
+                    except SystemExit as e:
+                        telegram_gate.answer_callback(cb["id"], str(e))
+                elif action == "decline_task":
+                    cmd_decline(ref, "odrzucone przyciskiem na Telegramie")
+                    telegram_gate.answer_callback(cb["id"], f"{ref} → BLOCKED 🛑")
             if args.once:
                 break
 
