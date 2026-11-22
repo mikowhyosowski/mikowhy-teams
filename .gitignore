@@ -1,0 +1,12 @@
+# Artefakty wykonawcze i stan operacyjny — lokalne, nie w repo
+.agents/logs/
+.agents/runtime/
+.agents/worktrees/
+.agents/state.db
+.agents/state.db-wal
+.agents/state.db-shm
+
+# Cache / tooling
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mikowhy.teams/contracts/events.schema.json",
+  "title": "Kontrakt zdarzeń / kolejek (FROZEN po QG-2)",
+  "x-frozen": true,
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid", "description": "Klucz idempotencji konsumenta" },
+    "event_type": { "type": "string", "pattern": "^[a-z]+\\.[a-z_]+\\.v[0-9]+$" },
+    "occurred_at": { "type": "string", "format": "date-time", "description": "ISO-8601 UTC" },
+    "payload": { "type": "object" }
+  }
+}

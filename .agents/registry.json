@@ -1,0 +1,92 @@
+{
+  "schema": "dark-factory/registry@1",
+  "note": "Rejestr ról. status: PROBATION (pierwsze zadanie testuje rolę) -> ACTIVE po zielonym QG. Zmiana #5.",
+  "roles": {
+    "product-owner": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 1.0
+    },
+    "solutions-architect": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 1.0
+    },
+    "tech-lead-planner": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 1.0
+    },
+    "backend-dev": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 0.0
+    },
+    "frontend-dev": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 0.0
+    },
+    "security-auditor": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 1.0
+    },
+    "code-reviewer": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 0.0
+    },
+    "principal-debugger": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "strong-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 0.0
+    },
+    "sre-deployer": {
+      "model": "strong-model",
+      "models": {
+        "strong": "strong-model",
+        "fast": "fast-model"
+      },
+      "status": "ACTIVE",
+      "success_rate": 0.0
+    },
+    "stripe-webhook-specialist": {
+      "model": "strong",
+      "status": "ACTIVE",
+      "success_rate": 0.0
+    }
+  }
+}
