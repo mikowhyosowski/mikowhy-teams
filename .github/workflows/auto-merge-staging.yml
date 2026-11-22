@@ -1,0 +1,25 @@
+name: auto-merge-staging
+on:
+  push:
+    branches:
+      - 'feature/**'
+permissions:
+  contents: write
+jobs:
+  merge-to-staging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch all refs
+        run: git fetch origin --prune
+      - name: Walidacja commitow i domergowanie zadania do staging
+        env:
+          REMOTE: origin
+          STAGING_BRANCH: staging
+          BASE_BRANCH: master
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bash engine/post_task_merge.sh "${{ github.ref_name }}"
