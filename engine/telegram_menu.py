@@ -208,7 +208,7 @@ def handle_callback(state: State, chat_id: str, cb_id: str, data: str, message_i
         screen = _pop_hist(state, chat_id)
     elif data.startswith("menu:act:comment:"):
         tid = data.split(":", 3)[3]
-        _set(state, chat_id, "await", {"task": tid, "action": "comment"})
+        _set(state, chat_id, "await", {"task": tid, "action": "comment", "ts": time.time()})
         _send(chat_id, f"💬 Napisz komentarz do *{tid}* — Twoja następna wiadomość zostanie zapisana jako uwaga (review_notes).",
               {"inline_keyboard": [[{"text": "🔙 Anuluj", "callback_data": "menu:back"}]]}, message_id)
         return
@@ -232,17 +232,8 @@ def handle_callback(state: State, chat_id: str, cb_id: str, data: str, message_i
 
 
 def handle_text(state: State, chat_id: str, text: str) -> None:
-    # stan oczekiwania na input (np. komentarz)
-    await_ = _get(state, chat_id, "await", None)
-    if await_ and text.strip() and not text.startswith("/"):
-        _set(state, chat_id, "await", None)
-        from engine.orchestrator import cmd_note
-        cmd_note(await_["task"], text.strip())
-        screen = f"task:{await_['task']}"
-        txt, kb = render(state, chat_id, screen)
-        _send(chat_id, f"✅ Zapisano uwagę do {await_['task']}\n\n{txt}", kb)
-        return
     cmd = text.strip().lower()
+    # komendy ZAWSZE działają — nawet gdy wisiał stan oczekiwania na komentarz
     if cmd in ("start", "/start", "menu", "help", "pomoc"):
         txt, kb = render(state, chat_id, "main")
         _send(chat_id, txt, kb)
@@ -263,6 +254,16 @@ def handle_text(state: State, chat_id: str, text: str) -> None:
         state.set_kv(f"menu:{chat_id}:thread", {"role": None, "history": []})
         _send(chat_id, "🆕 Nowy wątek — następna Twoja wiadomość poleci do drużyny (auto-routing do roli).", _main_kb())
     else:
+        # stan oczekiwania na komentarz (max 10 min) — tylko tekst nie będący komendą
+        await_ = _get(state, chat_id, "await", None)
+        if await_ and time.time() - await_.get("ts", 0) < 600:
+            _set(state, chat_id, "await", None)
+            from engine.orchestrator import cmd_note
+            cmd_note(await_["task"], text.strip())
+            screen = f"task:{await_['task']}"
+            txt, kb = render(state, chat_id, screen)
+            _send(chat_id, f"✅ Zapisano uwagę do {await_['task']}\n\n{txt}", kb)
+            return
         # czat z drużyną: osobny proces, żeby nie blokować ticka orkiestratora
         log = open(ROOT / ".agents" / "logs" / f"team_chat.{chat_id}.log", "a", encoding="utf-8")
         subprocess.Popen([sys.executable, "-m", "engine.team_chat", chat_id, text],
