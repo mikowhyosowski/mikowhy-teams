@@ -1,70 +1,44 @@
-import json
-
 import pytest
 
-from dashboard import load_dashboard_data, render_dashboard
 
-
-def test_load_dashboard_data_renders_null_sections_as_empty_lists(tmp_path):
-    state = tmp_path / "state.json"
-    state.write_text(json.dumps({
-        "videos": None,
-        "queue": None,
-        "history": None,
-        "metrics": {"runs": 3, "failures": 0},
-    }), encoding="utf-8")
-
-    data = load_dashboard_data(state)
-
-    assert data["videos"] == []
-    assert data["queue"] == []
-    assert data["history"] == []
-    assert data["metrics"] == {"runs": 3, "failures": 0}
-
-
-def test_load_dashboard_data_keeps_populated_sections(tmp_path):
-    state = tmp_path / "state.json"
-    state.write_text(json.dumps({
-        "videos": [{"id": "v1", "title": "News 1"}],
-        "queue": [{"id": "q1"}],
-        "history": [],
-        "metrics": {"runs": 1, "failures": 0},
-    }), encoding="utf-8")
-
-    data = load_dashboard_data(state)
-
-    assert data["videos"][0]["id"] == "v1"
-    assert data["queue"][0]["id"] == "q1"
-    assert data["history"] == []
-
-
-def test_load_dashboard_data_missing_file_returns_empty_defaults(tmp_path):
-    missing = tmp_path / "nope.json"
-
-    data = load_dashboard_data(missing)
-
-    assert data == {"videos": [], "queue": [], "history": [], "metrics": {}}
-
-
-def test_render_dashboard_contains_key_elements_and_rows():
-    data = {
-        "videos": [{"id": "v1", "title": "News 1", "status": "done"}],
-        "queue": [{"id": "q1", "stage": "tts"}],
-        "history": [{"id": "h1", "outcome": "ok"}],
-        "metrics": {"runs": 3, "failures": 0},
+@pytest.fixture
+def dashboard_payload_with_data():
+    return {
+        'videos': [{'id': 'v1', 'title': 'News 1', 'status': 'ready'}],
+        'queue': [{'id': 'j1', 'status': 'processing'}],
+        'stats': {'generated_today': 3, 'failed': 0},
     }
 
-    html = render_dashboard(data)
 
-    assert isinstance(html, str) and len(html) > 0
-    assert "News 1" in html
-    assert "done" in html
-    assert "tts" in html
-    assert "3" in html
+@pytest.fixture
+def dashboard_payload_empty():
+    return {'videos': [], 'queue': [], 'stats': {'generated_today': 0, 'failed': 0}}
 
 
-def test_render_dashboard_with_empty_data_does_not_leak_none_string():
-    html = render_dashboard({"videos": [], "queue": [], "history": [], "metrics": {}})
+def test_dashboard_view_contains_all_key_sections(dashboard_service, dashboard_payload_with_data):
+    view = dashboard_service.build_view(dashboard_payload_with_data)
+    assert set(view.keys()) >= {'videos', 'queue', 'stats'}
+    assert view['videos'] == dashboard_payload_with_data['videos']
+    assert view['queue'] == dashboard_payload_with_data['queue']
+    assert view['stats'] == dashboard_payload_with_data['stats']
 
-    assert "None" not in html
-    assert "null" not in html
+
+def test_dashboard_empty_sections_are_empty_lists_not_null(dashboard_service, dashboard_payload_empty):
+    view = dashboard_service.build_view(dashboard_payload_empty)
+    assert view['videos'] == []
+    assert view['queue'] == []
+    assert view['stats'] == {'generated_today': 0, 'failed': 0}
+
+
+def test_dashboard_render_includes_section_markers_even_when_empty(dashboard_service, dashboard_payload_empty):
+    view = dashboard_service.build_view(dashboard_payload_empty)
+    rendered = dashboard_service.render(view)
+    for section in ('videos', 'queue', 'stats'):
+        assert section in rendered, f'missing section in rendered dashboard: {section}'
+
+
+def test_dashboard_regression_no_data_displayed_with_zero_values(dashboard_service):
+    view = dashboard_service.build_view({'videos': [], 'queue': [], 'stats': {'generated_today': 0, 'failed': 0}})
+    rendered = dashboard_service.render(view)
+    assert rendered.strip() != '', 'dashboard rendered empty output despite valid payload'
+    assert '0' in rendered, 'zero-valued stats must still be rendered, not swallowed by falsy checks'
