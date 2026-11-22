@@ -512,7 +512,9 @@ def cmd_scan() -> int:
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 v = v.strip().strip('"').strip("'").split(" #")[0].strip()
-                if len(v) >= 20 and not v.startswith(("<", "your")):
+                # tylko nazwy-klucze wyglądające na sekret (nie np. GITHUB_REPO)
+                if len(v) >= 20 and not v.startswith(("<", "your")) and _re.search(
+                        r"(?i)(token|key|secret|passwd|password|credential)", k):
                     env_vals.append((k, v))
     for key, val in env_vals:
         r = subprocess.run(["git", "grep", "-l", "-F", val, "--all"], cwd=ROOT,
