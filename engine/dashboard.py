@@ -1,6 +1,6 @@
 """Live Dashboard — podgląd zadań na żywo w przeglądarce (read-only + akcje Sponsora):
 
-  python -m engine.dashboard [--port 8765]   ->   http://localhost:8765
+  python -m engine.dashboard [--port 8765] [--host 0.0.0.0]  ->  http://<lan_ip>:8765 (z 127.0.0.1 auto-redirect)
 
 Funkcje:
   - tabela zadań: klik w wiersz = szczegóły zadania (panel boczny)
@@ -182,6 +182,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <script>
 let curTask = null;
 let lastEventTs = 0;
+// fallback: gdy strona otwarta przez 127.0.0.1/localhost — przekieruj przeglądarkę na adres LAN
+(async function redirectToLan(){
+  try{
+    if(!['127.0.0.1','localhost','::1'].includes(location.hostname)) return;
+    const r = await fetch('/api/state'); const d = await r.json();
+    if(d.host && d.host.dashboard_url && location.origin !== d.host.dashboard_url){
+      location.replace(d.host.dashboard_url + '/');
+    }
+  }catch(e){}
+})();
 const taskStatus = {};
 function fmtDur(s){ s=Math.round(s); const m=Math.floor(s/60), h=Math.floor(m/60); return (h?h+'h ':'')+(m%60)+'m '+(s%60)+'s'; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -543,6 +553,17 @@ class Handler(BaseHTTPRequestHandler):
     def _do_GET(self):
         u = urlparse(self.path)
         if u.path == "/" or u.path.startswith("/index"):
+            # redirect 127.0.0.1/localhost -> adres LAN (żeby przeglądarka sama przeszła na http://<lan_ip>:8765)
+            host_hdr = (self.headers.get("Host") or "").split(":")[0].strip("[]")
+            port = self.server.server_address[1]
+            lan = host_info(port).get("lan_ip")
+            if lan and host_hdr in ("127.0.0.1", "localhost", "::1"):
+                self.send_response(302)
+                self.send_header("Location", f"http://{lan}:{port}/")
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
         elif u.path == "/api/state":
             self._send(200, json.dumps(snapshot(), ensure_ascii=False, default=str).encode(),
@@ -627,7 +648,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default="0.0.0.0")  # 0.0.0.0 = dostęp też z LAN (http://<lan_ip>:8765)
     args = ap.parse_args()
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
