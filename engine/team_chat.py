@@ -123,7 +123,8 @@ def main() -> int:
         n = state.get_kv("chat_task_seq", 0) + 1
         state.set_kv("chat_task_seq", n)
         tid = f"CHAT-{n:04d}"
-        pid = _projects.active_project_id()
+        # zadania LLM piszą do fabryki (repo="factory") i mają iść od razu — projekt self ma approval_policy=auto
+        pid = "mikowhy-teams-self" if (p := _projects.AGENTS / "projects" / "mikowhy-teams-self" / "project.json").exists() else _projects.active_project_id()
         state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
                             "milestone/chat-ops", project_id=pid)
         state.add_task(tid, milestone="CHAT-OPS", phase=4, title=desc[:90], role="llm-executor",
