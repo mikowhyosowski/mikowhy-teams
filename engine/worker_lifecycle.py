@@ -110,9 +110,11 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
             if isinstance(a, dict) and a.get("path"):
                 files[a["path"]] = a.get("content", "")
     for rel, content in files.items():
-        if rel not in task["scope_paths"]:
+        if task["scope_paths"] and rel not in task["scope_paths"]:
             raise PermissionError(f"Plik spoza scope_paths: {rel}")
         target = worktree / rel
+        if target.exists() and target.is_dir():
+            raise RuntimeError(f"LLM zwrócił katalog zamiast pliku: {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     state.record_metric("step_time", {"step": "2/5_IMPL", "seconds": round(time.time() - t0, 2)}, task["id"])

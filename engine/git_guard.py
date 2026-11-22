@@ -35,9 +35,21 @@ class MergeConflict(GitError):
 
 
 def default_branch(repo: Path | str = ROOT) -> str:
-    """Aktualna domyślna gałąź repo (u nas: master)."""
-    out = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=False).stdout.strip()
-    return out or "master"
+    """Domyślna gałąź repo: master (jeśli istnieje) > origin/HEAD > bieżący HEAD.
+    NIGDY nie bieżący HEAD jako pierwszy wybór — główny checkout mógł być na feature."""
+    for args in (["show-ref", "--verify", "--quiet", "refs/heads/master"],
+                 ["symbolic-ref", "refs/remotes/origin/HEAD"],
+                 ["rev-parse", "--abbrev-ref", "HEAD"]):
+        out = run_git(args, cwd=repo, check=False).stdout.strip()
+        if args[0] == "show-ref" and out == "" :
+            pass
+        if args[0] == "show-ref":
+            if run_git(args, cwd=repo, check=False).returncode == 0:
+                return "master"
+            continue
+        if out:
+            return out.replace("refs/remotes/origin/", "") if "origin/" in out else out
+    return "master"
 
 
 def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True) -> subprocess.CompletedProcess:
@@ -113,6 +125,8 @@ def changed_files(worktree: Path) -> list[tuple[str, str]]:
 def enforce_scope(worktree: Path, scope_paths: list[str]) -> list[str]:
     """Natychmiast cofa każdą zmianę spoza scope_paths:
     śledzone -> git checkout --, nieśledzone -> usunięcie pliku."""
+    if not scope_paths:  # puste scope = zadanie samo ustala zakres (np. CHAT-*)
+        return []
     allowed = {str(p) for p in scope_paths}
     reverted: list[str] = []
     for code, f in changed_files(worktree):

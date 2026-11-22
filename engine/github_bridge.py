@@ -199,6 +199,11 @@ def ensure_pr_for_task(task: dict, base: str) -> int | None:
     branch = task.get("branch")
     if not branch:
         return None
+    # base musi istnieć na remote — lokalne gałęzie milestonów mogą jeszcze nie być wypchnięte
+    remote_has_base = _git("ls-remote", "origin", f"refs/heads/{base}").stdout.strip()
+    if not remote_has_base:
+        repo_info = api("GET", f"/repos/{repo()}") if enabled() else None
+        base = (repo_info or {}).get("default_branch") or "master"
     push(branch)
     pr = pr_for_branch(branch) or open_pr(branch, base, f"[{task['id']}] {task['title']}",
                                           body=(f"Zadanie: {task['id']}\nRola: {task['role']}\n"
