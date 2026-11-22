@@ -4,5 +4,6 @@
   "target_repo_path": "/home/miko/Projekty/M+/mikowhy-teams",
   "read_only": false,
   "created": 1795361489.294411,
-  "pipeline_snapshot": ".agents/projects/mikowhy-teams-self/pipeline.json"
+  "pipeline_snapshot": ".agents/projects/mikowhy-teams-self/pipeline.json",
+  "approval_policy": "auto"
 }

@@ -154,7 +154,8 @@ def create_remediation_tasks(state: State, report: dict[str, Any]) -> list[str]:
             acc = "Anomalia wyjaśniona i usunięta lub zaakceptowana przez Sponsora"
         state.add_task(tid, milestone=ms, phase=9, title=title, role=role,
                        scope_paths=[".agents/"], depends_on=[], acceptance_criteria=acc,
-                       project_id=pid if pid != "*" else "mikowhy-teams", repo="factory", status=status)
+                       project_id=pid if pid != "*" else "mikowhy-teams", repo="factory", status=status,
+                       read_only=True)  # decyzja/raport w fabryce — zero commitów do target repo
         created.append(tid)
         telegram_reporter.post_milestone(
             f"🩺 Health monitor utworzył zadanie *{tid}* [{status}] — {a['kind']}: {a['detail'][:120]}")

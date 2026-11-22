@@ -123,7 +123,7 @@ def _task_text(state: State, task_id: str) -> str:
     lines = [
         f"{icon} *{t['id']}* — {t['title']}",
         f"Status: *{t['status']}* | faza: {t['phase']} | rola: {t['role']}",
-        f"Projekt: {t.get('project_id')} | repo: {t.get('repo') or 'target'} | milestone: {t['milestone']}",
+        f"Projekt: {t.get('project_id')} (approval_policy: {projects.approval_policy(t.get('project_id') or 'mikowhy-teams')}) | repo: {t.get('repo') or 'target'} | read_only: {'TAK — zero commitów' if t.get('read_only') else 'nie'} | milestone: {t['milestone']}",
         f"Zależy od: {t['depends_on']} | substep: {t.get('substep')} | branch: {t.get('branch')}",
         f"Scope: `{t['scope_paths']}`",
         f"AC: {t['acceptance_criteria'][:300]}",
@@ -146,6 +146,8 @@ def _task_kb(task_id: str, status: str) -> dict:
 
 def _status_text(state: State) -> str:
     lines = [f"📊 Aktywny projekt: *{projects.active_project_id()}*"]
+    for p in projects.list_projects():
+        lines.append(f"  🗂 {p['project_id']}: approval_policy={p.get('approval_policy', 'manual')} read_only={bool(p.get('read_only'))}")
     for ms in state.list_milestones():
         lines.append(f"\n🎯 {ms['id']} [{ms['status']}] ({ms.get('project_id')}) — {ms['goal'][:60]}")
         for t in state.milestone_tasks(ms["id"]):

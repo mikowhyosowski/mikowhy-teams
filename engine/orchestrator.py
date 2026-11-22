@@ -118,6 +118,22 @@ class Orchestrator:
                 self.state.record_metric("process_exit", {"rc": rc}, task_id)
                 del self.running[task_id]
 
+    # --- auto-approve wg approval_policy projektu (config: project.json) --------
+    def _auto_approve(self) -> None:
+        """AWAITING_APPROVAL -> READY automatycznie, gdy projekt ma taką politykę:
+        'auto' = wszystkie zadania; 'auto_readonly' = tylko read_only (zero commitów);
+        'manual' (domyślnie) = wszystko czeka na klik Sponsora."""
+        for task in self.state.list_tasks(status=AWAITING_APPROVAL):
+            pid = task.get("project_id") or "mikowhy-teams"
+            policy = projects.approval_policy(pid)
+            if policy == "auto" or (policy == "auto_readonly" and task.get("read_only")):
+                self.state.transition(task["id"], READY, substep="1/5_PLAN",
+                                      review_notes=(task.get("review_notes") or "") +
+                                      f" | auto-approve (approval_policy={policy}, projekt={pid})")
+                self.state.record_metric("auto_approve",
+                                         {"policy": policy, "project": pid, "read_only": bool(task.get("read_only"))},
+                                         task["id"])
+
     # --- faza 4: workery -------------------------------------------------------
     def _launch_workers(self) -> None:
         for task in self.state.ready_tasks():
@@ -308,6 +324,7 @@ class Orchestrator:
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
+        self._auto_approve()
         self._launch_workers()
         self._launch_reviews()
         self._circuit_breakers()
@@ -373,7 +390,7 @@ def audit_project(project_id: str, target_repo_path: str, goal: str, prefix: str
         status = READY if (i == 0 or not later_awaiting) else AWAITING_APPROVAL
         state.add_task(tid, milestone=ms_id, phase=phase, title=title, role=role,
                        scope_paths=[scope], depends_on=deps, acceptance_criteria=acc,
-                       project_id=project_id, repo="factory", status=status)
+                       project_id=project_id, repo="factory", status=status, read_only=True)
         deps = [tid]
     snap = state.export_snapshot(project_id=project_id)
     print(f"Projekt {project_id} zarejestrowany (read_only={read_only}, target={target_repo_path})")
@@ -587,6 +604,9 @@ def main() -> None:
     ap3 = sub.add_parser("approve", help="Sponsor: AWAITING_APPROVAL -> READY")
     ap3.add_argument("task_id")
     ap4 = sub.add_parser("decline", help="Sponsor: AWAITING_APPROVAL -> BLOCKED")
+    ap5 = sub.add_parser("policy", help="approval_policy projektu: get/set manual|auto|auto_readonly")
+    ap5.add_argument("project_id")
+    ap5.add_argument("value", nargs="?", default=None, choices=list(projects.POLICIES))
     ap4.add_argument("task_id")
     ap4.add_argument("reason", nargs="?", default="")
     ap5 = sub.add_parser("note", help="rada Sponsora: ALL (do każdego promptu) lub <task_id>")
@@ -647,6 +667,12 @@ def main() -> None:
         cmd_approve(args.task_id)
     elif args.cmd == "decline":
         cmd_decline(args.task_id, args.reason)
+    elif args.cmd == "policy":
+        if args.value:
+            cfg = projects.set_approval_policy(args.project_id, args.value)
+            print(f"approval_policy[{args.project_id}] = {cfg['approval_policy']}")
+        else:
+            print(f"approval_policy[{args.project_id}] = {projects.approval_policy(args.project_id)}")
     elif args.cmd == "note":
         cmd_note(args.target, args.text)
     elif args.cmd == "telegram-poll":

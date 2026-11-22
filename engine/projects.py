@@ -57,6 +57,39 @@ def register_project(project_id: str, name: str, target_repo_path: str, read_onl
     return cfg
 
 
+POLICIES = ("manual", "auto", "auto_readonly")
+
+
+def approval_policy(project_id: str) -> str:
+    """Polityka akceptacji zadań AWAITING_APPROVAL dla projektu (config w project.json):
+    - 'manual'        — wszystko czeka na klik Sponsora (domyślnie)
+    - 'auto'          — wszystkie zadania auto-approve -> READY
+    - 'auto_readonly' — auto-approve tylko zadania read_only (audyt/decyzja/plan, zero commitów);
+                        zadania z kodem nadal czekają na Sponsora"""
+    try:
+        cfg = project_config(project_id)
+    except KeyError:
+        return "manual"
+    return cfg.get("approval_policy", "manual")
+
+
+def set_approval_policy(project_id: str, policy: str) -> dict:
+    """Ustawia approval_policy w .agents/projects/<pid>/project.json (walidacja wartości)."""
+    if policy not in POLICIES:
+        raise ValueError(f"policy musi być jednym z {POLICIES}, dostano: {policy!r}")
+    p = AGENTS / "projects" / project_id / "project.json"
+    if p.exists():
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+    else:
+        cfg = project_config(project_id) if project_id != SELF_ID else {
+            "project_id": project_id, "name": project_id, "target_repo_path": str(ROOT), "read_only": False}
+        cfg.setdefault("project_id", project_id)
+    cfg["approval_policy"] = policy
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return cfg
+
+
 def list_projects() -> list[dict]:
     out = [project_config(SELF_ID)]
     pdir = AGENTS / "projects"

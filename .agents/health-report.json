@@ -1,5 +1,5 @@
 {
-  "ts": 1795364724.5555527,
+  "ts": 1795365806.2896218,
   "projects": [
     {
       "project_id": "mikowhy-teams",
@@ -7,11 +7,11 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 0,
+        "target_dirty_files": 9,
         "tasks_by_status": {
-          "AWAITING_APPROVAL": 1
+          "FAILED": 1
         },
-        "awaiting_approval": 1
+        "awaiting_approval": 0
       }
     },
     {
@@ -20,13 +20,12 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 0,
+        "target_dirty_files": 9,
         "tasks_by_status": {
-          "FAILED": 1,
-          "READY": 1,
-          "AWAITING_APPROVAL": 2
+          "FAILED": 2,
+          "READY": 2
         },
-        "awaiting_approval": 2
+        "awaiting_approval": 0
       }
     },
     {
@@ -37,34 +36,28 @@
         "target_exists": true,
         "target_dirty_files": 2,
         "tasks_by_status": {
-          "FAILED": 1,
-          "READY": 2,
-          "AWAITING_APPROVAL": 1
+          "FAILED": 2,
+          "READY": 2
         },
-        "awaiting_approval": 1
+        "awaiting_approval": 0
       }
     }
   ],
   "anomalies": [
     {
       "project": "mikowhy-teams",
-      "kind": "awaiting_approval",
-      "detail": "1 zadań czeka na akceptację Sponsora"
+      "kind": "target_dirty",
+      "detail": "9 niezacommitowanych zmian w target repo"
     },
     {
       "project": "mikowhy-teams-self",
-      "kind": "awaiting_approval",
-      "detail": "2 zadań czeka na akceptację Sponsora"
+      "kind": "target_dirty",
+      "detail": "9 niezacommitowanych zmian w target repo"
     },
     {
       "project": "news-video-generator",
       "kind": "target_dirty",
       "detail": "2 niezacommitowanych zmian w target repo"
-    },
-    {
-      "project": "news-video-generator",
-      "kind": "awaiting_approval",
-      "detail": "1 zadań czeka na akceptację Sponsora"
     }
   ],
   "global": {

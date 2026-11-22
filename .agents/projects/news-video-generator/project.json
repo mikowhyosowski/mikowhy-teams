@@ -4,5 +4,6 @@
   "target_repo_path": "/home/miko/Projekty/M+/news-video-generator",
   "read_only": true,
   "created": 1795358796.5359433,
-  "pipeline_snapshot": ".agents/projects/news-video-generator/pipeline.json"
+  "pipeline_snapshot": ".agents/projects/news-video-generator/pipeline.json",
+  "approval_policy": "auto_readonly"
 }
