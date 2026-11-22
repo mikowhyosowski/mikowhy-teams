@@ -33,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, health_monitor, lessons_gardener, projects, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_reporter
+from engine import git_guard, health_monitor, lessons_gardener, projects, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_menu, telegram_reporter
 from engine.state import (
     AWAITING_APPROVAL,
     BLOCKED,
@@ -287,6 +287,13 @@ class Orchestrator:
             except Exception as exc:
                 self.state.record_metric("health_error", {"error": repr(exc)})
 
+    # --- telegram menu w ticku (run --poll 1 odbiera wiadomości użytkownika) ---------
+    def _poll_telegram(self) -> None:
+        try:
+            telegram_menu.poll_once(self.state, timeout=0)
+        except Exception as exc:
+            self.state.record_metric("telegram_poll_error", {"error": repr(exc)})
+
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
@@ -297,6 +304,7 @@ class Orchestrator:
         self._handle_milestones()
         self._notify_approvals()
         self._maybe_health()
+        self._poll_telegram()
 
     def run(self, once: bool = False) -> None:
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
@@ -632,28 +640,12 @@ def main() -> None:
         cmd_note(args.target, args.text)
     elif args.cmd == "telegram-poll":
         state = State()
-        offset = 0
-        while True:
-            offset, callbacks = telegram_gate.poll_updates(offset)
-            for cb in callbacks:
-                action, _, ref = cb["data"].partition(":")
-                if action == "approve":
-                    state.resolve_approval(ref, "APPROVED")
-                    telegram_gate.answer_callback(cb["id"], "Deploy prod zatwierdzony 🚀")
-                    telegram_gate.send_message(f"🚀 *Deploy PROD* zatwierdzony dla `{ref}` — startuję Faza 7b prod.")
-                elif action == "decline":
-                    state.resolve_approval(ref, "DECLINED")
-                    telegram_gate.answer_callback(cb["id"], "Rollback / uwagi zapisane 🛑")
-                    telegram_gate.send_message(f"🛑 *Rollback* dla `{ref}` — produkcja wstrzymana.")
-                elif action == "approve_task":
-                    try:
-                        cmd_approve(ref)
-                        telegram_gate.answer_callback(cb["id"], f"{ref} → READY ✅")
-                    except SystemExit as e:
-                        telegram_gate.answer_callback(cb["id"], str(e))
-                elif action == "decline_task":
-                    cmd_decline(ref, "odrzucone przyciskiem na Telegramie")
-                    telegram_gate.answer_callback(cb["id"], f"{ref} → BLOCKED 🛑")
+        while True:  # nigdy nie wychodź błędem — 409/timeout to normalka przy wielu pollerach (lock w menu)
+            try:
+                telegram_menu.poll_once(state, timeout=25)
+            except Exception as exc:
+                print(f"[telegram-poll] błąd (kontynuacja): {exc!r}", flush=True)
+                time.sleep(5)
             if args.once:
                 break
 
