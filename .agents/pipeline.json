@@ -1,0 +1,120 @@
+{
+  "schema": "dark-factory/pipeline-snapshot@1",
+  "generated_at": 1795354064.2040112,
+  "note": "Snapshot wygenerowany z .agents/state.db (SQLite WAL). Stan operacyjny żyje w state.db; ten plik to artefakt czytelny.",
+  "milestones": [
+    {
+      "id": "M1",
+      "title": "Dodaj moduł subskrypcji Stripe z webhookami i panelem statusu",
+      "goal": "Dodaj moduł subskrypcji Stripe z webhookami i panelem statusu",
+      "branch": "milestone/m1",
+      "status": "OPEN",
+      "created_at": 1795354064.1492667,
+      "merged_at": null
+    }
+  ],
+  "tasks": [
+    {
+      "id": "M1-P1",
+      "milestone": "M1",
+      "phase": 1,
+      "title": "PRD (Gherkin + Edge Cases) dla: Dodaj moduł subskrypcji Stripe z webhookami i panelem statusu",
+      "role": "product-owner",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/PRD.md"
+      ],
+      "depends_on": [],
+      "acceptance_criteria": "QG-1: każdy REQ ma Given/When/Then i sekcja Edge Cases",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795354064.1582787,
+      "updated_at": 1795354064.1582787
+    },
+    {
+      "id": "M1-P2",
+      "milestone": "M1",
+      "phase": 2,
+      "title": "ADR + zamrożone kontrakty dla: Dodaj moduł subskrypcji Stripe z webhookami i panelem statusu",
+      "role": "solutions-architect",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/adr/, contracts/"
+      ],
+      "depends_on": [
+        "M1-P1"
+      ],
+      "acceptance_criteria": "QG-2: OpenAPI/JSON Schema valid + audyt security; kontrakty FROZEN",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795354064.1715393,
+      "updated_at": 1795354064.1715393
+    },
+    {
+      "id": "M1-P2_5",
+      "milestone": "M1",
+      "phase": 2.5,
+      "title": "Faza 2.5 Scaffolding: zależności, puste migracje, szkielety routerów/DI",
+      "role": "tech-lead-planner",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        "manifesty zależności, migrations/, szkielety modułów"
+      ],
+      "depends_on": [
+        "M1-P2"
+      ],
+      "acceptance_criteria": "Brak równoległej edycji plików współdzielonych; lockfile bez konfliktów",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795354064.184428,
+      "updated_at": 1795354064.184428
+    },
+    {
+      "id": "M1-P3",
+      "milestone": "M1",
+      "phase": 3,
+      "title": "Dekompozycja na atomowe zadania (max 1–3 pliki / ~100 linii)",
+      "role": "tech-lead-planner",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        ".agents/pipeline.json (snapshot)"
+      ],
+      "depends_on": [
+        "M1-P2_5"
+      ],
+      "acceptance_criteria": "Każde zadanie: scope_paths, parallel_group, milestone, acceptance_criteria",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795354064.1922565,
+      "updated_at": 1795354064.1922565
+    }
+  ]
+}

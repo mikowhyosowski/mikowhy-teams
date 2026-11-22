@@ -52,7 +52,11 @@ def create_worktree(task_id: str, base_branch: str, branch: str) -> Path:
     path = worktree_path(task_id)
     if path.exists():
         run_git(["worktree", "remove", "--force", str(path)], check=False)
-    run_git(["worktree", "add", "-b", branch, str(path), base_branch])
+    exists = run_git(["rev-parse", "--verify", "--quiet", branch], check=False).returncode == 0
+    if exists:
+        run_git(["worktree", "add", str(path), branch])
+    else:
+        run_git(["worktree", "add", "-b", branch, str(path), base_branch])
     return path
 
 
@@ -78,23 +82,29 @@ def list_worktrees() -> list[str]:
 
 
 # --- scope_paths --------------------------------------------------------------
-def changed_files(worktree: Path) -> list[str]:
+def changed_files(worktree: Path) -> list[tuple[str, str]]:
+    """Lista (kod_statusu, plik) z git status --porcelain ('??' = nieśledzony)."""
     out = run_git(["status", "--porcelain"], cwd=worktree).stdout
-    files: list[str] = []
+    files: list[tuple[str, str]] = []
     for line in out.splitlines():
         if line.strip():
-            files.append(line[3:].strip())
+            files.append((line[:2].strip(), line[3:].strip()))
     return files
 
 
 def enforce_scope(worktree: Path, scope_paths: list[str]) -> list[str]:
-    """Natychmiast cofa (git checkout --) każdą zmianę spoza scope_paths."""
+    """Natychmiast cofa każdą zmianę spoza scope_paths:
+    śledzone -> git checkout --, nieśledzone -> usunięcie pliku."""
     allowed = {str(p) for p in scope_paths}
     reverted: list[str] = []
-    for f in changed_files(worktree):
-        if f not in allowed:
+    for code, f in changed_files(worktree):
+        if f in allowed:
+            continue
+        if code == "??":
+            (worktree / f).unlink(missing_ok=True)
+        else:
             run_git(["checkout", "--", f], cwd=worktree, check=False)
-            reverted.append(f)
+        reverted.append(f)
     return reverted
 
 
