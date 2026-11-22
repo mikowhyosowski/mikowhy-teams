@@ -280,7 +280,10 @@ class State:
         )
         row = cur.fetchone()
         if row:
-            self.record_metric("task_event", {"from": "READY", "to": "RUNNING", "claimed_by": claimed_by}, task_id)
+            from engine import personas as _p
+            by = _p.persona_label(row["role"] or "worker") + f" ({claimed_by})"
+            self.record_metric("task_event", {"from": "READY", "to": "RUNNING", "by": by,
+                                              "changes": {"status": "READY → RUNNING", "claimed_by": claimed_by}}, task_id)
         return self._row_to_task(row) if row else None
 
     def transition(self, task_id: str, new_status: str, **fields: Any) -> dict[str, Any]:
@@ -299,9 +302,19 @@ class State:
             params.append(value)
         params.append(task_id)
         self._conn().execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", params)
-        # historia zmian / live feed na dashboardzie
-        self.record_metric("task_event", {"from": current, "to": new_status,
-                                          **{k: str(v)[:120] for k, v in fields.items()}}, task_id)
+        # historia zmian / live feed: CO się zmieniło (pole: stare → nowe) + KTO (imię nazwisko rola)
+        from engine import personas as _p
+        changes: dict[str, str] = {}
+        if new_status != current:
+            changes["status"] = f"{current} → {new_status}"
+        for key, value in fields.items():
+            old = task.get(key)
+            if str(old) != str(value):
+                changes[key] = f"{str(old)[:40]} → {str(value)[:40]}"
+        by = _p.persona_label(task.get("role") or "system")
+        if fields.get("claimed_by"):
+            by += f" ({fields['claimed_by']})"
+        self.record_metric("task_event", {"from": current, "to": new_status, "changes": changes, "by": by}, task_id)
         return self.get_task(task_id)  # type: ignore[return-value]
 
     MAX_SUBTASKS = 3  # więcej zmian w jednym commicie, mniej podzadań/commitów

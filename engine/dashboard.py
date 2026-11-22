@@ -175,8 +175,9 @@ async function refresh(){
   const ev = document.getElementById('events');
   ev.innerHTML = (d.events||[]).map(e => {
     const isNew = e.ts > lastEventTs;
-    const p = e; const txt = p.event ? p.event : `${p.from||'?'} → ${p.to||'?'}` + (p.claimed_by?(' przez '+p.claimed_by):'');
-    return `<div class="${isNew?'flash':''}" data-ts="${e.ts}"><span class="muted">${new Date(e.ts*1000).toLocaleTimeString()}</span> <b>${e.task_id||''}</b> ${txt} <span class="muted">${(p.branch||p.review_notes||'')?String(p.branch||p.review_notes||'').slice(0,60):''}</span></div>`;
+    const ch = e.changes ? Object.entries(e.changes).map(([k,v])=>`${k}: <b>${String(v).slice(0,60)}</b>`).join(' · ')
+                         : (e.event ? e.event : `${e.from||'?'} → ${e.to||'?'}`);
+    return `<div class="${isNew?'flash':''}" data-ts="${e.ts}"><span class="muted">${new Date(e.ts*1000).toLocaleTimeString()}</span> <b>${e.task_id||''}</b> ${ch} <span class="muted">${e.by?('— '+e.by):''}</span></div>`;
   }).join('');
   if((d.events||[]).length) lastEventTs = Math.max(lastEventTs, ...d.events.map(e=>e.ts));
   document.getElementById('comments').innerHTML = d.comments.map(c =>

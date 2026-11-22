@@ -1,0 +1,9 @@
+{
+  "project_id": "ulepszenia",
+  "name": "ulepszenia systemu mikowhy-teams (rozmowa -> decyzja -> implementacja)",
+  "target_repo_path": "/home/miko/Projekty/M+/mikowhy-teams",
+  "read_only": false,
+  "created": 1795386317.9612372,
+  "pipeline_snapshot": ".agents/projects/ulepszenia/pipeline.json",
+  "approval_policy": "auto"
+}
