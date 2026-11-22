@@ -140,7 +140,11 @@ const _view = view; view = function(u){ document.getElementById('viewer').datase
 
 
 def snapshot() -> dict:
-    s = State()
+    # State() jest tanie (współdzielone conn per proces) — nie zamykamy per request
+    return _snapshot(State())
+
+
+def _snapshot(s: State) -> dict:
     from engine import github_bridge
     tasks = []
     for t in s.list_tasks():
@@ -170,13 +174,16 @@ def snapshot() -> dict:
         for f in sorted(logs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
             st = f.stat()
             logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
-    return {"icons": ICON, "projects": projs, "tasks": tasks,
-            "comments": s.recent_comments(40), "metrics": metrics,
-            "runtime": runtime, "logs": logs}
+        return {"icons": ICON, "projects": projs, "tasks": tasks,
+                "comments": s.recent_comments(40), "metrics": metrics,
+                "runtime": runtime, "logs": logs}
 
 
 def task_detail(task_id: str) -> dict:
-    s = State()
+    return _task_detail(State(), task_id)
+
+
+def _task_detail(s: State, task_id: str) -> dict:
     from engine import github_bridge
     t = s.get_task(task_id)
     if not t:
@@ -198,6 +205,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        try:
+            self._do_GET()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            try:
+                self._send(500, json.dumps({"error": repr(e)}).encode(), "application/json")
+            except Exception:
+                pass
+
+    def _do_GET(self):
         u = urlparse(self.path)
         if u.path == "/" or u.path.startswith("/index"):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
@@ -229,6 +247,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
+        try:
+            self._do_POST()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            try:
+                self._send(500, json.dumps({"error": repr(e)}).encode(), "application/json")
+            except Exception:
+                pass
+
+    def _do_POST(self):
         u = urlparse(self.path)
         parts = [p for p in u.path.split("/") if p]  # ['api','task','<id>','<action>']
         length = int(self.headers.get("Content-Length") or 0)
@@ -263,6 +292,7 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
+    ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"🏭 Dashboard: http://{args.host}:{args.port}  (Ctrl+C stop)", flush=True)
     srv.serve_forever()

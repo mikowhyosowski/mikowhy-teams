@@ -106,13 +106,18 @@ class InvalidTransition(StateError):
     pass
 
 
+_CONNS: dict[str, sqlite3.Connection] = {}
+_CONNS_LOCK = threading.Lock()
+
+
 class State:
-    """Thread-safe (per-thread connection) wrapper nad SQLite WAL."""
+    """Wrapper nad SQLite WAL. Jedno współdzielone połączenie na proces i db_path
+    (check_same_thread=False — sqlite w trybie serialized jest bezpieczny wątkowo),
+    dzięki czemu mnożenie instancji State() nie leakuje deskryptorów."""
 
     def __init__(self, db_path: Path | str = DB_PATH):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._local = threading.local()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             # migracje: pola Telegram + multi-project (project_id, repo)
@@ -138,15 +143,30 @@ class State:
             (thread_id, summary_msg_id, time.time(), task_id))
 
     def _conn(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "conn", None)
+        key = str(self.db_path)
+        conn = _CONNS.get(key)
         if conn is None:
-            conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=30000")
-            conn.execute("PRAGMA foreign_keys=ON")
-            self._local.conn = conn
+            with _CONNS_LOCK:
+                conn = _CONNS.get(key)
+                if conn is None:
+                    conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None,
+                                           check_same_thread=False)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=30000")
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    _CONNS[key] = conn
         return conn
+
+    def close(self) -> None:
+        """Zamyka współdzielone połączenie procesu — tylko przy wyjściu procesu."""
+        with _CONNS_LOCK:
+            conn = _CONNS.pop(str(self.db_path), None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     # --- milestones ---------------------------------------------------------
     def add_milestone(self, milestone_id: str, goal: str, branch: str, title: str = "",
