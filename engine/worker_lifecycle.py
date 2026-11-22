@@ -252,6 +252,60 @@ def _tg(state: State, task_id: str, extra: str = "") -> None:
         telegram_reporter.update_progress(state, t, extra=extra)
 
 
+def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
+    """Tryb 'llm' (komenda `llm <opis>` z Telegrama): całe zadanie wykonuje LLM (vibe z narzędziami)
+    w worktree. LLM ma na końcu zostawić raport dla drużyny (docs/llm-reports/<id>.md);
+    worker dopisuje go do feeda (komentarz) i commituje wszystko przez step5."""
+    tid = task["id"]
+    state.transition(tid, "RUNNING", substep="LLM_EXEC")
+    full_desc = state.get_kv(f"llm_desc:{tid}") or task["title"]
+    report_rel = f"docs/llm-reports/{tid}.md"
+    system = (
+        "Jesteś agentem-wykonawcą (tryb LLM) w repozytorium mikowhy-teams (Dark Factory).\n"
+        "Pracujesz w worktree zadania — WSZYSTKIE zmiany rób WŁAŚNIE TAM.\n"
+        "Masz włączone narzędzia (bash, read/write/edit plików, process) — wykonuj zadanie SAMODZIELNIE, krok po kroku.\n"
+        "Zasady repo: przeczytaj AGENTS.md i contracts/git-contract.md w katalogu głównym worktree i ich przestrzegaj.\n"
+        "NIE rób `git commit`/`git push` — zmiany commituje i pushuje silnik po Twoim zakończeniu.\n"
+        "Odpowiadaj i pisz raporty PO POLSKU.\n"
+        f"OBOWIĄZKOWO na końcu napisz raport dla drużyny: `{report_rel}` w formacie:\n"
+        f"# {tid} — raport LLM\n## Co zrobiono\n## Zmienione pliki\n## Jak zweryfikować (komendy)\n## Ryzyka / uwagi\n"
+        "Raport kompletny, ale zwięzły (max ~120 linii)."
+    )
+    user = (
+        f"Zadanie: {tid} — {task['title']}\n\nPełny opis od Sponsora:\n{full_desc}\n\n"
+        f"Acceptance criteria: {task.get('acceptance_criteria') or '—'}\n\n"
+        f"Katalog roboczy (worktree): {worktree}\nBase branch: {base}\nBranch zadania: {task.get('branch')}\n\n"
+        f"Wykonaj zadanie w całości, a na końcu ZAWSZE dopisz raport `{report_rel}`."
+    )
+    gw = get_gateway()
+    if not hasattr(gw, "agent"):
+        raise RuntimeError("tryb 'llm' wymaga vibe CLI w PATH (LLM_PROVIDER=vibe)")
+    model = skill_compiler.model_for_role(task["role"], kind="strong")
+    _log(tid, f"LLM_EXEC start (model={model}, worktree={worktree})")
+    proc = gw.agent(system=system, user=user, cwd=worktree, step=f"LLM_EXEC-{tid}", model=model)
+    _log(tid, f"LLM_EXEC rc={proc.returncode}: stdout_tail={proc.stdout.strip()[-400:]!r} stderr_tail={proc.stderr.strip()[-300:]!r}")
+    report = worktree / report_rel
+    if report.exists():
+        text = report.read_text(encoding="utf-8", errors="replace")
+        state.add_comment(tid, f"llm({model})", f"🤖 Raport LLM (`{report_rel}`):\n{text[:1500]}")
+        telegram_reporter.post_event(state, task, f"🤖 LLM wykonał `{tid}` — raport w `{report_rel}` (patrz też feed)")
+    else:
+        state.add_comment(tid, f"llm({model})",
+                          f"⚠️ LLM skończył (rc={proc.returncode}) ale NIE ma raportu `{report_rel}`. "
+                          f"Output: {proc.stdout.strip()[-500:]}")
+        if proc.returncode != 0:
+            raise RuntimeError(f"LLM agent rc={proc.returncode} i brak raportu: {proc.stderr.strip()[-400:]}")
+    # LLM mógł już sam zacommitować — wtedy tylko push + IN_REVIEW
+    staged = git_guard.run_git(["diff", "--cached", "--quiet"], cwd=worktree, check=False).returncode != 0
+    ahead = git_guard.run_git(["diff", "--quiet", f"{base}...HEAD"], cwd=worktree, check=False).returncode != 0
+    if not staged and ahead:
+        git_guard.push(task["branch"], worktree)
+        state.add_comment(tid, f"llm({model})", f"✅ LLM sam zacommitował ({task['branch']}) → IN_REVIEW")
+        state.transition(tid, IN_REVIEW, substep="done")
+        return
+    step5_commit(state, task, worktree, base)
+
+
 def run(task_id: str) -> int:
     state = State()
     task = state.claim_task(task_id, claimed_by=f"worker-{os.getpid()}")
@@ -264,6 +318,13 @@ def run(task_id: str) -> int:
         worktree = step0_prepare(state, task)
         _tg(state, task_id, "worktree gotowy")
         base = state.get_milestone(task["milestone"])["branch"]
+        task = state.get_task(task_id)  # świeży wiersz (branch z step0)
+        if (task.get("mode") or "pipeline") == "llm":
+            step_llm(state, task, worktree, base)
+            task = state.get_task(task_id)
+            if task and task["status"] == "IN_REVIEW":
+                _tg(state, task_id, "LLM wykonał zadanie → IN_REVIEW (czeka na Code Review)")
+            return 0
         step1_plan(state, task)
         task = state.get_task(task_id)  # split może zmienić status
         if task["status"] != "RUNNING":

@@ -149,7 +149,7 @@ def _snapshot(s: State) -> dict:
     tasks = []
     for t in s.list_tasks():
         tasks.append({k: t.get(k) for k in ("id", "title", "status", "substep", "retry_count",
-                                             "role", "project_id", "branch", "updated_at", "read_only")})
+                                             "role", "project_id", "branch", "updated_at", "read_only", "mode")})
         tasks[-1]["pr"] = github_bridge.pr_for_task(t["id"])
     tasks.sort(key=lambda t: (t["status"] != "AWAITING_APPROVAL", t["status"] != "RUNNING", -(t["updated_at"] or 0)))
     metrics = []

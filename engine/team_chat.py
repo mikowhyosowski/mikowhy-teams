@@ -109,6 +109,36 @@ def main() -> int:
     state = State()
     low = text.lower()
 
+    # --- tryb LLM: "llm <opis>" -> zadanie wykonywane w 100% przez LLM (vibe z narzędziami) ---
+    if low == "llm" or low.startswith("llm ") or low.startswith("llm\t"):
+        desc = text[3:].strip()
+        if not desc:
+            telegram_gate._call("sendMessage", {"chat_id": chat_id, "text": (
+                "Użycie: `llm <opis zadania>`\n"
+                "Opisz co LLM ma zrobić — zadanie wykona samodzielnie (vibe z włączonymi narzędziami: "
+                "bash, edycja plików), a na końcu sam dopisze raport dla drużyny "
+                "(docs/llm-reports/<zadanie>.md + komentarz w feedzie).").replace("*", "")})
+            return 0
+        from engine import projects as _projects
+        n = state.get_kv("chat_task_seq", 0) + 1
+        state.set_kv("chat_task_seq", n)
+        tid = f"CHAT-{n:04d}"
+        pid = _projects.active_project_id()
+        state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
+                            "milestone/chat-ops", project_id=pid)
+        state.add_task(tid, milestone="CHAT-OPS", phase=4, title=desc[:90], role="llm-executor",
+                       scope_paths=[], depends_on=[],
+                       acceptance_criteria=(f"Zadanie wykonane w 100% przez LLM; raport dla drużyny w "
+                                            f"docs/llm-reports/{tid}.md; zmiany zacommitowane na branchu feature/{tid.lower()}"),
+                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False, mode="llm")
+        state.set_kv(f"llm_desc:{tid}", desc)  # pełny opis Sponsora (tytuł jest skrócony do 90 znaków)
+        telegram_gate._call("sendMessage", {"chat_id": chat_id, "text": (
+            f"🤖 Stworzyłem zadanie {tid} w trybie LLM (wykona je sam vibe z narzędziami, "
+            f"projekt: {pid}, status: AWAITING_APPROVAL — wg polityki albo samo pójdzie dalej, albo czeka na klik).\n"
+            f"Opis: {desc[:200]}\nŚledź: `list` / dashboard :8765").replace("*", "")})
+        state.record_metric("team_chat_llm_task", {"task": tid, "desc": desc[:200]}, tid)
+        return 0
+
     # --- akcja: dodaj globalną regułę (sponsor-notes.md — wstrzykiwane do KAŻDEGO promptu) ---
     is_add_rule = (any(k in low for k in ("reguł", "regule", "zasad", "rule", "pamiętaj", "zapamiętaj"))
                    and any(k in low for k in ("dodaj", "add")))

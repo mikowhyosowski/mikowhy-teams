@@ -224,6 +224,42 @@ class VibeCliGateway(LLMGateway):
             pass
         return raw
 
+    def agent(self, *, system: str, user: str, cwd: Path, step: str, model: str,
+              max_turns: int = 40, time_limit: int = 1800,
+              enabled_tools: str = "file_system.bash,file_system.read,file_system.write,"
+                                   "file_system.edit,file_system.list,file_system.grep,process") -> subprocess.CompletedProcess:
+        """Tryb agentowy: vibe Z narzędziami, w podanym katalogu (worktree zadania), wiele turnów.
+
+        LLM sam wykonuje polecenia (bash, edycja plików). Używane przez zadania mode='llm'
+        (komenda `llm <opis>` z Telegrama). Zwraca CompletedProcess — rc!=0 nie musi oznaczać
+        porażki (model mógł skończyć pracę mimo niezerowego rc), decyzję podejmuje worker.
+        """
+        alias = MODEL_ALIASES.get(model, model)
+        RUNTIME.mkdir(parents=True, exist_ok=True)
+        safe_step = "".join(c if c.isalnum() or c in "-_" else "_" for c in step)
+        with tempfile.TemporaryDirectory(dir=RUNTIME, prefix=f"gw-{safe_step}-") as tmp:
+            sys_file = Path(tmp) / "system.md"
+            user_file = Path(tmp) / "user.md"
+            sys_file.write_text(system, encoding="utf-8")
+            user_file.write_text(user, encoding="utf-8")
+            cmd = [self.binary, "--trust", "--max-turns", str(max_turns),
+                   "--model", alias, "--output", "text",
+                   "--enabled-tools", enabled_tools,
+                   "--approval-policy", "auto-approve",
+                   "--system-prompt-file", str(sys_file),
+                   "--prompt-file", str(user_file),
+                   "--time-limit", str(time_limit)]
+            clean_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_ENABLED_TOOLS")}
+            proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                                  timeout=time_limit + 120, env=clean_env)
+        try:
+            (RUNTIME / f"raw-{safe_step}-{int(time.time())}.txt").write_text(
+                f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}",
+                encoding="utf-8")
+        except OSError:
+            pass
+        return proc
+
 
 _REGISTRY: dict[str, type[LLMGateway]] = {"stub": StubGateway, "vibe": VibeCliGateway}
 
