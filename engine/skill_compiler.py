@@ -306,6 +306,8 @@ def ensure_stack_skills(repo: Path = ROOT, allow_llm: bool = True) -> dict[str, 
                 except Exception as exc:
                     report["errors"].append(f"{dep}: synteza LLM niedostępna: {exc}")
             continue
+        dest = SKILLS / "stacks" / f"{dep}-harvested.md"
+        combined = [f"# Harvested skill: {dep} (źródła: {len(matches[:MAX_HARVEST_PER_DEP])} z zaufanych repo)\n"]
         for repo, path in matches[:MAX_HARVEST_PER_DEP]:
             try:
                 raw = _repo_raw(repo, path)
@@ -323,12 +325,13 @@ def ensure_stack_skills(repo: Path = ROOT, allow_llm: bool = True) -> dict[str, 
                                                   "staging_file": str(staged.relative_to(ROOT))}
                 report["quarantined"].append({"dep": dep, "source": f"{repo}/{path}", "findings": findings})
             else:
-                dest = SKILLS / "stacks" / f"{dep}-harvested.md"
-                dest.write_text(header + raw, encoding="utf-8")
+                combined.append(f"\n## From {repo}/{path}\n\n" + raw)
                 reg["skills"][f"{dep}:{path}"] = {"source": f"{repo}/{path}", "sha256": sha, "status": "ACTIVE",
                                                   "file": str(dest.relative_to(ROOT))}
                 report["harvested"].append({"dep": dep, "source": f"{repo}/{path}", "file": dest.name,
                                             "lines": len(raw.splitlines())})
+        if report["harvested"] and any(h["dep"] == dep for h in report["harvested"]):
+            dest.write_text("\n".join(combined) + "\n", encoding="utf-8")
     REGISTRY_PATH.write_text(json.dumps(reg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return report
 
