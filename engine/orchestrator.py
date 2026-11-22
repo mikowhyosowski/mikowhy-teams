@@ -854,6 +854,33 @@ def main() -> None:
             print("branch protection ustawione (best effort)")
         elif act == "status":
             print("enabled:", gb.enabled(), "| repo:", gb.repo())
+        elif act == "prs":
+            # push wszystkich lokalnych feature/* z commitami ponad master + PR dla każdej
+            branches = subprocess.run(["git", "branch", "--list", "feature/*"], cwd=ROOT,
+                                      capture_output=True, text=True).stdout.split()
+            made = []
+            for b in branches:
+                b = b.strip().lstrip("*+ ")  # git branch: '*' = bieżąca, '+' = w worktree
+                ahead = subprocess.run(["git", "rev-list", "--count", f"master..{b}"], cwd=ROOT,
+                                       capture_output=True, text=True).stdout.strip()
+                if ahead == "0":
+                    continue
+                gb.push(b)
+                pr = gb.open_pr(b, "master", f"[{b.replace('feature/', '').upper()}] {b}")
+                made.append((b, pr))
+                print(f"  {b} (+'{ahead}') -> PR: {pr}")
+            if not made:
+                print("  brak gałęzi feature/* z commitami ponad master")
+        elif act == "accept-all":
+            prs = gb.api("GET", f"/repos/{gb.repo()}/pulls?state=open")
+            if not isinstance(prs, list):
+                print("  nie mogę pobrać PR (sprawdź token)")
+            else:
+                for pr in prs:
+                    n = pr["number"]
+                    gb.post_review(n, "APPROVED", "✅ Zaakceptowane przez Sponsora (accept-all)")
+                    m = gb.merge_pr(n)
+                    print(f"  PR !{n} ({pr['title'][:50]}): review APPROVED, merge={'OK' if m else 'FAIL'}")
     elif args.cmd == "dashboard":
         from engine import dashboard
         sys.argv = ["dashboard", "--port", str(args.port), "--host", args.host]
