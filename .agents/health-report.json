@@ -1,0 +1,77 @@
+{
+  "ts": 1795361515.4163592,
+  "projects": [
+    {
+      "project_id": "mikowhy-teams",
+      "target": "/home/miko/Projekty/M+/mikowhy-teams",
+      "read_only": false,
+      "checks": {
+        "target_exists": true,
+        "target_dirty_files": 10,
+        "tasks_by_status": {},
+        "awaiting_approval": 0
+      }
+    },
+    {
+      "project_id": "mikowhy-teams-self",
+      "target": "/home/miko/Projekty/M+/mikowhy-teams",
+      "read_only": false,
+      "checks": {
+        "target_exists": true,
+        "target_dirty_files": 10,
+        "tasks_by_status": {
+          "FAILED": 1,
+          "AWAITING_APPROVAL": 2
+        },
+        "awaiting_approval": 2
+      }
+    },
+    {
+      "project_id": "news-video-generator",
+      "target": "/home/miko/Projekty/M+/news-video-generator",
+      "read_only": true,
+      "checks": {
+        "target_exists": true,
+        "target_dirty_files": 2,
+        "tasks_by_status": {
+          "FAILED": 1,
+          "READY": 2
+        },
+        "awaiting_approval": 0
+      }
+    }
+  ],
+  "anomalies": [
+    {
+      "project": "mikowhy-teams",
+      "kind": "target_dirty",
+      "detail": "10 niezacommitowanych zmian w target repo"
+    },
+    {
+      "project": "mikowhy-teams-self",
+      "kind": "target_dirty",
+      "detail": "10 niezacommitowanych zmian w target repo"
+    },
+    {
+      "project": "mikowhy-teams-self",
+      "kind": "awaiting_approval",
+      "detail": "2 zadań czeka na akceptację Sponsora"
+    },
+    {
+      "project": "news-video-generator",
+      "kind": "target_dirty",
+      "detail": "2 niezacommitowanych zmian w target repo"
+    }
+  ],
+  "global": {
+    "zombie_tasks": [],
+    "stale_worktrees": [],
+    "pending_prod_approvals": 0,
+    "metrics_lines": 0,
+    "oversized_lessons": [],
+    "quarantined_skills": [],
+    "telegram_ok": true,
+    "vibe_ok": true
+  },
+  "ok": false
+}

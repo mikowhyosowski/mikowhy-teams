@@ -1,0 +1,110 @@
+{
+  "schema": "dark-factory/pipeline-snapshot@2",
+  "project_id": "mikowhy-teams-self",
+  "target_repo_path": "/home/miko/Projekty/M+/mikowhy-teams",
+  "read_only": false,
+  "generated_at": 1795361489.3191738,
+  "note": "Snapshot wygenerowany z .agents/state.db (SQLite WAL). Stan operacyjny żyje w state.db; ten plik to artefakt czytelny per projekt.",
+  "milestones": [
+    {
+      "id": "SELF-AUDIT",
+      "title": "Self-audit silnika mikowhy-teams (ta orkiestra wskazuje sama na siebie)",
+      "goal": "Self-audit silnika mikowhy-teams (ta orkiestra wskazuje sama na siebie)",
+      "branch": "milestone/mikowhy-teams-self-audit",
+      "status": "OPEN",
+      "created_at": 1795361489.2966433,
+      "merged_at": null,
+      "project_id": "mikowhy-teams-self"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "SELF-001",
+      "milestone": "SELF-AUDIT",
+      "phase": 1,
+      "title": "DISCOVERY (read-only): audyt /home/miko/Projekty/M+/mikowhy-teams — struktura, przepływ, mechanizmy samouczenia/uczenia, testy, zależności, punkty bólu",
+      "role": "systems-auditor",
+      "status": "READY",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/projects/mikowhy-teams-self/AUDIT_REPORT.md"
+      ],
+      "depends_on": [],
+      "acceptance_criteria": "Raport kompletny; ZERO zapisów w target repo poza uzgodnionymi scope_paths",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795361489.3098059,
+      "updated_at": 1795361489.3098059,
+      "telegram_thread_id": null,
+      "telegram_summary_msg_id": null,
+      "project_id": "mikowhy-teams-self",
+      "repo": "factory"
+    },
+    {
+      "id": "SELF-002",
+      "milestone": "SELF-AUDIT",
+      "phase": 2,
+      "title": "ARCHITECTURE: jak przejąć/uprościć warstwę samouczenia i QA do mikowhy-teams (skille + kontrakty + zadania)",
+      "role": "solutions-architect",
+      "status": "AWAITING_APPROVAL",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/projects/mikowhy-teams-self/MIGRATION_ADR.md"
+      ],
+      "depends_on": [
+        "SELF-001"
+      ],
+      "acceptance_criteria": "ADR z decyzją per komponent; QG-2",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795361489.3128839,
+      "updated_at": 1795361489.3128839,
+      "telegram_thread_id": null,
+      "telegram_summary_msg_id": null,
+      "project_id": "mikowhy-teams-self",
+      "repo": "factory"
+    },
+    {
+      "id": "SELF-003",
+      "milestone": "SELF-AUDIT",
+      "phase": 3,
+      "title": "DECOMPOSITION: atomowe zadania SELF-010+ ze scope_paths i acceptance_criteria, wszystkie status=AWAITING_APPROVAL",
+      "role": "tech-lead-planner",
+      "status": "AWAITING_APPROVAL",
+      "parallel_group": null,
+      "scope_paths": [
+        "docs/projects/mikowhy-teams-self/MIGRATION_TASKS.md"
+      ],
+      "depends_on": [
+        "SELF-002"
+      ],
+      "acceptance_criteria": "Każde SELF-01x ma scope_paths, acceptance_criteria, status AWAITING_APPROVAL (czeka na Sponsora)",
+      "retry_count": 0,
+      "split_depth": 0,
+      "parent_task": null,
+      "substep": null,
+      "review_notes": null,
+      "branch": null,
+      "worktree": null,
+      "claimed_by": null,
+      "created_at": 1795361489.3157396,
+      "updated_at": 1795361489.3157396,
+      "telegram_thread_id": null,
+      "telegram_summary_msg_id": null,
+      "project_id": "mikowhy-teams-self",
+      "repo": "factory"
+    }
+  ]
+}

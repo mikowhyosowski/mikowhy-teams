@@ -133,6 +133,18 @@ Konfiguracja: supergrupa z włączonymi **Topics**, bot jako admin (Manage Topic
 Sekrety w `.env` (gitignored): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (`-100…`). Bez nich reporter to no-op.
 Stan per zadanie: kolumny `telegram_thread_id`, `telegram_summary_msg_id` w `state.db` (eksportowane do `pipeline.json`).
 
+## Health Monitor (agent sprawdzający projekty)
+`python -m engine.orchestrator health` — pojedynczy check; w `run` automatycznie co `HEALTH_INTERVAL` (domyślnie 300s).
+Checki per projekt: target repo (istnieje/brudny), zombie tasks, wyciekłe worktree'y, AWAITING_APPROVAL,
+pending approvals 7b, rozmiar metrics.jsonl, przepełnione lekcje (>50), kwarantanna skilli, Telegram/vibe.
+**Auto-tworzenie zadań naprawczych (nie boi się tworzyć)**: anomalia lokalna dla fabryki -> `FIX-*` READY (od razu),
+dotykająca target repo / kwarantanny -> `FIX-*` AWAITING_APPROVAL (czeka na Ciebie). Dedup przez kv, raporty:
+`.agents/health-report.json`, `docs/HEALTH.md`, podsumowanie na Telegramu. Rola `health-monitor` (skeptic) = LLM-owe podsumowanie anomalii.
+
+## Self-project
+`mikowhy-teams-self` (target = własne repo silnika, read_only=false): DAG `SELF-001` (audyt silnika, READY)
+-> `SELF-002` / `SELF-003` (AWAITING_APPROVAL — approve przez Ciebie).
+
 ## Multi-project workspace
 ```
 .agents/active_project.json                  # {"active": "<project_id>"}

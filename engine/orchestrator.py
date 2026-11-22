@@ -33,7 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import git_guard, lessons_gardener, projects, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_reporter
+from engine import git_guard, health_monitor, lessons_gardener, projects, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_reporter
 from engine.state import (
     AWAITING_APPROVAL,
     BLOCKED,
@@ -276,6 +276,17 @@ class Orchestrator:
                     {"text": "🛑 Odrzuć → BLOCKED", "callback_data": f"decline_task:{task['id']}"},
                 ]]})
 
+    # --- health monitor co HEALTH_INTERVAL ------------------------------------------
+    def _maybe_health(self) -> None:
+        last = self.state.get_kv("last_health_ts", 0)
+        if time.time() - last >= health_monitor.HEALTH_INTERVAL:
+            self.state.set_kv("last_health_ts", time.time())
+            try:
+                report = health_monitor.run(self.state, create_tasks=True)
+                self.state.record_metric("health_check", {"ok": report["ok"], "anomalies": len(report["anomalies"])})
+            except Exception as exc:
+                self.state.record_metric("health_error", {"error": repr(exc)})
+
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
@@ -285,6 +296,7 @@ class Orchestrator:
         self._handle_merges()
         self._handle_milestones()
         self._notify_approvals()
+        self._maybe_health()
 
     def run(self, once: bool = False) -> None:
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
@@ -307,42 +319,45 @@ class Orchestrator:
             time.sleep(self.poll)
 
 
-def audit_project(project_id: str, target_repo_path: str, goal: str) -> None:
-    """Rejestruje projekt jako STRICT READ-ONLY i tworzy DAG audytu NVG-001..003.
+def audit_project(project_id: str, target_repo_path: str, goal: str, prefix: str = "NVG",
+                  read_only: bool = True, later_awaiting: bool = False) -> None:
+    """Rejestruje projekt i tworzy DAG audytu <prefix>-001..003.
 
     Zadania audytu mają repo='factory' — worktree i wszystkie zapisy idą do katalogu
-    silnika (mikowhy-teams/docs/projects/<pid>/), target repo jest tylko czytany.
-    Zadania migracyjne generowane przez NVG-003 mają status AWAITING_APPROVAL.
+    silnika (mikowhy-teams/docs/projects/<pid>/), target repo jest tylko czytany (gdy read_only).
+    later_awaiting=True: tylko pierwsze zadanie READY, kolejne AWAITING_APPROVAL.
     """
-    projects.register_project(project_id, project_id, target_repo_path, read_only=True)
+    projects.register_project(project_id, project_id, target_repo_path, read_only=read_only)
     projects.set_active_project(project_id)
     state = State()
     branch = f"milestone/{project_id.lower()}-audit"
-    state.add_milestone("NVG-AUDIT", goal, branch, title=goal[:80], project_id=project_id)
+    ms_id = f"{prefix}-AUDIT"
+    state.add_milestone(ms_id, goal, branch, title=goal[:80], project_id=project_id)
     git_guard.run_git(["branch", branch, "main"], check=False)  # gałąź audytu w repo FABRYKI
     docs_dir = f"docs/projects/{project_id}"
     chain = [
-        ("NVG-001", 1, "systems-auditor",
-         f"DISCOVERY (read-only): audyt {target_repo_path} — struktura, przepływ news->JSON->TTS/PJM->Remotion->FFmpeg->Telegram, mechanizmy samouczenia (run_visual_loop.sh, visual_qa.py, section_contract.py, GRAVEYARD.md, visual_history)",
+        (f"{prefix}-001", 1, "systems-auditor",
+         f"DISCOVERY (read-only): audyt {target_repo_path} — struktura, przepływ, mechanizmy samouczenia/uczenia, testy, zależności, punkty bólu",
          f"{docs_dir}/AUDIT_REPORT.md",
-         "Raport kompletny; ZERO zapisów w target repo (read-only); wszystko zapisane w mikowhy-teams"),
-        ("NVG-002", 2, "solutions-architect",
-         "ARCHITECTURE: jak przejąć warstwę samouczenia/VLM visual QA/autokorekty z news-video-generator do mikowhy-teams (skille + kontrakty + zadania)",
+         "Raport kompletny; ZERO zapisów w target repo" + (" (read-only)" if read_only else " poza uzgodnionymi scope_paths")),
+        (f"{prefix}-002", 2, "solutions-architect",
+         "ARCHITECTURE: jak przejąć/uprościć warstwę samouczenia i QA do mikowhy-teams (skille + kontrakty + zadania)",
          f"{docs_dir}/MIGRATION_ADR.md",
-         "ADR z decyzją per komponent (co odpiąć, co zostawić, co przenieść); QG-2; bez zapisu w target repo"),
-        ("NVG-003", 3, "tech-lead-planner",
-         "DECOMPOSITION: atomowe zadania migracyjne NVG-010+ ze scope_paths i acceptance_criteria, wszystkie status=AWAITING_APPROVAL",
+         "ADR z decyzją per komponent; QG-2"),
+        (f"{prefix}-003", 3, "tech-lead-planner",
+         f"DECOMPOSITION: atomowe zadania {prefix}-010+ ze scope_paths i acceptance_criteria, wszystkie status=AWAITING_APPROVAL",
          f"{docs_dir}/MIGRATION_TASKS.md",
-         "Każde NVG-01x ma scope_paths, acceptance_criteria, status AWAITING_APPROVAL (orchestrator ich nie ruszy przed ręczną akceptacją)"),
+         f"Każde {prefix}-01x ma scope_paths, acceptance_criteria, status AWAITING_APPROVAL (czeka na Sponsora)"),
     ]
     deps: list[str] = []
-    for tid, phase, role, title, scope, acc in chain:
-        state.add_task(tid, milestone="NVG-AUDIT", phase=phase, title=title, role=role,
+    for i, (tid, phase, role, title, scope, acc) in enumerate(chain):
+        status = READY if (i == 0 or not later_awaiting) else AWAITING_APPROVAL
+        state.add_task(tid, milestone=ms_id, phase=phase, title=title, role=role,
                        scope_paths=[scope], depends_on=deps, acceptance_criteria=acc,
-                       project_id=project_id, repo="factory", status=READY)
+                       project_id=project_id, repo="factory", status=status)
         deps = [tid]
     snap = state.export_snapshot(project_id=project_id)
-    print(f"Projekt {project_id} zarejestrowany (read_only=True, target={target_repo_path})")
+    print(f"Projekt {project_id} zarejestrowany (read_only={read_only}, target={target_repo_path})")
     print(f"Aktywny projekt: {projects.active_project_id()}")
     print(f"DAG audytu zapisany do {snap}")
     for t in state.list_tasks():
@@ -539,10 +554,14 @@ def main() -> None:
     pa.add_argument("path", nargs="?", default=None)
     pa.add_argument("--read-only", action="store_true")
     pa.add_argument("--name", default=None)
-    ap2 = sub.add_parser("audit-project", help="zarejestruj projekt read-only + DAG audytu NVG-001..003")
+    ap2 = sub.add_parser("audit-project", help="zarejestruj projekt + DAG audytu <prefix>-001..003")
     ap2.add_argument("project_id")
     ap2.add_argument("target_repo_path")
     ap2.add_argument("goal")
+    ap2.add_argument("--prefix", default="NVG")
+    ap2.add_argument("--no-read-only", action="store_true", help="projekt z zapisem (np. self)")
+    ap2.add_argument("--later-awaiting", action="store_true", help="tylko pierwsze zadanie READY, reszta AWAITING_APPROVAL")
+    sub.add_parser("health", help="pełny health check wszystkich projektów + zadania naprawcze")
     sub.add_parser("status", help="stan projektów i zadań (jak pipeline.json)")
     ap3 = sub.add_parser("approve", help="Sponsor: AWAITING_APPROVAL -> READY")
     ap3.add_argument("task_id")
@@ -577,7 +596,12 @@ def main() -> None:
             projects.set_active_project(args.project_id)
             print(f"aktywny projekt: {args.project_id}")
     elif args.cmd == "audit-project":
-        audit_project(args.project_id, args.target_repo_path, args.goal)
+        audit_project(args.project_id, args.target_repo_path, args.goal,
+                      prefix=args.prefix, read_only=not args.no_read_only, later_awaiting=args.later_awaiting)
+    elif args.cmd == "health":
+        rep = health_monitor.run(State(), create_tasks=True)
+        print(json.dumps({"ok": rep["ok"], "anomalies": rep["anomalies"],
+                          "global": rep["global"]}, indent=2, ensure_ascii=False, default=str)[:3000])
     elif args.cmd == "status":
         cmd_status()
     elif args.cmd == "approve":
