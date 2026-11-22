@@ -46,6 +46,20 @@ def _call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
         return json.loads(resp.read().decode())
 
 
+def deploy_gate_enabled() -> bool:
+    """Osobna flaga dla bramki 7b [Deploy Prod] — to NIE jest push o statusie zadania,
+    tylko decyzja Sponsora. Domyślnie WŁĄCZONA; wyłącz: TELEGRAM_DEPLOY_GATE=0 w .env."""
+    import os as _os
+    from pathlib import Path as _P
+    env = _P(__file__).resolve().parent.parent / ".env"
+    if env.exists():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("TELEGRAM_DEPLOY_GATE="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'").lower() in ("1", "true", "yes", "on")
+    return _os.environ.get("TELEGRAM_DEPLOY_GATE", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
 def send_message(text: str, reply_markup: dict | None = None) -> dict[str, Any] | None:
     if not _enabled():
         print(f"[telegram-gate] (wyłączone) {text}", flush=True)

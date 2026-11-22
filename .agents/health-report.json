@@ -1,5 +1,5 @@
 {
-  "ts": 1795364518.1837914,
+  "ts": 1795364724.5555527,
   "projects": [
     {
       "project_id": "mikowhy-teams",
@@ -7,7 +7,7 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 4,
+        "target_dirty_files": 0,
         "tasks_by_status": {
           "AWAITING_APPROVAL": 1
         },
@@ -20,7 +20,7 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 4,
+        "target_dirty_files": 0,
         "tasks_by_status": {
           "FAILED": 1,
           "READY": 1,
@@ -48,18 +48,8 @@
   "anomalies": [
     {
       "project": "mikowhy-teams",
-      "kind": "target_dirty",
-      "detail": "4 niezacommitowanych zmian w target repo"
-    },
-    {
-      "project": "mikowhy-teams",
       "kind": "awaiting_approval",
       "detail": "1 zadań czeka na akceptację Sponsora"
-    },
-    {
-      "project": "mikowhy-teams-self",
-      "kind": "target_dirty",
-      "detail": "4 niezacommitowanych zmian w target repo"
     },
     {
       "project": "mikowhy-teams-self",

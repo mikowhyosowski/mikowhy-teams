@@ -49,6 +49,15 @@ def enabled() -> bool:
     return bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
 
 
+def push_enabled() -> bool:
+    """Czy wysyłać AUTOMATYCZNE powiadomienia push (karty statusu, eventy, milestony).
+    Domyślnie WYŁĄCZONE (TELEGRAM_PUSH=0) — Sponsor nie dostaje żadnych pushy
+    o zmianach statusu zadań; wszystko wyklikuje sam w menu (telegram_menu, pull).
+    Włącz ponownie: TELEGRAM_PUSH=1 w .env."""
+    _load_env()
+    return os.environ.get("TELEGRAM_PUSH", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _chat_id() -> str:
     return os.environ["TELEGRAM_CHAT_ID"]
 
@@ -107,6 +116,8 @@ def render_card(task: dict[str, Any], children: list[dict[str, Any]] | None = No
 
 
 def ensure_topic(state, task: dict[str, Any]) -> None:
+    if not push_enabled():
+        return
     """Tworzy temat forum dla zadania (jeśli jeszcze nie ma), wysyła i przypina kartę stanu.
     Zapisuje telegram_thread_id + telegram_summary_msg_id w stanie.
     Fallback: gdy czat NIE jest forum (np. priv) — thread_id=0 i karta jako przypięta
@@ -140,6 +151,8 @@ def _rename_topic(task: dict[str, Any]) -> None:
 
 
 def update_progress(state, task: dict[str, Any], extra: str = "") -> None:
+    if not push_enabled():
+        return
     """Aktualizuje przypiętą kartę (editMessageText) + nazwę tematu. Wywoływane przy każdym mikro-kroku."""
     if task.get("telegram_thread_id") is None or not task.get("telegram_summary_msg_id"):
         return
@@ -156,6 +169,8 @@ def update_progress(state, task: dict[str, Any], extra: str = "") -> None:
 
 
 def post_event(state, task: dict[str, Any], text: str) -> None:
+    if not push_enabled():
+        return
     """Zwykła wiadomość do wątku zadania — tylko kamienie milowe (SPLIT, CR REJECTED, breaker, MERGED)."""
     if task.get("telegram_thread_id") is None:
         ensure_topic(state, task)
@@ -172,6 +187,8 @@ def post_event(state, task: dict[str, Any], text: str) -> None:
 
 
 def close_topic(state, task: dict[str, Any], summary: str = "") -> None:
+    if not push_enabled():
+        return
     """MERGED: karta na ✅, event z podsumowaniem, temat zamknięty (archiwum, wciąż czytelne)."""
     task = dict(task)
     task["status"] = "MERGED"
@@ -182,5 +199,7 @@ def close_topic(state, task: dict[str, Any], summary: str = "") -> None:
 
 
 def post_milestone(text: str) -> None:
+    if not push_enabled():
+        return
     """Wiadomość na główny temat grupy (General) — np. QG-3 / 7a / 7b dla milestonu."""
     _call("sendMessage", {"chat_id": _chat_id(), "text": text})

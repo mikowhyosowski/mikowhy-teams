@@ -34,6 +34,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from engine import git_guard, health_monitor, lessons_gardener, projects, quality_gates, skill_compiler, skill_curator, telegram_gate, telegram_menu, telegram_reporter
+
+
+def _push(msg: str, **kwargs) -> None:
+    """Automatyczny push na Telegram — domyślnie WYŁĄCZONY (TELEGRAM_PUSH=0).
+    Sponsor nie dostaje powiadomień o statusach zadań; wyklikuje wszystko sam w menu
+    (telegram_menu, pull). Włącz push: TELEGRAM_PUSH=1 w .env."""
+    if telegram_reporter.push_enabled():
+        telegram_gate.send_message(msg, **kwargs)
 from engine.state import (
     AWAITING_APPROVAL,
     BLOCKED,
@@ -129,14 +137,14 @@ class Orchestrator:
                 self.state.transition(task["id"], READY, role=PRINCIPAL_ROLE,
                                       review_notes="CIRCUIT BREAKER: retry>=3 -> principal-debugger")
                 self.state.record_metric("circuit_breaker_escalation", {"task": task["id"]}, task["id"])
-                telegram_gate.send_message(
+                _push(
                     f"⚠️ *Circuit breaker* dla `{task['id']}` — przełączam na `{PRINCIPAL_ROLE}` "
                     f"(pełna historia {task['retry_count']} odrzuceń).")
                 telegram_reporter.post_event(self.state, task,
                                              f"⚠️ *Circuit breaker* (retry>={task['retry_count']}) → rola `{PRINCIPAL_ROLE}`")
             elif task["retry_count"] >= CIRCUIT_BREAKER_RETRIES + 2 and task["role"] == PRINCIPAL_ROLE:
                 self.state.transition(task["id"], ESCALATED)
-                telegram_gate.send_message(
+                _push(
                     f"🚨 *ESKALACJA* `{task['id']}` — nawet Principal Debugger poległ. "
                     f"Bloker: {task.get('review_notes', '')[:300]}")
                 t = self.state.get_task(task["id"])
@@ -192,7 +200,7 @@ class Orchestrator:
             if not qg3["ok"]:
                 self.state.set_milestone_status(ms["id"], "OPEN")
                 msg = f"❌ *QG-3 nie przeszło* dla `{ms['id']}`: {'; '.join(qg3['problems'][:3])}"
-                telegram_gate.send_message(msg)
+                _push(msg)
                 telegram_reporter.post_milestone(f"🧪 *QG-3* `{ms['id']}`: ❌ {'; '.join(qg3['problems'][:2])}")
                 continue
             # merge milestone/* -> main
@@ -211,13 +219,14 @@ class Orchestrator:
         # 7a — staging (automatycznie)
         smoke = {"staging_url": f"https://staging.example.com/{ms['id'].lower()}", "ok": True}
         self.state.record_metric("staging_deploy", {"milestone": ms["id"], "smoke": smoke}, None)
-        telegram_gate.send_message(f"✅ *7a* `{ms['id']}` wdrożony na staging, smoke-testy zielone.")
+        _push(f"✅ *7a* `{ms['id']}` wdrożony na staging, smoke-testy zielone.")
         # 7b — człowiek decyduje o produkcji
         approval_id = f"DEPLOY_PROD:{ms['id']}"
         report = {"staging_url": smoke["staging_url"], "tests": "green (QG-3 E2E)",
                   "tokens": self._token_cost(ms["id"]), "business_diff": f"diff main...{ms['branch']}"}
         self.state.create_approval(approval_id, ms["id"], report)
-        telegram_gate.request_prod_approval(ms["id"], report)
+        if telegram_gate.deploy_gate_enabled():
+            telegram_gate.request_prod_approval(ms["id"], report)
 
     def _token_cost(self, milestone: str) -> str:
         rows = self.state._conn().execute(
@@ -263,12 +272,14 @@ class Orchestrator:
 
     # --- powiadomienia o AWAITING_APPROVAL na Telegramu (przyciski) ---------------
     def _notify_approvals(self) -> None:
+        if not telegram_reporter.push_enabled():
+            return
         for task in self.state.list_tasks(status=AWAITING_APPROVAL):
             key = f"tg_approve_notified:{task['id']}"
             if self.state.get_kv(key):
                 continue
             self.state.set_kv(key, True)
-            telegram_gate.send_message(
+            _push(
                 f"🕒 *{task['id']}* czeka na akceptację (AWAITING_APPROVAL)\n"
                 f"{task['title']}\nScope: `{task['scope_paths']}`",
                 reply_markup={"inline_keyboard": [[
