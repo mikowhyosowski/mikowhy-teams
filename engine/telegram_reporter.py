@@ -107,55 +107,67 @@ def render_card(task: dict[str, Any], children: list[dict[str, Any]] | None = No
 
 def ensure_topic(state, task: dict[str, Any]) -> None:
     """Tworzy temat forum dla zadania (jeśli jeszcze nie ma), wysyła i przypina kartę stanu.
-    Zapisuje telegram_thread_id + telegram_summary_msg_id w stanie."""
+    Zapisuje telegram_thread_id + telegram_summary_msg_id w stanie.
+    Fallback: gdy czat NIE jest forum (np. priv) — thread_id=0 i karta jako przypięta
+    wiadomość na głównym czacie; eventy idą jako zwykłe wiadomości."""
     if task.get("telegram_thread_id"):
         return
-    topic = _call("createForumTopic", {"chat_id": _chat_id(), "name": topic_name(task)})
-    if not topic:
-        return
-    thread_id = topic["message_thread_id"]
-    card = _call("sendMessage", {
-        "chat_id": _chat_id(), "message_thread_id": thread_id,
-        "text": render_card(task), "parse_mode": "Markdown",
-    })
+    topic = _call("createForumTopic", {"chat_id": _chat_id(), "name": topic_name(task)[:128]})
+    if topic:
+        thread_id = topic["message_thread_id"]
+        card = _call("sendMessage", {
+            "chat_id": _chat_id(), "message_thread_id": thread_id,
+            "text": render_card(task),
+        })
+    else:
+        # fallback: czat prywatny / grupa bez Topics
+        thread_id = 0
+        card = _call("sendMessage", {"chat_id": _chat_id(), "text": render_card(task)})
     msg_id = card["message_id"] if card else None
     if msg_id:
         _call("pinChatMessage", {"chat_id": _chat_id(), "message_id": msg_id, "disable_notification": True})
     state.set_telegram(task["id"], thread_id, msg_id)
-    state.record_metric("telegram_topic", {"thread_id": thread_id, "msg_id": msg_id}, task["id"])
+    state.record_metric("telegram_topic", {"thread_id": thread_id, "msg_id": msg_id, "forum": bool(topic)}, task["id"])
 
 
 def _rename_topic(task: dict[str, Any]) -> None:
-    if not task.get("telegram_thread_id"):
+    tid = task.get("telegram_thread_id")
+    if not tid:  # 0 = fallback (brak forum)
         return
-    _call("editForumTopic", {"chat_id": _chat_id(), "message_thread_id": task["telegram_thread_id"],
+    _call("editForumTopic", {"chat_id": _chat_id(), "message_thread_id": tid,
                              "name": topic_name(task)[:128]})
 
 
 def update_progress(state, task: dict[str, Any], extra: str = "") -> None:
     """Aktualizuje przypiętą kartę (editMessageText) + nazwę tematu. Wywoływane przy każdym mikro-kroku."""
-    if not task.get("telegram_thread_id") or not task.get("telegram_summary_msg_id"):
+    if task.get("telegram_thread_id") is None or not task.get("telegram_summary_msg_id"):
         return
     children = [t for t in state.list_tasks(milestone=task["milestone"]) if t.get("parent_task") == task["id"]]
     text = render_card(task, children, extra)
-    _call("editMessageText", {
+    payload: dict[str, Any] = {
         "chat_id": _chat_id(), "message_id": task["telegram_summary_msg_id"],
-        "text": text, "parse_mode": "Markdown",
-    })
+        "text": text,
+    }
+    if task.get("telegram_thread_id"):  # wątek forum; 0 = fallback priv
+        payload["message_thread_id"] = task["telegram_thread_id"]
+    _call("editMessageText", payload)
     _rename_topic(task)
 
 
 def post_event(state, task: dict[str, Any], text: str) -> None:
     """Zwykła wiadomość do wątku zadania — tylko kamienie milowe (SPLIT, CR REJECTED, breaker, MERGED)."""
-    if not task.get("telegram_thread_id"):
+    if task.get("telegram_thread_id") is None:
         ensure_topic(state, task)
         task = state.get_task(task["id"]) or task
-    if not task.get("telegram_thread_id"):
+    if task.get("telegram_thread_id") is None:
         return
-    _call("sendMessage", {
-        "chat_id": _chat_id(), "message_thread_id": task["telegram_thread_id"],
-        "text": f"[{task['id']}] {text}", "parse_mode": "Markdown",
-    })
+    payload: dict[str, Any] = {
+        "chat_id": _chat_id(),
+        "text": f"[{task['id']}] {text}",
+    }
+    if task.get("telegram_thread_id"):
+        payload["message_thread_id"] = task["telegram_thread_id"]
+    _call("sendMessage", payload)
 
 
 def close_topic(state, task: dict[str, Any], summary: str = "") -> None:
@@ -170,4 +182,4 @@ def close_topic(state, task: dict[str, Any], summary: str = "") -> None:
 
 def post_milestone(text: str) -> None:
     """Wiadomość na główny temat grupy (General) — np. QG-3 / 7a / 7b dla milestonu."""
-    _call("sendMessage", {"chat_id": _chat_id(), "text": text, "parse_mode": "Markdown"})
+    _call("sendMessage", {"chat_id": _chat_id(), "text": text})
