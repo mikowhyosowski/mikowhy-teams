@@ -242,13 +242,18 @@ class VibeCliGateway(LLMGateway):
             user_file = Path(tmp) / "user.md"
             sys_file.write_text(system, encoding="utf-8")
             user_file.write_text(user, encoding="utf-8")
-            cmd = [self.binary, "--trust", "--max-turns", str(max_turns),
+            cmd = [self.binary, "--trust", "--auto-approve", "--max-turns", str(max_turns),
                    "--model", alias, "--output", "text",
-                   "--enabled-tools", enabled_tools,
                    "--approval-policy", "auto-approve",
                    "--system-prompt-file", str(sys_file),
                    "--prompt-file", str(user_file),
                    "--time-limit", str(time_limit)]
+            # UWAGA: --enabled-tools trzeba POWTARZAć per tool (jeden przecinkowy string
+            # = jedna nieznana nazwa -> headless wyłącza wszystkie narzędzia)
+            for t in enabled_tools.split(","):
+                t = t.strip()
+                if t:
+                    cmd += ["--enabled-tools", t]
             clean_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_ENABLED_TOOLS")}
             proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
                                   timeout=time_limit + 120, env=clean_env)
