@@ -15,7 +15,24 @@ python -m engine.orchestrator bootstrap "Dodaj moduł subskrypcji Stripe z webho
 python -m engine.orchestrator run --poll 10          # daemon schedulera DAG
 python -m engine.orchestrator telegram-poll          # long-poll przycisków 7b
 python -m engine.orchestrator export                 # snapshot pipeline.json
+python -m engine.orchestrator doctor                 # pre-flight check
+python -m engine.orchestrator run --once             # pojedynczy dry-run
 ```
+
+## Jak używać jako Product Sponsor
+```bash
+python -m engine.orchestrator status                          # stan projektów i zadań (ikony statusów)
+python -m engine.orchestrator approve NVG-010                 # AWAITING_APPROVAL -> READY (fabryka rusza)
+python -m engine.orchestrator decline NVG-010 "zły kierunek"  # -> BLOCKED z uzasadnieniem
+python -m engine.orchestrator note ALL "zawsze zachowaj visual_history"  # rada do KAŻDEGO promptu (sponsor-notes.md)
+python -m engine.orchestrator note NVG-010 "nie ruszaj GRAVEYARD.md"      # rada tylko dla zadania (review_notes)
+```
+- **Telegram (priv 8762039205 lub forum -100…)**: każde zadanie dostaje kartę statusu (przypięta, edytowana na żywo);
+  zadania `AWAITING_APPROVAL` dostają wiadomość z przyciskami **✅ Akceptuj → READY** / **🛑 Odrzuć → BLOCKED**
+  (odbiera `telegram-poll`); deploy prod (Faza 7b) też przez przyciski **[🚀 Deploy Prod] / [🛑 Rollback]**
+- **Gdzie patrzeć**: `status` | logi `.agents/logs/*.log` | artefakty `.agents/runtime/` | snapshot `.agents/projects/<projekt>/pipeline.json` | raporty `docs/projects/<projekt>/`
+- **NVG-001..003** (audyt news-video-generator) są READY i ruszą pierwsze — target repo STRICT READ-ONLY;
+  zadania migracyjne NVG-010+ wyjdą z NVG-003 jako AWAITING_APPROVAL i czekają na Ciebie (CLI lub Telegram)
 
 ## Provider LLM (Vibe CLI)
 Domyślnie silnik używa lokalnego **Mistral Vibe CLI** w trybie headless (`engine/llm_gateway.py::VibeCliGateway`):
