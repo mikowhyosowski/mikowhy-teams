@@ -30,7 +30,9 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Dark Factory — live</title>
+PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Dark Factory — live</title>
 <style>
  body{background:#0d1117;color:#c9d1d9;font-family:ui-monospace,Menlo,monospace;margin:16px}
  h1{font-size:18px} h2{font-size:14px;color:#8b949e;margin:18px 0 6px}
@@ -51,8 +53,34 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Dark Factory �
  #detail button{margin:4px 4px 0 0;padding:5px 10px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;cursor:pointer}
  #detail button.ok{background:#1f6feb} #detail button.no{background:#da3633}
  .kv{font-size:12px;margin:2px 0} .kv b{color:#8b949e}
+ /* przepływ pracy (kanban statusów) */
+ #flow{display:flex;gap:6px;overflow-x:auto;padding:4px 0;align-items:stretch}
+ .stage{background:#161b22;border:1px solid #30363d;border-radius:8px;min-width:130px;padding:6px;flex:1}
+ .stage h4{margin:0 0 4px;font-size:11px;color:#8b949e;display:flex;justify-content:space-between}
+ .stage .cnt{background:#21262d;border-radius:10px;padding:0 7px;font-weight:bold}
+ .stage.hot{border-color:#b08800;box-shadow:0 0 8px #b0880044}
+ .stage.run{border-color:#1f6feb;box-shadow:0 0 8px #1f6feb44}
+ .chip{display:block;background:#0d1117;border:1px solid #30363d;border-radius:6px;margin:3px 0;padding:3px 6px;font-size:11px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .chip:hover{border-color:#58a6ff}
+ .chip b{color:#58a6ff}
+ .chip .who{color:#8b949e;display:block;font-size:10px}
+ .arrow{align-self:center;color:#8b949e;font-size:14px}
+ /* mobile */
+ @media (max-width:720px){
+   body{margin:8px;font-size:13px}
+   table{font-size:11px} td,th{padding:3px 4px}
+   #flow{flex-direction:column}
+   .stage{min-width:0}
+   .arrow{transform:rotate(90deg)}
+   #detail{width:100%;right:-100%}
+   h1{font-size:15px} h2{font-size:12px}
+   .feed{font-size:11px}
+   #tasks{display:block;overflow-x:auto}
+ }
 </style></head><body>
 <h1>🏭 Dark Factory — live <span id="ts"></span></h1>
+<h2>🔀 Przepływ pracy <span class="muted">(kliknij kafelek = szczegóły zadania)</span></h2>
+<div id="flow"></div>
 <h2>Projekty</h2><div id="projects"></div>
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
 <table id="tasks"><thead><tr><th></th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
@@ -75,6 +103,18 @@ async function refresh(){
   document.getElementById('ts').textContent = new Date().toLocaleTimeString();
   document.getElementById('projects').innerHTML = d.projects.map(p =>
     `<span class="muted">🗂</span> <b>${p.project_id}</b> policy=${p.approval_policy||'manual'} read_only=${p.read_only?1:0} target=${p.target}`).join('<br>');
+  // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
+  const FLOW = ['AWAITING_APPROVAL','READY','RUNNING','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
+  const byStatus = {}; for(const t of d.tasks){ (byStatus[t.status] = byStatus[t.status]||[]).push(t); }
+  document.getElementById('flow').innerHTML = FLOW.map((st,i) => {
+    const items = byStatus[st]||[];
+    const hot = st==='AWAITING_APPROVAL' && items.length, run = st==='RUNNING';
+    const chips = items.slice(0,8).map(t =>
+      `<span class="chip" onclick="openTask('${t.id}')"><b>${t.id}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?('⏱'+fmtDur(Date.now()/1000-t.started_at)):''}
+       <span class="who">${t.persona||t.role||''}</span></span>`).join('') + (items.length>8?`<span class="chip muted">+${items.length-8} więcej…</span>`:'');
+    const arrow = i < FLOW.length-1 ? '<span class="arrow">→</span>' : '';
+    return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${st} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
+  }).join('');
   const tb = document.querySelector('#tasks tbody'); tb.innerHTML = '';
   let awaiting = 0;
   for(const t of d.tasks){
