@@ -17,3 +17,4 @@ __pycache__/
 .agents/health-report.json
 docs/HEALTH.md
 *.swp
+.agents/metrics.jsonl
