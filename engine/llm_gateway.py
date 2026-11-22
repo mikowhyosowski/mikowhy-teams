@@ -180,8 +180,9 @@ class VibeCliGateway(LLMGateway):
                 "Możesz uruchamiać kod, ALE ostateczny output musi być czystym JSON-em.")
             sys_file.write_text(system + note, encoding="utf-8")
             user_file.write_text(user, encoding="utf-8")
+            max_turns = "1" if enabled_tools == "__none__" else "3"  # bez tooli: jedna strzałka JSON
             cmd = [
-                self.binary, "--trust", "--max-turns", "3",
+                self.binary, "--trust", "--max-turns", max_turns,
                 "--model", alias, "--output", "text",
                 "--enabled-tools", enabled_tools,
                 "--system-prompt-file", str(sys_file),

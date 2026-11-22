@@ -156,6 +156,10 @@ def assert_diff_limit(worktree: Path, base: str, limit: int = MAX_DIFF_LINES) ->
 def commit_all(worktree: Path, message: str) -> None:
     assert_writable(worktree)
     run_git(["add", "-A"], cwd=worktree)
+    staged = run_git(["status", "--porcelain"], cwd=worktree, check=False).stdout.strip()
+    if not staged:
+        raise RuntimeError("Brak zmian w scope_paths — LLM nie wyprodukował żadnego pliku ze scope_paths "
+                           "(enforce_scope wszystko cofnął albo odpowiedź nie miała klucza files)")
     run_git(["commit", "-m", message], cwd=worktree)
 
 
