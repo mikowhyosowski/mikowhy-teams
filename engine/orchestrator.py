@@ -135,6 +135,24 @@ class Orchestrator:
                                          {"policy": policy, "project": pid, "read_only": bool(task.get("read_only"))},
                                          task["id"])
 
+    # --- auto-retry FAILED (max 3 próby, potem ESCALATED do Sponsora) -----------
+    def _auto_retry_failed(self) -> None:
+        """FAILED -> READY automatycznie (fabryka sama się podnosi po przejściowych
+        błędach LLM/infra). Po 3 próbach -> ESCALATED + komentarz w feedzie."""
+        for task in self.state.list_tasks(status=FAILED):
+            if task["retry_count"] >= CIRCUIT_BREAKER_RETRIES:
+                self.state.transition(task["id"], ESCALATED,
+                                      review_notes=(task.get("review_notes") or "") +
+                                      " | auto-eskalacja po 3 FAILED (circuit breaker)")
+                self.state.add_comment(task["id"], "orchestrator",
+                                       "🚨 3 próby FAILED z rzędu → ESCALATED. Sponsorze: `list ESCALATED`")
+                self.state.record_metric("auto_escalate", {"task": task["id"]}, task["id"])
+                continue
+            self.state.transition(task["id"], READY, substep="1/5_PLAN",
+                                  retry_count=task["retry_count"] + 1,
+                                  review_notes="auto-retry po FAILED (próba %d)" % (task["retry_count"] + 2))
+            self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
+
     # --- faza 4: workery -------------------------------------------------------
     def _launch_workers(self) -> None:
         for task in self.state.ready_tasks():
@@ -326,6 +344,7 @@ class Orchestrator:
     def tick(self) -> None:
         self._reap()
         self._auto_approve()
+        self._auto_retry_failed()
         self._launch_workers()
         self._launch_reviews()
         self._circuit_breakers()
@@ -442,7 +461,7 @@ def cmd_retry(task_id: str) -> None:
     if task["status"] not in (FAILED, BLOCKED, ESCALATED):
         raise SystemExit(f"{task_id} ma status {task['status']} — retry tylko z FAILED/BLOCKED/ESCALATED")
     state.transition(task_id, READY, substep="1/5_PLAN", retry_count=0,
-                     review_notes=(task.get("review_notes") or "") + " | requeue (retry)")
+                     review_notes="requeue (retry) — stare review_notes wyczyszczone")
     state.record_metric("sponsor_retry", {"task": task_id}, task_id)
     print(f"🔁 {task_id} -> READY (retry_count=0)")
 
