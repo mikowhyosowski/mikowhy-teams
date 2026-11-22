@@ -153,7 +153,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    #tasks{display:block;overflow-x:auto}
  }
 </style></head><body>
-<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span></h1>
+<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span></h1>
 <div id="stats"></div>
 <h2>🚨 Wymaga interwencji Sponsora</h2>
 <div id="alerts"></div>
@@ -189,6 +189,11 @@ async function refresh(){ try{ await refreshInner(); }catch(e){ document.getElem
 async function refreshInner(){
   const r = await fetch('/api/state'); const d = await r.json();
   document.getElementById('ts').textContent = new Date().toLocaleTimeString();
+  if(d.host){
+    document.getElementById('host').innerHTML = d.host.dashboard_url
+      ? `📍 LAN: <a href="${esc(d.host.dashboard_url)}" style="color:#58a6ff" target="_blank">${esc(d.host.dashboard_url)}</a> (${esc(d.host.lan_ip)} · ${esc(d.host.hostname)})`
+      : `📍 offline (brak IP LAN) · host: ${esc(d.host.hostname)}`;
+  }
   const st = d.stats||{};
   document.getElementById('stats').innerHTML =
     `<span class="stat-badge ${st.awaiting?'warn':''}">🕒 czeka na Ciebie: <b>${st.awaiting||0}</b></span>`+
@@ -352,9 +357,33 @@ const _view = view; view = function(u){ document.getElementById('viewer').datase
 </script></body></html>"""
 
 
+def host_info(port: int = 8765) -> dict:
+    """Adres IP hosta w LAN (UDP-socket trick — bez ruchu sieciowego, bez hardcoded IP)
+    + URL dashboardu. Offline -> lan_ip=None (explicit null)."""
+    import socket
+    ip = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+        except OSError:
+            ip = None
+    return {"lan_ip": ip, "port": port,
+            "dashboard_url": f"http://{ip}:{port}" if ip else None,
+            "hostname": socket.gethostname()}
+
+
 def snapshot() -> dict:
     # State() jest tanie (współdzielone conn per proces) — nie zamykamy per request
-    return _snapshot(State())
+    d = _snapshot(State())
+    d["host"] = host_info()
+    return d
 
 
 def _snapshot(s: State) -> dict:
