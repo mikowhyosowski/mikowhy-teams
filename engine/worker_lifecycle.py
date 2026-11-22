@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -252,38 +253,116 @@ def _tg(state: State, task_id: str, extra: str = "") -> None:
         telegram_reporter.update_progress(state, t, extra=extra)
 
 
-def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
-    """Tryb 'llm' (komenda `llm <opis>` z Telegrama): całe zadanie wykonuje LLM (vibe z narzędziami)
-    w worktree. LLM ma na końcu zostawić raport dla drużyny (docs/llm-reports/<id>.md);
-    worker dopisuje go do feeda (komentarz) i commituje wszystko przez step5."""
+def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_turns: int = 30) -> str:
+    """Pętla agentowa trybu 'llm': LLM (vibe headless, multi-turn) SAM wykonuje zadanie —
+    każdą turę odpowiada JSON-em z akcją (bash / write_file / read_file / list / done),
+    a silnik egzekwuje ją w worktree i odsyła wynik. LLM na końcu zapisuje raport
+    docs/llm-reports/<tid>.md (przez własną akcję write_file), potem daje action=done.
+
+    Dlaczego pętla w Pythonie, a nie narzędzia vibe: zagnieżdżony headless vibe ma w tym
+    sandboxie twardo odcięte wykonywanie tooli (tool_denied mimo --auto-approve), więc
+    LLM dostaje "ręce" od silnika — samo decyduje i wykonuje komendy krok po kroku.
+    """
     tid = task["id"]
-    state.transition(tid, "RUNNING", substep="LLM_EXEC")
+    gw = get_gateway()
+    model = skill_compiler.model_for_role(task["role"], kind="strong")
     full_desc = state.get_kv(f"llm_desc:{tid}") or task["title"]
     report_rel = f"docs/llm-reports/{tid}.md"
     system = (
         "Jesteś agentem-wykonawcą (tryb LLM) w repozytorium mikowhy-teams (Dark Factory).\n"
-        "Pracujesz w worktree zadania — WSZYSTKIE zmiany rób WŁAŚNIE TAM.\n"
-        "Masz włączone narzędzia (bash, read/write/edit plików, process) — wykonuj zadanie SAMODZIELNIE, krok po kroku.\n"
-        "Zasady repo: przeczytaj AGENTS.md i contracts/git-contract.md w katalogu głównym worktree i ich przestrzegaj.\n"
-        "NIE rób `git commit`/`git push` — zmiany commituje i pushuje silnik po Twoim zakończeniu.\n"
-        "Odpowiadaj i pisz raporty PO POLSKU.\n"
-        f"OBOWIĄZKOWO na końcu napisz raport dla drużyny: `{report_rel}` w formacie:\n"
+        f"Pracujesz w worktree zadania: {worktree} — wszystkie ścieżki podawaj WZGLĘDEM niego.\n"
+        "Przeczytaj AGENTS.md i contracts/git-contract.md w katalogu głównym i ich przestrzegaj.\n"
+        "NIE rób `git commit`/`git push` — zmiany commituje i pushuje silnik po Twoim `done`.\n"
+        "Pisz po polsku.\n\n"
+        "ODPOWIADASZ WYŁĄCZNIE JEDNYM JSON-em (bez żadnego innego tekstu), akcja do wykonania:\n"
+        '{"action":"bash","cmd":"..."} — komenda powłoki w worktree (limit 300s)\n'
+        '{"action":"write_file","path":"relative/path","content":"..."} — zapis/utworzenie pliku w worktree\n'
+        '{"action":"read_file","path":"relative/path"} — odczyt pliku (max 3000 znaków zwrócone)\n'
+        '{"action":"list","path":"."} — lista katalogu\n'
+        '{"action":"done","summary":"co zrobiono"} — koniec zadania\n\n'
+        f"KONIECZNOŚĆ: przed `done` ZAWSZE zapisz raport drużynie przez write_file do `{report_rel}`:\n"
         f"# {tid} — raport LLM\n## Co zrobiono\n## Zmienione pliki\n## Jak zweryfikować (komendy)\n## Ryzyka / uwagi\n"
-        "Raport kompletny, ale zwięzły (max ~120 linii)."
+        "(max ~120 linii). Dopiero potem wyślij action=done."
     )
-    user = (
+    user0 = (
         f"Zadanie: {tid} — {task['title']}\n\nPełny opis od Sponsora:\n{full_desc}\n\n"
-        f"Acceptance criteria: {task.get('acceptance_criteria') or '—'}\n\n"
-        f"Katalog roboczy (worktree): {worktree}\nBase branch: {base}\nBranch zadania: {task.get('branch')}\n\n"
-        f"Wykonaj zadanie w całości, a na końcu ZAWSZE dopisz raport `{report_rel}`."
+        f"Acceptance criteria: {task.get('acceptance_criteria') or '—'}\n"
+        f"Worktree: {worktree} | base: {base} | branch: {task.get('branch')}\n\n"
+        "Wykonaj zadanie krok po kroku (bash/read_file/list/write_file), a na końcu zapisz raport i daj done."
     )
-    gw = get_gateway()
-    if not hasattr(gw, "agent"):
-        raise RuntimeError("tryb 'llm' wymaga vibe CLI w PATH (LLM_PROVIDER=vibe)")
+    history: list[str] = []
+    wt_resolved = str(worktree.resolve())
+    done = False
+    for turn in range(1, max_turns + 1):
+        payload = user0 if turn == 1 else (
+            "Kontynuuj zadanie. Dotychczasowe kroki i wyniki:\n" + "\n".join(history[-14:])
+            + "\n\nTeraz kolejny krok — odpowiadaj WYŁĄCZNIE JSON-em z action.")
+        try:
+            resp = gw.complete_json(system=system, user=payload, step=f"LLM_EXEC-{tid}-t{turn}", model=model)
+        except Exception as exc:
+            history.append(f"t{turn}: błąd LLM {exc!r} — kontynuuj mimo to")
+            _log(tid, f"LLM t{turn} błąd: {exc!r}")
+            continue
+        if not isinstance(resp, dict):
+            history.append(f"t{turn}: odpowiedź nie-JSON: {str(resp)[:300]}")
+            continue
+        action = str(resp.get("action", "")).strip().lower()
+        if action == "bash":
+            cmd = str(resp.get("cmd", ""))
+            try:
+                proc = subprocess.run(cmd, shell=True, cwd=worktree, capture_output=True,
+                                      text=True, timeout=300)
+                out = (proc.stdout + "\n" + proc.stderr).strip()[-1500:]
+                history.append(f"t{turn} $ {cmd}\n→ rc={proc.returncode}\n{out}")
+                _log(tid, f"LLM t{turn} bash rc={proc.returncode}: {cmd[:120]}")
+            except subprocess.TimeoutExpired:
+                history.append(f"t{turn} $ {cmd}\n→ TIMEOUT 300s")
+        elif action == "write_file":
+            rel = str(resp.get("path", ""))
+            p = (worktree / rel).resolve()
+            if not str(p).startswith(wt_resolved + os.sep) and str(p) != wt_resolved:
+                history.append(f"t{turn} write_file ODRZUCONE (poza worktree): {rel}")
+                continue
+            p.parent.mkdir(parents=True, exist_ok=True)
+            content = str(resp.get("content", ""))
+            p.write_text(content, encoding="utf-8")
+            history.append(f"t{turn} write_file {rel} OK ({len(content)} znaków)")
+            _log(tid, f"LLM t{turn} write_file {rel} ({len(content)}B)")
+        elif action == "read_file":
+            p = (worktree / str(resp.get("path", ""))).resolve()
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")[:3000]
+            except OSError as exc:
+                content = f"błąd odczytu: {exc}"
+            history.append(f"t{turn} read_file {resp.get('path')}\n→\n{content}")
+        elif action == "list":
+            p = (worktree / str(resp.get("path", ".") or ".")).resolve()
+            try:
+                content = "\n".join(sorted(os.listdir(p))[:200])
+            except OSError as exc:
+                content = f"błąd listowania: {exc}"
+            history.append(f"t{turn} ls {resp.get('path')}\n→\n{content}")
+        elif action == "done":
+            history.append(f"t{turn} DONE: {str(resp.get('summary', ''))[:500]}")
+            _log(tid, f"LLM t{turn} done: {str(resp.get('summary',''))[:200]}")
+            done = True
+            break
+        else:
+            history.append(f"t{turn}: nieznana akcja {action!r} (resp={str(resp)[:200]}) — użyj bash|write_file|read_file|list|done")
+    if not done:
+        _log(tid, f"LLM agent: limit {max_turns} turnów bez done")
+    return report_rel
+
+
+def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
+    """Tryb 'llm' (komenda `llm <opis>` z Telegrama): całe zadanie wykonuje LLM w pętli agentowej
+    (patrz _llm_agent_loop). LLM na końcu zostawia raport docs/llm-reports/<id>.md;
+    worker dopisuje go do feeda (komentarz) i commituje wszystko przez step5."""
+    tid = task["id"]
+    state.transition(tid, "RUNNING", substep="LLM_EXEC")
     model = skill_compiler.model_for_role(task["role"], kind="strong")
     _log(tid, f"LLM_EXEC start (model={model}, worktree={worktree})")
-    proc = gw.agent(system=system, user=user, cwd=worktree, step=f"LLM_EXEC-{tid}", model=model)
-    _log(tid, f"LLM_EXEC rc={proc.returncode}: stdout_tail={proc.stdout.strip()[-400:]!r} stderr_tail={proc.stderr.strip()[-300:]!r}")
+    report_rel = _llm_agent_loop(state, task, worktree, base)
     report = worktree / report_rel
     if report.exists():
         text = report.read_text(encoding="utf-8", errors="replace")
@@ -291,10 +370,7 @@ def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
         telegram_reporter.post_event(state, task, f"🤖 LLM wykonał `{tid}` — raport w `{report_rel}` (patrz też feed)")
     else:
         state.add_comment(tid, f"llm({model})",
-                          f"⚠️ LLM skończył (rc={proc.returncode}) ale NIE ma raportu `{report_rel}`. "
-                          f"Output: {proc.stdout.strip()[-500:]}")
-        if proc.returncode != 0:
-            raise RuntimeError(f"LLM agent rc={proc.returncode} i brak raportu: {proc.stderr.strip()[-400:]}")
+                          f"⚠️ LLM skończył, ale NIE ma raportu `{report_rel}` — zadanie idzie do review mimo to")
     # LLM mógł już sam zacommitować — wtedy tylko push + IN_REVIEW
     staged = git_guard.run_git(["diff", "--cached", "--quiet"], cwd=worktree, check=False).returncode != 0
     ahead = git_guard.run_git(["diff", "--quiet", f"{base}...HEAD"], cwd=worktree, check=False).returncode != 0
