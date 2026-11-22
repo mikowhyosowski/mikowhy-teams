@@ -1,5 +1,5 @@
 {
-  "ts": 1795361515.4163592,
+  "ts": 1795361645.1939747,
   "projects": [
     {
       "project_id": "mikowhy-teams",
@@ -7,7 +7,7 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 10,
+        "target_dirty_files": 5,
         "tasks_by_status": {},
         "awaiting_approval": 0
       }
@@ -18,7 +18,7 @@
       "read_only": false,
       "checks": {
         "target_exists": true,
-        "target_dirty_files": 10,
+        "target_dirty_files": 5,
         "tasks_by_status": {
           "FAILED": 1,
           "AWAITING_APPROVAL": 2
@@ -45,12 +45,12 @@
     {
       "project": "mikowhy-teams",
       "kind": "target_dirty",
-      "detail": "10 niezacommitowanych zmian w target repo"
+      "detail": "5 niezacommitowanych zmian w target repo"
     },
     {
       "project": "mikowhy-teams-self",
       "kind": "target_dirty",
-      "detail": "10 niezacommitowanych zmian w target repo"
+      "detail": "5 niezacommitowanych zmian w target repo"
     },
     {
       "project": "mikowhy-teams-self",

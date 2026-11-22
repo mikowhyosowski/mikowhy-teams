@@ -37,7 +37,9 @@ def _load_dotenv(path: Path = ROOT / ".env") -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        value = value.strip().strip('"').strip("'")
+        value = re.split(r"\s+#", value, maxsplit=1)[0].strip()  # obetnij komentarz inline
+        os.environ.setdefault(key.strip(), value)
 
 
 def _resolve_binary(binary: str) -> str:

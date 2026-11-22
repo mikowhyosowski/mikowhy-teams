@@ -10,9 +10,18 @@ Jaki problem rozwiązujemy? Jakie ograniczenia (PRD, kontrakty, stack)?
 Co wybieramy i dlaczego. Odniesienie do zamrożonych kontraktów w `contracts/`.
 
 ## Konsekwencje
+Jakie będą konsekwencje
+
 ### Pozytywne
 - ...
 ### Negatywne / koszty
 - ...
 ### Rollback
 Jak cofnąć decyzję, jeśli się nie sprawdzi.
+
+## Pytania i wątpliwości
+
+# Propozycje
+- ...
+# Pytania
+- ...
