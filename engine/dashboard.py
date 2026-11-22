@@ -106,6 +106,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #detail.open{right:0}
  #detail h3{font-size:14px;margin:4px 0}
  #detail textarea{width:100%;height:70px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit}
+#projFilters{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.pchip{border:1px solid var(--c,#30363d);background:#161b22;color:#c9d1d9;border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.pchip .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+.pchip.off{opacity:.35;text-decoration:line-through}
+.pchip.reset{border-color:#30363d;color:#8b949e}
+.pchip:active{transform:scale(.96)}
  #detail button{margin:4px 4px 0 0;padding:5px 10px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;cursor:pointer}
  #detail button.ok{background:#1f6feb} #detail button.no{background:#da3633}
  #askbox{width:100%;height:56px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit;border-radius:6px;padding:6px}
@@ -165,6 +171,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="team"></div>
 <h2>Projekty</h2><div id="projects"></div>
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
+<div id="projFilters"></div>
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 <h2>⚡ Live — ostatnie wydarzenia (kto przejął / zmiana statusu, auto-refresh 2s)</h2><div class="feed" id="events"></div>
 <h2>💬 Zapytaj Vibe bezpośrednio <span class="muted">(bez taska — jak `llm`, ale odpowiedź od razu tutaj)</span></h2>
@@ -182,6 +189,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <script>
 let curTask = null;
 let lastEventTs = 0;
+// kolorowe filtry projektów — hiddenProjs przechowywane w localStorage
+const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
+function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
+function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs])); refresh(); }
+function resetProjs(){ hiddenProjs.clear(); localStorage.setItem('hiddenProjs','[]'); refresh(); }
 // fallback: gdy strona otwarta przez 127.0.0.1/localhost — przekieruj przeglądarkę na adres LAN
 (async function redirectToLan(){
   try{
@@ -215,7 +227,7 @@ async function refreshInner(){
     `<span class="stat-badge ok">🔄 pracują: <b>${st.running||0}</b></span>`+
     `<span class="stat-badge ${st.overdue?'bad':'ok'}">⚠️ spóźnione/stare (&gt;1h w kolejce): <b>${st.overdue||0}</b></span>`+
     `<span class="stat-badge ${st.running_long?'warn':''}">🐌 długo biegną (&gt;1h): <b>${st.running_long||0}</b></span>`;
-  const alerts = d.tasks.filter(t=>t.status==='AWAITING_APPROVAL');
+  const alerts = visTasks.filter(t=>t.status==='AWAITING_APPROVAL');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
        <b>${t.substep==='ASK_SPONSOR'?'❓ ODPOWIEDZ':'🚨 TWÓJ RUCH'}</b> <b>${esc(t.id)}</b>
@@ -226,9 +238,17 @@ async function refreshInner(){
   document.getElementById('projects').innerHTML = d.projects.map(p =>
     `<span class="muted">🗂</span> <b>${esc(p.project_id)}</b> policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
   const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
+  // kolorowe filtry projektów (stan w localStorage — przeżywa odświeżenia)
+  const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)'));
+  const allProjs = [...new Set(d.projects.map(p=>p.project_id).concat(d.tasks.map(t=>t.project_id||'(brak)')))];
+  document.getElementById('projFilters').innerHTML = allProjs.map(pid => {
+    const off = hiddenProjs.has(pid);
+    const n = d.tasks.filter(t=>(t.project_id||'(brak)')===pid).length;
+    return `<button class="pchip ${off?'off':''}" style="--c:${projColor(pid)}" onclick="toggleProj('${esc(pid)}')"><span class="dot" style="background:${projColor(pid)}"></span>${esc(pid)} <span class="muted">${n}</span></button>`;
+  }).join('') + `<button class="pchip reset" onclick="resetProjs()">✖ wszystkie</button>`;
   // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
   const FLOW = ['AWAITING_APPROVAL','READY','RUNNING','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
-  const byStatus = {}; for(const t of d.tasks){ (byStatus[t.status] = byStatus[t.status]||[]).push(t); }
+  const byStatus = {}; for(const t of visTasks){ (byStatus[t.status] = byStatus[t.status]||[]).push(t); }
   document.getElementById('flow').innerHTML = FLOW.map((st,i) => {
     const items = byStatus[st]||[];
     const hot = st==='AWAITING_APPROVAL' && items.length, run = st==='RUNNING';
@@ -241,7 +261,7 @@ async function refreshInner(){
   const tb = document.querySelector('#tasks tbody'); tb.innerHTML = '';
   let awaiting = 0;
   const PRIO = {'P0':0,'P1':1,'P2':2,'P3':3};
-  const sorted = [...d.tasks].sort((a,b)=>(PRIO[b.priority||'P2']-PRIO[a.priority||'P2']) || ((b.status==='RUNNING')-(a.status==='RUNNING')) || ((b.updated_at||0)-(a.updated_at||0)));
+  const sorted = [...visTasks].sort((a,b)=>(PRIO[b.priority||'P2']-PRIO[a.priority||'P2']) || ((b.status==='RUNNING')-(a.status==='RUNNING')) || ((b.updated_at||0)-(a.updated_at||0)));
   const nowCards = [];
   for(const t of sorted){
     if(t.status==='AWAITING_APPROVAL') awaiting++;
@@ -262,7 +282,7 @@ async function refreshInner(){
     tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
       <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> ')+t.status:t.status}</td>
       <td class="muted">${esc(t.substep||'')}</td><td>${t.retry_count}</td>
-      <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted">${esc(t.project_id||'')}</td>
+      <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted"><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${projColor(t.project_id||'')}"></span> ${esc(t.project_id||'')}</td>
       <td class="muted">${clock}</td>
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
   }
