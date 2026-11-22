@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -116,8 +117,17 @@ class LLMGateway:
         raw = self.complete(system=system, user=user, step=step, model=model)
         try:
             return extract_json(raw)
-        except ValueError as exc:
-            raise ValueError(f"LLM nie zwrócił czystego JSON w kroku {step}: {exc}") from exc
+        except ValueError:
+            # retry: kompaktowy JSON bez fence'ów i komentarzy
+            raw = self.complete(
+                system=system,
+                user=user + "\n\nYour previous answer was not parseable as JSON. "
+                            "Return ONLY one compact JSON object — no markdown fences, no comments, no trailing text.",
+                step=step, model=model)
+            try:
+                return extract_json(raw)
+            except ValueError as exc:
+                raise ValueError(f"LLM nie zwrócił czystego JSON w kroku {step} (po retry): {exc}") from exc
 
 
 class StubGateway(LLMGateway):
@@ -180,7 +190,14 @@ class VibeCliGateway(LLMGateway):
             raise RuntimeError(
                 f"vibe CLI rc={proc.returncode} (model={alias}, step={step}): {proc.stderr.strip()[-800:]}"
             )
-        return proc.stdout.strip()
+        raw = proc.stdout.strip()
+        # ślad do debugowania: surowa odpowiedź modelu (gitignored przez .agents/runtime/)
+        try:
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in step)
+            (RUNTIME / f"raw-{safe}-{int(time.time())}.txt").write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
+        return raw
 
 
 _REGISTRY: dict[str, type[LLMGateway]] = {"stub": StubGateway, "vibe": VibeCliGateway}

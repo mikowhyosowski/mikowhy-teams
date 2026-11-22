@@ -61,7 +61,10 @@ def step1_plan(state: State, task: dict) -> None:
         task, "1/5_PLAN",
         json.dumps({"title": task["title"], "acceptance_criteria": task["acceptance_criteria"],
                     "scope_paths": task["scope_paths"], "split_depth": task["split_depth"],
-                    "max_split_depth": MAX_SPLIT_DEPTH}, ensure_ascii=False),
+                    "max_split_depth": MAX_SPLIT_DEPTH,
+                    "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"plan": "<krótki plan kroków>"} '
+                              'lub jeśli zadanie za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ...}]}. '
+                              'NIE osadzaj treści plików — tylko plan.'}, ensure_ascii=False),
         model=skill_compiler.model_for_role(task["role"], kind="fast"),
     )
     state.record_metric("step_time", {"step": "1/5_PLAN", "seconds": round(time.time() - t0, 2)}, task["id"])
