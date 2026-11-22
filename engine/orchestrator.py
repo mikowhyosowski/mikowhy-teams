@@ -158,17 +158,58 @@ class Orchestrator:
             self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
 
     # --- faza 4: workery -------------------------------------------------------
+    def _max_workers_now(self) -> int:
+        """Ile workerów (LLM) można bezpiecznie odpalić RÓWNOLEGLE na tym laptopie:
+        bierzemy pod uwagę CPU, wolny RAM i aktualny load — dzielimy maszynę ze wszystkimi.
+        Nadpisanie ręczne: kv max_workers (orchestrator: set via state kv)."""
+        override = self.state.get_kv("max_workers", 0)
+        if override:
+            return max(1, int(override))
+        cpu = os.cpu_count() or 4
+        try:
+            load1 = float(open("/proc/loadavg").read().split()[0])
+        except OSError:
+            load1 = float(cpu)
+        free_gb = 4.0
+        try:
+            for line in open("/proc/meminfo"):
+                if line.startswith("MemAvailable"):
+                    free_gb = int(line.split()[1]) / 1024 / 1024
+                    break
+        except OSError:
+            pass
+        base = max(1, cpu - 2)                       # zostawiamy cores na system/UI
+        ram_cap = max(1, int(free_gb / 1.2))         # ~1.2 GB na proces vibe
+        load_cap = max(1, int(base * cpu / max(load1, 1.0)))  # load > cpu -> mniej workerów
+        cap = max(1, min(4, base, ram_cap, load_cap))  # hard cap: 4 LLM naraz na współdzielonym laptopie
+        return cap
+
     def _launch_workers(self) -> None:
-        for task in self.state.ready_tasks():
+        tasks = self.state.ready_tasks()
+        cap = self._max_workers_now()
+        free = cap - len([t for t in self.running])  # wspólna pula też z review
+        for task in tasks:
+            if free <= 0:
+                if len(tasks) > 0:
+                    self.state.record_metric("throttled", {"waiting": len(tasks), "cap": cap,
+                                                           "running": len(self.running)}, None)
+                break
             if task["id"] in self.running:
                 continue
             self._spawn("worker_lifecycle", task["id"])
+            free -= 1
 
     # --- faza 5: code review + circuit breaker ----------------------------------
     def _launch_reviews(self) -> None:
+        cap = min(2, self._max_workers_now())
+        n = 0
         for task in self.state.list_tasks(status=IN_REVIEW):
-            if task["id"] not in self.running:
-                self._spawn("code_review", task["id"])
+            if task["id"] in self.running:
+                continue
+            if n >= cap:
+                break
+            self._spawn("code_review", task["id"])
+            n += 1
 
     def _circuit_breakers(self) -> None:
         for task in self.state.list_tasks(status=READY):

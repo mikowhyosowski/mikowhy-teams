@@ -32,3 +32,29 @@ def persona_for_role(role: str) -> dict[str, str]:
 def persona_label(role: str) -> str:
     p = persona_for_role(role)
     return f"{p['name']} ({p['position']})"
+
+
+_BACKSTORIES = [
+    "Pracował{a} 7 lat w korporacji jako {position}, gdzie pilnował{a} procesów i raportów. Do fabryki dołączył{a}, bo chciał{a} budować rzeczy, które realnie mają sens dla użytkownika.",
+    "Zaczynał{a} od startupu, który zjadł runway w rok — nauczyło go/jej to pokory do prostych rozwiązań. Jako {position} wierzy, że dobry kod to taki, którego nie trzeba tłumaczyć.",
+    "Przez lata był{a} „tym/ta od gaszenia pożarów” w produkcji. Jako {position} teraz projektuje tak, żeby pożarów było coraz mniej.",
+    "Studiował{a} fizykę, ale kod okazał się tańszy niż laboratorium. Jako {position} wnosi do zespołu naukową precyzję i zamiłowanie do mierzenia wszystkiego.",
+    "Był{a} liderem zespołu, który wygrał hackathon, a potem przegrał klienta przez zły UX. Od tamtej pory jako {position} patrzy na każdą funkcję oczami użytkownika.",
+    "Pracował{a} zdalnie z trzech kontynentów — nauczyło go/jej asynchronicznej komunikacji i tego, że dokumentacja to supermoc. Jako {position} dba o to, żeby nikt nie utknął.",
+]
+
+
+def backstory(role: str) -> str:
+    """Krótka (wymyślona) historia osoby przypisanej do roli — deterministyczna z hasha roli."""
+    p = persona_for_role(role)
+    h = hashlib.sha256(("story:" + role).encode("utf-8")).hexdigest()
+    tmpl = _BACKSTORIES[int(h[5:7], 16) % len(_BACKSTORIES)]
+    female = p["gender"] == "kobieta"
+    return tmpl.format(position=p["position"], a="a" if female else "").replace("{a}", "a" if female else "")
+
+
+def persona_full(role: str) -> dict[str, str]:
+    p = persona_for_role(role)
+    p["backstory"] = backstory(role)
+    p["avatar"] = "👩‍💻" if p["gender"] == "kobieta" else "👨‍💻"
+    return p

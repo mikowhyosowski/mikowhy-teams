@@ -65,6 +65,17 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .nowcard .clock{font-size:16px;color:#3fb950;font-variant-numeric:tabular-nums}
  .nowcard .who{color:#8b949e;font-size:11px;display:block}
  .clock{font-variant-numeric:tabular-nums;color:#3fb950}
+ /* zespół */
+ #team{display:flex;gap:10px;flex-wrap:wrap}
+ .pcard{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px;width:250px;transition:border-color .2s}
+ .pcard.busy{border-color:#1f6feb;box-shadow:0 0 12px #1f6feb44;animation:cardPulse 2s infinite}
+ @keyframes cardPulse{0%,100%{box-shadow:0 0 6px #1f6feb33}50%{box-shadow:0 0 14px #1f6feb88}}
+ .pcard .ava{font-size:26px}
+ .pcard .nm{font-weight:bold}
+ .pcard .pos{color:#8b949e;font-size:11px}
+ .pcard .story{font-size:11px;color:#8b949e;margin:6px 0;font-style:italic}
+ .pcard .cur{font-size:11px;color:#58a6ff}
+ .pcard .stats{font-size:10px;color:#484f58}
  .badge{background:#b08800;color:#000;border-radius:4px;padding:0 6px;font-size:11px;font-weight:bold}
  .st{font-weight:bold} .muted{color:#8b949e} .feed{font-size:12px} .feed div{border-bottom:1px solid #21262d;padding:3px 0}
  #ts{color:#8b949e;font-size:11px}
@@ -106,6 +117,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="now"></div>
 <h2>🔀 Przepływ pracy <span class="muted">(kliknij kafelek = szczegóły zadania)</span></h2>
 <div id="flow"></div>
+<h2>👥 Zespół <span class="muted">(kto aktualnie nad czym pracuje + krótka historia)</span></h2>
+<div id="team"></div>
 <h2>Projekty</h2><div id="projects"></div>
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
@@ -167,6 +180,16 @@ async function refresh(){
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
   }
   document.getElementById('awaitCount').textContent = awaiting ? awaiting+' czeka na Ciebie' : '';
+  document.getElementById('team').innerHTML = (d.team||[]).map(m => {
+    const cur = m.current ? `<div class="cur">🔨 ${m.current.id} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span></div>` : '<div class="cur muted">— wolny/a —</div>';
+    return `<div class="pcard ${m.current?'busy':''}" title="rola: ${m.role}">
+      <span class="ava">${m.avatar||'🧑‍💻'}</span> <span class="nm">${m.name}</span>
+      <div class="pos">${m.position} · rola: ${m.role} · ${m.gender}</div>
+      <div class="story">„${m.backstory}”</div>
+      ${cur}
+      <div class="stats">zadania: ${m.tasks} · zmergowane: ${m.merged}</div>
+    </div>`;
+  }).join('');
   document.getElementById('now').innerHTML = nowCards.length ? nowCards.map(t =>
     `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
@@ -274,6 +297,24 @@ def _snapshot(s: State) -> dict:
             tasks[-1]["elapsed"] = max(0, time.time() - t["started_at"])
     tasks.sort(key=lambda t: (t["status"] != "AWAITING_APPROVAL", t["status"] != "RUNNING", -(t["updated_at"] or 0)))
     events = s.recent_events(30)
+    # zespół: jedna karta per rola (persona + backstory + aktualne zadanie + liczniki)
+    from engine import personas as _pers
+    roles: dict[str, dict] = {}
+    for t in raw:
+        roles.setdefault(t.get("role") or "worker", {"role": t.get("role") or "worker", "tasks": 0, "merged": 0, "current": None})
+        roles[t.get("role") or "worker"]["tasks"] += 1
+        if t.get("status") == "MERGED":
+            roles[t.get("role") or "worker"]["merged"] += 1
+        if t.get("status") == "RUNNING":
+            roles[t.get("role") or "worker"]["current"] = t
+    team = []
+    for r in roles.values():
+        p = _pers.persona_full(r["role"])
+        cur = r["current"]
+        team.append({**p, "tasks": r["tasks"], "merged": r["merged"],
+                     "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority")}
+                                 if cur else None)})
+    team.sort(key=lambda x: (x["current"] is None, x["role"]))
     metrics = []
     for r in s._conn().execute(
             "SELECT ts, kind, task_id, payload FROM metrics WHERE kind != 'agent_comment' "
@@ -296,7 +337,7 @@ def _snapshot(s: State) -> dict:
         for f in sorted(logs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
             st = f.stat()
             logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
-        return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events,
+        return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team,
                 "comments": s.recent_comments(40), "metrics": metrics,
                 "runtime": runtime, "logs": logs}
 
