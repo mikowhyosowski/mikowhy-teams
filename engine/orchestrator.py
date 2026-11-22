@@ -57,7 +57,7 @@ def bootstrap(goal: str, milestone_id: str = "M1") -> None:
     branch = f"milestone/{milestone_id.lower()}"
     state.add_milestone(milestone_id, goal, branch, title=goal[:80])
     # gałąź integracyjna milestonu musi istnieć, zanim workerzy zaczną na niej bazować worktree
-    git_guard.run_git(["branch", branch, "main"], check=False)
+    git_guard.run_git(["branch", branch, "HEAD"], check=False)
     chain = [
         (1, "product-owner", f"PRD (Gherkin + Edge Cases) dla: {goal}",
          "docs/PRD.md", "QG-1: każdy REQ ma Given/When/Then i sekcja Edge Cases"),
@@ -333,7 +333,7 @@ def audit_project(project_id: str, target_repo_path: str, goal: str, prefix: str
     branch = f"milestone/{project_id.lower()}-audit"
     ms_id = f"{prefix}-AUDIT"
     state.add_milestone(ms_id, goal, branch, title=goal[:80], project_id=project_id)
-    git_guard.run_git(["branch", branch, "main"], check=False)  # gałąź audytu w repo FABRYKI
+    git_guard.run_git(["branch", branch, "HEAD"], check=False)  # gałąź audytu w repo FABRYKI (HEAD = master/main)
     docs_dir = f"docs/projects/{project_id}"
     chain = [
         (f"{prefix}-001", 1, "systems-auditor",
