@@ -16,3 +16,4 @@ __pycache__/
 # artefakty health — generowane każdym cyklem, nie śledzimy (nie róbmy target_dirty)
 .agents/health-report.json
 docs/HEALTH.md
+*.swp

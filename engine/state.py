@@ -35,7 +35,7 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     IN_REVIEW: {READY_TO_MERGE, READY, ESCALATED},
     READY_TO_MERGE: {MERGED, READY, ESCALATED},
     MERGED: set(),
-    FAILED: {READY},
+    FAILED: {READY, ESCALATED},  # auto-eskalacja po 3 próbach (circuit breaker)
     BLOCKED: {READY, ESCALATED, AWAITING_APPROVAL},
     ESCALATED: {READY},
     AWAITING_APPROVAL: {READY, BLOCKED, ESCALATED},  # tylko człowiek (zmiana statusu na READY) odblokowuje
@@ -305,6 +305,21 @@ class State:
             "INSERT INTO metrics(ts,task_id,kind,payload) VALUES(?,?,?,?)",
             (time.time(), task_id, kind, json.dumps(payload, ensure_ascii=False)),
         )
+
+    def add_comment(self, task_id: str | None, author: str, text: str) -> None:
+        """Komentarz agenta („zrobiłem X, proszę o sprawdzenie”) — feed w UI/menu (NIE push)."""
+        self.record_metric("agent_comment", {"author": author, "text": text}, task_id)
+
+    def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
+        q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"
+        params: list = []
+        if task_id:
+            q += " AND task_id=?"
+            params.append(task_id)
+        q += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn().execute(q, params).fetchall()
+        return [{"ts": r[0], "task_id": r[1], **json.loads(r[2])} for r in rows]
 
     def set_kv(self, key: str, value: Any) -> None:
         self._conn().execute("INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)", (key, json.dumps(value)))

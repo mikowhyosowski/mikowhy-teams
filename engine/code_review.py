@@ -49,7 +49,21 @@ def review(task_id: str) -> int:
         step="CODE_REVIEW", model=skill_compiler.model_for_role("code-reviewer", kind="strong"),
     )
 
+    # GitHub: werdykt CR jako oficjalny review PR (jeśli task ma PR)
+    try:
+        from engine import github_bridge
+        pr = github_bridge.pr_for_task(task_id)
+        if pr:
+            v = verdict.get("verdict")
+            notes_md = "\n".join(f"- {n.get('rule', n) if isinstance(n, dict) else n}" for n in verdict.get("notes", [])[:10])
+            body = (f"## Code Review — {v} (próba {task['retry_count'] + 1})\n\n"
+                    + (f"**Uwagi:**\n{notes_md}" if notes_md else "Bez uwag."))
+            github_bridge.post_review(pr, "APPROVED" if v == "APPROVED" else "CHANGES_REQUESTED", body)
+    except Exception as exc:
+        print(f"[github] review post skipped: {exc!r}", flush=True)
+
     if verdict.get("verdict") == "APPROVED":
+        state.add_comment(task_id, "code-reviewer", f"✅ CR APPROVED (próba {task['retry_count'] + 1}) → READY_TO_MERGE. Proszę o merge.")
         state.transition(task_id, READY_TO_MERGE, review_notes=json.dumps(verdict, ensure_ascii=False))
         state.record_metric("cr_approved", {"verdict": verdict}, task_id)
         skill_compiler.promote_role_if_probation(task["role"])  # zmiana #5
@@ -62,6 +76,9 @@ def review(task_id: str) -> int:
 
     # REJECTED — system sam się uczy (zmiana #2: lekcja per-stack, nie globalnie)
     notes = verdict.get("notes", [])
+    state.add_comment(task_id, "code-reviewer",
+                      f"🔍 CR REJECTED (próba {task['retry_count'] + 1}): " +
+                      "; ".join((n.get("rule", str(n)) if isinstance(n, dict) else str(n)) for n in notes)[:300])
     state.transition(task_id, READY, retry_count=task["retry_count"] + 1,
                      review_notes=json.dumps(verdict, ensure_ascii=False))
     t = state.get_task(task_id)

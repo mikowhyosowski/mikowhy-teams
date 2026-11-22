@@ -110,9 +110,11 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
             if isinstance(a, dict) and a.get("path"):
                 files[a["path"]] = a.get("content", "")
     for rel, content in files.items():
-        if rel not in task["scope_paths"]:
+        if task["scope_paths"] and rel not in task["scope_paths"]:
             raise PermissionError(f"Plik spoza scope_paths: {rel}")
         target = worktree / rel
+        if target.exists() and target.is_dir():
+            raise RuntimeError(f"LLM zwrócił katalog zamiast pliku: {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     state.record_metric("step_time", {"step": "2/5_IMPL", "seconds": round(time.time() - t0, 2)}, task["id"])
@@ -227,6 +229,17 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         return
     git_guard.commit_all(worktree, f"feat({task['id'].lower()}): {task['title']}")
     git_guard.push(task["branch"], worktree)
+    state.add_comment(task["id"], f"worker({task['role']})",
+                      f"✅ zrobiłem i zacommitowałem ({lines} linii, branch {task['branch']}) → proszę o Code Review")
+    # GitHub: push branch + PR (base = gałąź milestonu albo master)
+    try:
+        from engine import github_bridge
+        pr = github_bridge.ensure_pr_for_task(task, base)
+        if pr:
+            state.add_comment(task["id"], f"worker({task['role']})",
+                              f"🐙 PR !{pr} otwarty na GitHubie ({task['branch']} -> {base})")
+    except Exception as exc:
+        _log(task["id"], f"github bridge: {exc!r}")
     state.transition(task["id"], IN_REVIEW, substep="done")
     state.record_metric("diff_lines", {"lines": lines}, task["id"])
     _log(task["id"], f"commit OK ({lines} linii diffu) -> IN_REVIEW")

@@ -1,0 +1,18 @@
+[Unit]
+Description=Dark Factory mikowhy-teams — orchestrator (run --poll 1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/miko/Projekty/M+/mikowhy-teams
+ExecStart=/usr/bin/python3 -m engine.orchestrator run --poll 1
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=10
+StandardOutput=append:/home/miko/Projekty/M+/mikowhy-teams/.agents/logs/orchestrator.service.log
+StandardError=append:/home/miko/Projekty/M+/mikowhy-teams/.agents/logs/orchestrator.service.log
+
+[Install]
+WantedBy=default.target
