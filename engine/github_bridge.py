@@ -86,6 +86,15 @@ def api(method: str, path: str, payload: dict | None = None) -> dict | list | No
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode()
             return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:300]
+        hint = ""
+        if exc.code == 403:
+            hint = (" — fine-grained PAT (github_pat_) bez uprawnień! Ustaw w tokenie: "
+                    "Pull requests=write, Contents=write, Issues=write, Metadata=read "
+                    "albo użyj klasycznego ghp_ z zakresem 'repo'")
+        print(f"[github] {method} {path} -> HTTP {exc.code} {body}{hint}", flush=True)
+        return None
     except Exception as exc:
         print(f"[github] {method} {path} -> {exc!r}", flush=True)
         return None
