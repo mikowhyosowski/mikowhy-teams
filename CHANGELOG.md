@@ -1,5 +1,17 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.15] — 2026-11-23 — boks Opiekuna „Kolejka & Logi” + dzwonek powiadomień + czytelne opisy akcji
+- 🗂️ Nowa zakładka **🗂️ Kolejka & Logi**: pełna kolejka w kolejności pobierania przez agentów (#, prio, pasek postępu,
+  substep, retry, wiek, osoba; klik = szczegóły) + **logi aplikacji** (ostatnie 150 eventów, ważne/błędy czerwone, klik task = szczegóły)
+- 🔔 **Dzwonek powiadomień** w nagłówku (badge nieprzeczytanych): tabela `notifications`, `add_notification` z dedupem 600s;
+  eventy: kolejka/koniec kolejki, merge, circuit, ASK_OWNER (decyzja), DEPLOY_PROD, recurring, błędy — każda z czasem;
+  `POST /api/notifications/read` → „oznacz przeczytane”; klik w powiadomienie z task_id otwiera zadanie
+- ⚡ Akcje w szczegółach zadania mają teraz opis prostymi słowami pod każdym buttonem (`ACTION_HELP`):
+  co klik potwierdza i jaki będzie status/substep (approve→READY kontynuacja etapu, decline→BLOCKED OWNER_PACKET,
+  retry→READY retry=0 koniec kolejki, merge→MERGED przez orchestrator, comment/priorytet bez zmiany statusu);
+  tooltipy też na kafelkach flow; duże ✅/🛑 mają opis pod spodem
+- ✅ testy: `test_notifications_dedup_and_unread`, `test_snapshot_has_queue_logs_notifications` — 73 passed
+
 ## [2.7.14] — 2026-11-23 — po 3 retry NIE do Opiekuna, tylko koniec kolejki + nowe sortowanie kolejki
 - 🔚 `_escalate_stuck_tasks` / `_auto_retry_failed` / `_circuit_breakers`: retry>=3 → READY na **koniec kolejki**
   (żadnego automatycznego AWAITING_OWNER; Opiekun tylko przy ASK_OWNER/ręcznej decyzji). Jednorazowa migracja:

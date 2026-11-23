@@ -118,6 +118,7 @@ def _ask_sponsor(state: State, task: dict, question: str, options: list | None =
     state.transition(task["id"], AWAITING_OWNER, substep="ASK_OWNER",
                      review_notes=f"Pakiet dla Opiekuna — co utknęło: {q} | Opcje: {opts_txt}")
     state.record_metric("ask_owner", {"question": q[:300], "options": opts}, task["id"])
+    state.add_notification("owner", f"🧑‍💼 {task['id']} czeka na Twoją decyzję: {q[:140]}", task["id"])  # v2.7.15: dzwonek
     _log(task["id"], f"ASK_OWNER: {q[:200]}")
 
 

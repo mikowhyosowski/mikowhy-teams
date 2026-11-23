@@ -167,6 +167,13 @@ class Orchestrator:
                 break
         return "\n".join(out) if out else "(brak zarejestrowanych błędów w metrykach)"
 
+    def _notify(self, kind: str, text: str, task_id: str | None = None) -> None:
+        """v2.7.15: powiadomienie systemowe dla Opiekuna (dzwonek w dashboardzie, z czasem)."""
+        try:
+            self.state.add_notification(kind, text, task_id)
+        except Exception:
+            pass
+
     def _escalate_stuck_tasks(self) -> None:
         """v2.7.14 — zadania utknięte (retry_count >= STUCK_RETRY) NIE idą do Opiekuna.
         Idą na KONIEC kolejki (READY; sortowanie claimable_tasks: priorytet → kara za 3 retry → postęp → wiek),
@@ -191,6 +198,7 @@ class Orchestrator:
                                        f"🔚 {task['id']}: utknęło po {task.get('retry_count')} próbach → koniec kolejki "
                                        "(sort: priorytet → postęp → wiek), Opiekun nie jest angażowany automatem")
                 self.state.record_metric("stuck_requeued", {"task": task["id"], "retry": task.get("retry_count")}, task["id"])
+                self._notify("queue", f"🔚 {task['id']} po {task.get('retry_count')} próbach → koniec kolejki (READY, bez Opiekuna)", task["id"])
                 print(f"[orchestrator] 🔚 stuck {task['id']} (retry={task.get('retry_count')}) -> READY koniec kolejki", flush=True)
             except Exception as e:
                 print(f"[orchestrator] stuck {task['id']} błąd: {e!r}", flush=True)
@@ -213,6 +221,8 @@ class Orchestrator:
             self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1,
                                                     "to_back_of_queue": task["retry_count"] >= CIRCUIT_BREAKER_RETRIES},
                                     task["id"])
+            if task["retry_count"] >= CIRCUIT_BREAKER_RETRIES:
+                self._notify("queue", f"🔚 {task['id']} po {task['retry_count']} FAILED → koniec kolejki (auto-retry wyczerpany)", task["id"])
 
     # --- obowiązki cykliczne (recurring_tasks) -> zadania READY dla roli -----------
     def _launch_recurring(self) -> None:
@@ -246,6 +256,7 @@ class Orchestrator:
                 )
                 self.state._conn().execute("UPDATE recurring_tasks SET last_run=? WHERE id=?", (now, rid))
                 self.state.record_metric("recurring_spawn", {"recurring": rid, "task": tid, "role": r["role"]}, tid)
+                self._notify("recurring", f"🔁 nowe zadanie cykliczne {tid} dla roli {r['role']} ({r['title'][:60]})", tid)
                 self.state.add_comment(tid, "orchestrator", f"🔁 Wygenerowane z obowiązku cyklicznego `{rid}` ({r['schedule']})")
                 print(f"[orchestrator] 🔁 recurring {rid} -> zadanie {tid} (rola {r['role']})", flush=True)
             except Exception as e:
@@ -329,6 +340,7 @@ class Orchestrator:
                 self.state.transition(task["id"], READY, role=PRINCIPAL_ROLE,
                                       review_notes="CIRCUIT BREAKER: retry>=3 -> principal-debugger")
                 self.state.record_metric("circuit_breaker_escalation", {"task": task["id"]}, task["id"])
+                self._notify("circuit", f"⚠️ {task['id']}: retry>={task['retry_count']} → rola {PRINCIPAL_ROLE} (koniec kolejki)", task["id"])
                 _push(
                     f"⚠️ *Circuit breaker* dla `{task['id']}` — przełączam na `{PRINCIPAL_ROLE}` "
                     f"(pełna historia {task['retry_count']} odrzuceń).")
@@ -403,6 +415,7 @@ class Orchestrator:
                 git_guard.run_git(["push", "origin", push_ref], cwd=wt, check=False)
                 self.state.transition(task["id"], MERGED)
                 self.state.record_metric("merge", {"milestone": task["milestone"]}, task["id"])
+                self._notify("merge", f"✅ {task['id']} zmergowane do `{base}`", task["id"])
                 merged = self.state.get_task(task["id"])
                 if merged:
                     stat_ref = f"origin/{base}" if auto_main else base  # po pushu auto_main lokalny ref base się nie ruszył
@@ -479,6 +492,7 @@ class Orchestrator:
         report = {"staging_url": smoke["staging_url"], "tests": "green (QG-3 E2E)",
                   "tokens": self._token_cost(ms["id"]), "business_diff": f"diff main...{ms['branch']}"}
         self.state.create_approval(approval_id, ms["id"], report)
+        self._notify("deploy", f"⏳ {approval_id} — staging zielony, czeka zgoda na produkcję (przycisk 🚀 Deploy → PROD)", None)
         if telegram_gate.deploy_gate_enabled():
             telegram_gate.request_prod_approval(ms["id"], report)
 

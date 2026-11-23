@@ -206,6 +206,16 @@ CREATE TABLE IF NOT EXISTS role_skills (
   ts       REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_role_skills ON role_skills(role, ts);
+-- v2.7.15: powiadomienia systemowe dla Opiekuna (dzwonek w dashboardzie, z czasem przy każdej)
+CREATE TABLE IF NOT EXISTS notifications (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts       REAL NOT NULL,
+  kind     TEXT NOT NULL,          -- queue | merge | owner | deploy | circuit | recurring | error | info
+  text     TEXT NOT NULL DEFAULT '',
+  task_id  TEXT,
+  read     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(ts);
 """
 
 
@@ -710,6 +720,35 @@ class State:
             "SELECT id, role, name, description, source, ts FROM role_skills WHERE role=? ORDER BY ts DESC",
             (role,)).fetchall()
         return [dict(r) for r in rows]
+
+    # --- powiadomienia systemowe (v2.7.15) ---------------------------------------
+    def add_notification(self, kind: str, text: str, task_id: str | None = None) -> dict | None:
+        """Dodaje powiadomienie dla Opiekuna. Dedup: identyczne (kind, task_id, text[:80]) w ostatnich 600s -> skip."""
+        try:
+            now = time.time()
+            row = self._conn().execute(
+                "SELECT id FROM notifications WHERE kind=? AND task_id IS ? AND substr(text,1,80)=? AND ts>? ORDER BY ts DESC LIMIT 1",
+                (kind, task_id, str(text)[:80], now - 600)).fetchone()
+            if row:
+                return None
+            cur = self._conn().execute(
+                "INSERT INTO notifications(ts, kind, text, task_id, read) VALUES(?,?,?,?,0)",
+                (now, kind, str(text)[:500], task_id))
+            return {"id": cur.lastrowid, "ts": now, "kind": kind, "text": str(text)[:500], "task_id": task_id, "read": 0}
+        except Exception:
+            return None
+
+    def list_notifications(self, limit: int = 60) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT id, ts, kind, text, task_id, read FROM notifications ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def unread_notifications(self) -> int:
+        return int(self._conn().execute("SELECT COUNT(*) FROM notifications WHERE read=0").fetchone()[0])
+
+    def mark_notifications_read(self) -> int:
+        cur = self._conn().execute("UPDATE notifications SET read=1 WHERE read=0")
+        return cur.rowcount or 0
 
     def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
         q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"

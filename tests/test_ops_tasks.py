@@ -360,3 +360,30 @@ def test_task_detail_context_actions_per_status():
     s2.transition("T-CB", "AWAITING_OWNER", substep="OWNER_PACKET", review_notes="x")
     d2 = _task_detail(s2, "T-CB")
     assert d2["stage"] == "owner" and set(d2["available_actions"]) >= {"approve", "decline"}
+
+
+def test_notifications_dedup_and_unread():
+    """v2.7.15: powiadomienia systemowe — dedup w 600s, unread count, mark read."""
+    s = _tmp_state()
+    a = s.add_notification("queue", "🔚 T-X po 3 próbach → koniec kolejki", "T-X")
+    b = s.add_notification("queue", "🔚 T-X po 3 próbach → koniec kolejki", "T-X")  # duplikat w oknie
+    assert a and b is None
+    s.add_notification("merge", "✅ T-Y zmergowane", "T-Y")
+    assert s.unread_notifications() == 2
+    lst = s.list_notifications(10)
+    assert lst[0]["kind"] in ("merge", "queue") and "ts" in lst[0]
+    n = s.mark_notifications_read()
+    assert n == 2 and s.unread_notifications() == 0
+
+
+def test_snapshot_has_queue_logs_notifications():
+    """v2.7.15: /api/state (snapshot) zawiera queue (kolejność pobierania), applogs i notifications."""
+    from engine.dashboard import _snapshot
+    s = _tmp_state()
+    s.add_task("T-Q", "FACTORY-OPS", 9, "w kolejce", "backend-dev", status="READY", priority="P1")
+    s.add_notification("info", "test powiadomienia")
+    d = _snapshot(s)
+    assert any(q["id"] == "T-Q" for q in d["queue"])
+    assert d["queue"][0]["pos"] == 1
+    assert isinstance(d["applogs"], list) and isinstance(d["notifications"], list)
+    assert d["notif_unread"] >= 1

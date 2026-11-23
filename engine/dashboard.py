@@ -197,6 +197,21 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .threadbox .tmsg.done .tt{background:#0e2a1a;border-left:3px solid #3fb950}
  @keyframes pulseB{0%,100%{box-shadow:0 0 0 0 rgba(31,111,235,.35)}50%{box-shadow:0 0 10px 2px rgba(31,111,235,.35)}}
  .nowcard .teraz{font-size:11px;color:#58a6ff;margin-top:2px}
+ #bellWrap{position:relative;margin-left:8px}
+ #bell{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:1px 10px;font-size:14px;cursor:pointer;position:relative}
+ #bellN{display:none;background:#da3633;color:#fff;border-radius:9px;font-size:9px;padding:0 4px;margin-left:2px}
+ #bellPanel{display:none;position:absolute;right:0;top:26px;width:420px;max-height:60vh;overflow-y:auto;background:#0d1117;border:1px solid #30363d;border-radius:8px;z-index:50;box-shadow:0 8px 24px #000a;font-size:11px}
+ #bellPanel.open{display:block}
+ .bellHead{padding:6px 8px;border-bottom:1px solid #30363d;position:sticky;top:0;background:#0d1117}
+ .notif{padding:5px 8px;border-bottom:1px solid #161b22}
+ .notif.read{opacity:.55}
+ .nbadge{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:0 5px;font-size:9px;color:#a371f7}
+ .qbox{border:1px solid #21262d;border-radius:8px;padding:6px;background:#0d1117}
+ .qrow{padding:4px 6px;border-bottom:1px solid #161b22;cursor:pointer;font-size:12px}
+ .qrow:hover{background:#12233a}
+ .qpos{color:#8b949e;font-size:10px;display:inline-block;width:34px}
+ .logbad{background:#2d1215;border-left:3px solid #f85149}
+ .ahelp{font-size:9px;color:#8b949e;max-width:190px;display:inline-block;vertical-align:middle;margin-left:2px}
  .spin{display:inline-block;animation:spin 1.2s linear infinite}
  @keyframes spin{to{transform:rotate(360deg)}}
  .subclk{color:#79c0ff;font-size:11px;font-variant-numeric:tabular-nums}  /* jaśniejszy od #58a6ff, ten sam rozmiar co „teraz:” */
@@ -418,7 +433,8 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .tcard{border:1px solid #21262d;border-left:3px solid #1f6feb;border-radius:8px;padding:6px 10px;margin:4px 0;cursor:pointer;background:#111823}
  .tcard:hover{border-color:#58a6ff}
 </style></head><body>
-<h1>🏭 Dark Factory <button id="liveTg" onclick="toggleAutoRefresh()" title="włącz/wyłącz auto-odświeżanie (LIVE)" style="background:#0d1117;border:1px solid #3fb950;color:#3fb950;border-radius:10px;padding:1px 10px;font-size:12px;cursor:pointer">● LIVE</button> <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span> <span id="ver" class="muted" style="font-size:11px;cursor:pointer;border:1px solid #30363d;border-radius:10px;padding:1px 8px" onclick="openChangelog()" title="wersja dashboardu — klik = changelog"></span></h1>
+<h1>🏭 Dark Factory <button id="liveTg" onclick="toggleAutoRefresh()" title="włącz/wyłącz auto-odświeżanie (LIVE)" style="background:#0d1117;border:1px solid #3fb950;color:#3fb950;border-radius:10px;padding:1px 10px;font-size:12px;cursor:pointer">● LIVE</button> <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span> <span id="ver" class="muted" style="font-size:11px;cursor:pointer;border:1px solid #30363d;border-radius:10px;padding:1px 8px" onclick="openChangelog()" title="wersja dashboardu — klik = changelog"></span>
+<span id="bellWrap"><button id="bell" onclick="toggleBell()" title="powiadomienia systemowe (kolejka, merge, decyzje, deploy…)">🔔<span id="bellN"></span></button><div id="bellPanel"></div></span></h1>
 <div id="stats"></div>
 <div id="newHires"></div>
 <div id="projFilters" title="Filtry projektów — globalne (działają na wszystkich zakładkach i mapie Firma)"></div>
@@ -426,6 +442,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 <nav id="tabs">
   <button data-tab="overview" onclick="showTab('overview')">📊 Przegląd<span id="navAlert"></span></button>
   <button data-tab="sponsor" onclick="showTab('sponsor')">🎯 Tematy<span id="navDec"></span></button>
+  <button data-tab="sys" onclick="showTab('sys')">🗂️ Kolejka &amp; Logi</button>
   <button data-tab="tasks" onclick="showTab('tasks')">📋 Zadania</button>
   <button data-tab="flow" onclick="showTab('flow')">🌊 Flow</button>
   <button data-tab="team" onclick="showTab('team')">👥 Zespół</button>
@@ -451,6 +468,12 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 <div id="spMilestones"></div>
 <h2>📥 Backlog — zadania READY do pociągnięcia przez zespół <span class="muted">(klik = szczegóły)</span></h2>
 <div id="spBacklog"></div>
+</section>
+<section class="tabpage" id="tab-sys">
+<h2>📥 Kolejka zadań <span class="muted">(kolejność pobierania przez agentów: priorytet → kara za 3+ retry → wyższy postęp → najstarsze · klik wiersz = szczegóły)</span></h2>
+<div id="queueBox" class="qbox"></div>
+<h2>📜 Logi aplikacji <span class="muted">(ostatnie 150 eventów systemowych, najnowsze na górze, ważne/błędy podświetlone)</span></h2>
+<div id="logsBox" class="feed"></div>
 </section>
 <section class="tabpage" id="tab-tasks">
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację; filtry projektów są wyżej — globalne)</span></h2>
@@ -695,6 +718,8 @@ async function refreshInner(){
   const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)') && !hiddenSts.has(t.status));
   renderProjFilters(d, visTasks);
   renderStFilters(d);
+  renderBell(d);  // v2.7.15: dzwonek powiadomień systemowych
+  if(document.getElementById('tab-sys').classList.contains('on')) renderSys();
   const alerts = visTasks.filter(t=>t.status==='AWAITING_OWNER');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${['ASK_OWNER','ASK_SPONSOR'].includes(t.substep)?'ask':''}" onclick="openTask('${t.id}')">
@@ -887,15 +912,16 @@ async function openTask(id, keep){
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
     <div class="kv"><b>uwagi:</b> ${esc((d.review_notes||'').slice(0,300))}</div>`;
-    // v2.7.12: pasek akcji = tylko akcje dostępne dla TEGO statusu (z flow configu) — nic zbędnego
+    // v2.7.12+2.7.15: pasek akcji = tylko akcje dostępne dla TEGO statusu, każda z opisem prostymi słowami (co klik = jaki status/substep)
     lastActionsDef = t.actions_def || null;
     const acts = t.actions_def || {};
     const abtns = (t.available_actions||[]).map(a =>
-      `<button class="tbtn" style="margin:2px 4px 2px 0" onclick="flowAction('${esc(d.id)}','${esc(a)}')">${(acts[a]||{}).icon||''} ${esc((acts[a]||{}).label||a)}</button>`).join('');
-    if(abtns) body += `<div style="margin-top:8px;border-top:1px solid #21262d;padding-top:6px"><b>⚡ Akcje dla statusu ${esc(d.status)}:</b><br>${abtns}</div>`;
+      `<span style="display:inline-block;margin:2px 10px 2px 0"><button class="tbtn" title="${esc(ACTION_HELP[a]||(acts[a]||{}).label||a)}" onclick="flowAction('${esc(d.id)}','${esc(a)}')">${(acts[a]||{}).icon||''} ${esc((acts[a]||{}).label||a)}</button><br><span class="ahelp">${esc(ACTION_HELP[a]||'')}</span></span>`).join('');
+    if(abtns) body += `<div style="margin-top:8px;border-top:1px solid #21262d;padding-top:6px"><b>⚡ Akcje dla statusu ${esc(d.status)} — klik = efekt:</b><br>${abtns}</div>`;
     if(d.status==='AWAITING_OWNER'){
       body += `<div style="margin-top:6px"><button class="ok" onclick="approve()">✅ Zaakceptuj → READY</button>
-               <button class="no" onclick="decline()">🛑 Odrzuć → BLOCKED</button></div>`;
+               <button class="no" onclick="decline()">🛑 Odrzuć → BLOCKED</button>
+               <div class="ahelp" style="max-width:none">✅ = potwierdzam decyzję: zadanie → <b>READY</b>, agent kontynuuje od wypracowanego etapu (substep bez zmiany) · 🛑 = odrzucam: zadanie → <b>BLOCKED</b>, substep OWNER_PACKET (zamknięte do ręcznego odblokowania)</div></div>`;
     }
   }
   document.getElementById('detailBody').innerHTML = `<h3>${t.icons[d.status]||''} ${esc(d.id)}</h3>` + summary + tabs + body;
@@ -1020,7 +1046,7 @@ async function approvalAction(id, action){
   refresh();
 }
 // zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
-const TABS = ['overview','sponsor','tasks','flow','team','chat','live','firma'];
+const TABS = ['overview','sponsor','sys','tasks','flow','team','chat','live','firma'];
 function showTab(name, push){
   if(!TABS.includes(name)) name = 'overview';
   document.querySelectorAll('.tabpage').forEach(el => el.classList.toggle('on', el.id === 'tab-'+name));
@@ -1029,7 +1055,51 @@ function showTab(name, push){
   if(name === 'firma') renderFirma();
   if(name === 'flow') showFlowView(flowView, false);
   if(name === 'sponsor') renderSponsor();
+  if(name === 'sys') renderSys();
 }
+// ===== 🗂️ Kolejka & Logi + 🔔 powiadomienia (v2.7.15 — boks dla Opiekuna) =====
+function renderSys(){
+  const d = lastState; if(!d) return;
+  document.getElementById('queueBox').innerHTML = (d.queue||[]).length ? (d.queue||[]).map(q =>
+    `<div class="qrow" onclick="openTask('${esc(q.id)}')">
+       <span class="qpos">#${q.pos}</span> <span class="prio prio-${q.priority}">${q.priority}</span>
+       <b>${esc(q.id)}</b> <span class="muted">${esc((q.title_sponsor||q.title||'').slice(0,55))}</span>
+       <span class="pbar sm" title="postęp ${Math.round((q.progress||0)*100)}%"><i style="width:${Math.round((q.progress||0)*100)}%"></i></span>
+       <span class="muted">${esc(q.substep||'—')} · retry ${q.retry_count}${q.retry_count>=3?' 🔚':''} · ${fmtDur(q.age)} temu · ${esc(q.persona||q.role)}${q.review_notes?` · 📝 ${esc(q.review_notes.slice(0,60))}`:''}</span>
+     </div>`).join('') : '<span class="muted">kolejka pusta ✅ (wszystko w pracy lub zmergowane)</span>';
+  const BAD = {'auto_retry':1,'stuck_requeued':1,'merge':1,'owner_packet':1,'ask_owner':1,'llm_job_failed':1,'llm_batch_fail':1,'orchestrator_error':1,'merge_error':1,'circuit_breaker_escalation':1,'watchdog_escalation':1,'sponsor_decline':1};
+  document.getElementById('logsBox').innerHTML = (d.applogs||[]).map(l =>
+    `<div class="${BAD[l.kind]?'logbad':''}"><span class="muted">${new Date(l.ts*1000).toLocaleTimeString()}</span> <b>${esc(l.kind)}</b> ${l.task_id?`<a href="#" onclick="openTask('${esc(l.task_id)}');return false" style="color:#58a6ff">${esc(l.task_id)}</a>`:''} <span class="muted">${esc(l.payload)}</span></div>`).join('')
+    || '<span class="muted">brak logów</span>';
+}
+function renderBell(d){
+  const n = d.notif_unread||0;
+  const bn = document.getElementById('bellN');
+  bn.textContent = n>0 ? (n>99?'99+':String(n)) : '';
+  bn.style.display = n>0 ? 'inline' : 'none';
+  document.getElementById('bellPanel').innerHTML =
+    `<div class="bellHead"><b>🔔 Powiadomienia systemowe</b> <button class="tbtn" onclick="markNotifsRead()">✓ oznacz przeczytane</button></div>` +
+    ((d.notifications||[]).map(x =>
+      `<div class="notif ${x.read?'read':''}" ${x.task_id?`onclick="openTask('${esc(x.task_id)}');toggleBell(false)" style="cursor:pointer"`:''}>
+         <span class="muted">${new Date(x.ts*1000).toLocaleString()}</span> <span class="nbadge">${esc(x.kind)}</span> ${esc(x.text)}${x.task_id?` <b>${esc(x.task_id)}</b>`:''}
+       </div>`).join('') || '<div class="muted" style="padding:6px">brak powiadomień</div>');
+}
+function toggleBell(force){
+  const p = document.getElementById('bellPanel');
+  const open = force !== undefined ? force : !p.classList.contains('open');
+  p.classList.toggle('open', open);
+  if(open) renderBell(lastState);
+}
+async function markNotifsRead(){ try{ await fetch('/api/notifications/read',{method:'POST',body:'{}'}); }catch(e){} refresh(); }
+// v2.7.15 — porządek w buttonach akcji: prostymi słowami co kliknięcie potwierdza i jaki będzie status/substep
+const ACTION_HELP = {
+  approve: 'Potwierdzam decyzję → status READY, substep: kontynuacja od wypracowanego etapu — agent sam wznawia (pełne testy + CR)',
+  decline: 'Odrzucam zadanie → status BLOCKED, substep OWNER_PACKET — zamknięte; odblokowanie tylko ręcznie przez READY',
+  retry: 'Wznawiam ręcznie → READY, retry=0 — na koniec kolejki wg sortowania (priorytet → postęp → wiek)',
+  merge: 'Wdrażam teraz → orchestrator merguje gałąź (rebase + regression + push) → status MERGED',
+  comment: 'Tylko komentarz — bez zmiany statusu; leci do zadania i na PR na GitHubie',
+  set_priority: 'Tylko priorytet P0–P3 — bez zmiany statusu; ustawia pozycję w kolejce'
+};
 // ===== 🎯 TEMATY — widok opiekuna (milestone'y + decyzje + zgody + backlog) =====
 let lastSponsor = null;
 async function renderSponsor(){
@@ -1039,7 +1109,7 @@ async function renderSponsor(){
   const acts = d.actions_def || {};
   document.getElementById('spDecisions').innerHTML = (d.decisions||[]).map(t => {
     const btns = (t.available_actions||[]).map(a => { const ad = acts[a]||{};
-      return `<button class="tbtn" onclick="event.stopPropagation();flowAction('${esc(t.id)}','${esc(a)}')">${ad.icon||''} ${esc(ad.label||a)}</button>`; }).join('');
+      return `<button class="tbtn" title="${esc((typeof ACTION_HELP!=='undefined'&&ACTION_HELP[a])||ad.label||a)}" onclick="event.stopPropagation();flowAction('${esc(t.id)}','${esc(a)}')">${ad.icon||''} ${esc(ad.label||a)}</button>`; }).join('');
     return `<div class="dec-card ${t.status==='ESCALATED'?'esc':''}" onclick="openTask('${esc(t.id)}')">
       <div><b>${esc(t.id)}</b> ${sbadge(t.status)} ${pbadge(t.project_id)} <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span></div>
       <div style="font-size:12px;margin:3px 0">${esc((t.title_sponsor||t.title||'').slice(0,110))}</div>
@@ -2142,11 +2212,33 @@ def _snapshot(s: State) -> dict:
             logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
         # (staż tenure_s / przepracowany work_s są już policzone przy budowaniu team — sort wg stażu)
         from engine import team_threads
+        # v2.7.15 — boks Opiekuna „Kolejka & Logi”: kolejka w kolejności pobierania + logi aplikacji + powiadomienia
+        queue = []
+        for i, t in enumerate(s.claimable_tasks()):
+            p = personas.persona_for_role(t.get("role") or "")
+            queue.append({"pos": i + 1, "id": t["id"], "title": t.get("title") or "",
+                          "title_sponsor": t.get("title_sponsor") or "", "priority": t.get("priority") or "P2",
+                          "substep": t.get("substep") or "", "progress": t.get("progress") if t.get("progress") is not None else substep_progress(t.get("substep")),
+                          "retry_count": t.get("retry_count") or 0, "role": t.get("role") or "",
+                          "persona": p.get("name") or "", "project_id": t.get("project_id"),
+                          "age": max(0, time.time() - (t.get("created_at") or time.time())),
+                          "review_notes": (t.get("review_notes") or "")[:200]})
+        applogs = []
+        for r in s._conn().execute(
+                "SELECT ts, kind, task_id, payload FROM metrics ORDER BY ts DESC LIMIT 150").fetchall():
+            try:
+                pl = json.loads(r[3])
+            except Exception:
+                pl = {"raw": str(r[3])[:200]}
+            applogs.append({"ts": r[0], "kind": r[1], "task_id": r[2],
+                            "payload": json.dumps(pl, ensure_ascii=False)[:220]})
         return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team, "asks": asks,
                 "new_hires": new_hires,
                 "stats": stats,
                 "comments": s.recent_comments(40), "metrics": metrics,
                 "runtime": runtime, "logs": logs,
+                "queue": queue, "applogs": applogs,
+                "notifications": s.list_notifications(60), "notif_unread": s.unread_notifications(),
                 "milestones": s.list_milestones(),
                 "threads": team_threads.list_threads(s, limit=15),
                 "version": _version_info(),
@@ -2639,6 +2731,11 @@ class Handler(BaseHTTPRequestHandler):
             sk = State().add_role_skill(role, name, description, source="sponsor/dashboard")
             self._send(200, json.dumps({"ok": True, "skill": sk, "findings": findings},
                                         ensure_ascii=False, default=str).encode(), "application/json")
+            return
+        if u.path == "/api/notifications/read":
+            # v2.7.15: oznacz wszystkie powiadomienia jako przeczytane (dzwonek)
+            n = State().mark_notifications_read()
+            self._send(200, json.dumps({"ok": True, "marked": n}).encode(), "application/json")
             return
         if len(parts) == 4 and parts[:2] == ["api", "approval"]:
             # v2.7.10: zgoda/odrzucenie DEPLOY_PROD (i innych approvals) z dashboardu
