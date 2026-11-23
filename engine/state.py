@@ -443,8 +443,21 @@ class State:
         for t in self.list_tasks(status=CHANGES_REQUESTED):
             if t["id"] not in {x["id"] for x in out}:
                 out.append(t)
-        order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-        out.sort(key=lambda t: (order.get(t.get("priority") or "P2", 2), t.get("created_at") or 0))
+        # v2.7.14 — kolejność pobierania przez agentów:
+        #   1) wyższy priorytet pierwszy (P0 > P1 > P2 > P3)
+        #   2) zadanie po 3+ retry (FAILED) -> KONIEC kolejki w swoim paśmie priorytetu (nie do Opiekuna!)
+        #   3) wyższy stopień ukończenia pierwszy (mniej kroków do merge'a = szybciej zmergowane)
+        #   4) od najstarszych (created_at rosnąco)
+        prio_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+        def _queue_key(t: dict) -> tuple:
+            failed3 = 1 if (t.get("retry_count") or 0) >= 3 else 0
+            return (prio_order.get(t.get("priority") or "P2", 2),
+                    failed3,
+                    -substep_progress(t.get("substep")),
+                    t.get("created_at") or 0)
+
+        out.sort(key=_queue_key)
         return out
 
     def claim_task(self, task_id: str, claimed_by: str) -> dict[str, Any] | None:

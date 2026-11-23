@@ -73,8 +73,8 @@ def test_launch_recurring_idempotent():
 
 
 def test_escalate_stuck_tasks_phase():
-    """Faza orchestratora: zadania utknięte (retry>=2) w READY/RUNNING/FAILED -> AWAITING_OWNER,
-    nie przechodzą całego flow w kółko. BLOCKED/MERGED/AWAITING_OWNER nie są ruszane."""
+    """v2.7.14: zadania utknięte (retry>=2) NIE idą do AWAITING_OWNER — zostają w READY na końcu
+    kolejki (z dopisaną notatką), BLOCKED/MERGED/AWAITING_OWNER/RUNNING nie są ruszane."""
     from engine.orchestrator import Orchestrator, STUCK_RETRY
     from engine.state import AWAITING_OWNER
     s = _tmp_state()
@@ -86,12 +86,13 @@ def test_escalate_stuck_tasks_phase():
     o = Orchestrator.__new__(Orchestrator)
     o.state = s
     o._escalate_stuck_tasks()
-    assert s.get_task("T-STUCK")["status"] == AWAITING_OWNER
-    assert s.get_task("T-STUCK")["substep"] == "OWNER_PACKET"
-    assert "AWAITING_OWNER" in (s.get_task("T-STUCK")["review_notes"] or "")
-    assert s.get_task("T-OK")["status"] == "READY"          # retry=0 — nie ruszamy
+    t = s.get_task("T-STUCK")
+    assert t["status"] == "READY", t["status"]               # NIE AWAITING_OWNER
+    assert "koniec kolejki" in (t["review_notes"] or "")
+    assert t["substep"] != "OWNER_PACKET"
+    assert s.get_task("T-OK")["status"] == "READY"           # retry=0 — nie ruszamy
     assert s.get_task("T-BLK")["status"] == "BLOCKED"        # zamknięte — nie ruszamy
-    # READY -> AWAITING_OWNER dozwolone w modelu
+    # AWAITING_OWNER nadal dozwolone w modelu (tylko ręcznie / ASK_OWNER workera)
     from engine.state import VALID_TRANSITIONS
     assert "AWAITING_OWNER" in VALID_TRANSITIONS["READY"]
 
@@ -116,10 +117,10 @@ def test_scope_autoextend_autoheal():
     assert _scope_autoextend(s, s.get_task("T-SCOPE"), "engine/") is True
 
 
-def test_owner_packet_has_error_history():
-    """Pakiet OWNER_PACKET zawiera ostatnie błędy z metryk — Opiekun widzi co automat próbował."""
+def test_stuck_requeued_with_error_history_not_owner():
+    """v2.7.14: utknięte zadanie po retry dostaje historię błędów w review_notes, ale zostaje w READY
+    (koniec kolejki) — NIE AWAITING_OWNER."""
     from engine.orchestrator import Orchestrator, STUCK_RETRY
-    from engine.state import AWAITING_OWNER
     s = _tmp_state()
     s.add_task("T-PKT", "FACTORY-OPS", 9, "pakiet", "backend-dev", status="READY")
     s._conn().execute("UPDATE tasks SET retry_count=? WHERE id=?", (STUCK_RETRY, "T-PKT"))
@@ -128,8 +129,30 @@ def test_owner_packet_has_error_history():
     o.state = s
     o._escalate_stuck_tasks()
     t = s.get_task("T-PKT")
-    assert t["status"] == AWAITING_OWNER
-    assert "PermissionError" in (t["review_notes"] or "")  # historia błędów w pakiecie
+    assert t["status"] == "READY"
+    assert "koniec kolejki" in (t["review_notes"] or "")
+    assert "PermissionError" in (t["review_notes"] or "")  # historia błędów nadal w notatce
+
+
+def test_queue_sort_priority_progress_retry_age():
+    """v2.7.14: kolejność claimable_tasks = priorytet → (3+ retry na koniec pasma) → wyższy postęp → najstarsze."""
+    import time as _t
+    s = _tmp_state()
+    now = _t.time()
+    s.add_task("Q-P2-OLD", "FACTORY-OPS", 9, "stare P2", "backend-dev", status="READY", priority="P2")
+    s.add_task("Q-P0", "FACTORY-OPS", 9, "P0 świeże", "backend-dev", status="READY", priority="P0")
+    s.add_task("Q-P2-PROG", "FACTORY-OPS", 9, "P2 dalej w postępie", "backend-dev", status="READY", priority="P2")
+    s.add_task("Q-P2-RETRY3", "FACTORY-OPS", 9, "P2 po 3 retry", "backend-dev", status="READY", priority="P2")
+    s._conn().execute("UPDATE tasks SET substep='4/5_QG' WHERE id='Q-P2-PROG'")       # progress 0.8
+    s._conn().execute("UPDATE tasks SET retry_count=3 WHERE id='Q-P2-RETRY3'")         # koniec kolejki
+    s._conn().execute("UPDATE tasks SET created_at=? WHERE id='Q-P2-OLD'", (now - 500,))
+    s._conn().execute("UPDATE tasks SET created_at=? WHERE id='Q-P2-PROG'", (now - 100,))
+    s._conn().execute("UPDATE tasks SET created_at=? WHERE id='Q-P2-RETRY3'", (now - 50,))
+    ids = [t["id"] for t in s.claimable_tasks()]
+    assert ids[0] == "Q-P0"                 # priorytet rządzi
+    assert ids.index("Q-P2-PROG") < ids.index("Q-P2-OLD")   # wyższy postęp przed starszym
+    assert ids[-1] == "Q-P2-RETRY3"         # 3+ retry na koniec (mimo najnowszego)
+    assert ids == ["Q-P0", "Q-P2-PROG", "Q-P2-OLD", "Q-P2-RETRY3"]
 
 
 def test_substep_progress():

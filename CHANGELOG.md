@@ -1,5 +1,15 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.14] — 2026-11-23 — po 3 retry NIE do Opiekuna, tylko koniec kolejki + nowe sortowanie kolejki
+- 🔚 `_escalate_stuck_tasks` / `_auto_retry_failed` / `_circuit_breakers`: retry>=3 → READY na **koniec kolejki**
+  (żadnego automatycznego AWAITING_OWNER; Opiekun tylko przy ASK_OWNER/ręcznej decyzji). Jednorazowa migracja:
+  8 starych auto-pakietów OWNER_PACKET (max_retries) → READY
+- 📊 `claimable_tasks` sort: **priorytet (P0→P3) → kara za 3+ retry (koniec pasma) → wyższy postęp sub-etapu pierwszy**
+  (mniej kroków do merge'a = szybciej zmergowane) → od najstarszych (created_at)**_**
+- 📝 opis reguły zaktualizowany w default_flow.json meta.description
+- ✅ testy: `test_escalate_stuck_tasks_phase` (READY, nie OWNER), `test_stuck_requeued_with_error_history_not_owner`,
+  `test_queue_sort_priority_progress_retry_age` — 71 passed
+
 ## [2.7.13] — 2026-11-23 — kafelek „teraz:” — sam czas etapu (bez „⏱ etap”), jaśniejszy kolor, ten sam rozmiar
 - 🎯 teraz: implementacja kodu <span jaśniejszy>7m 53s</span> — prefix „⏱ etap” usunięty, kolor `#79c0ff` (jaśniejszy od `#58a6ff`), font-size bez zmiany (11px)
 

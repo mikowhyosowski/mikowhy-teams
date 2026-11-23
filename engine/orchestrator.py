@@ -61,7 +61,7 @@ from engine.state import (
 
 LOG_DIR = ROOT / ".agents" / "logs"
 CIRCUIT_BREAKER_RETRIES = 3
-STUCK_RETRY = 2  # zadanie z tyloma próbami (retry_count>=2) i tak utknęło -> od razu AWAITING_OWNER (nie kręci się READY->RUNNING->FAILED->READY)
+STUCK_RETRY = 2  # v2.7.14: zadanie z tyloma próbami utknęło -> NIE do Opiekuna, tylko na KONIEC kolejki (sortowanie claimable_tasks)
 PRINCIPAL_ROLE = "principal-debugger"
 
 
@@ -168,29 +168,30 @@ class Orchestrator:
         return "\n".join(out) if out else "(brak zarejestrowanych błędów w metrykach)"
 
     def _escalate_stuck_tasks(self) -> None:
-        """Zadania, które mimo prób utknęły (retry_count >= STUCK_RETRY) w READY/RUNNING/FAILED,
-        nie mają przechodzić całego etapu w kółko (READY->RUNNING->FAILED->READY) — idą do
-        AWAITING_OWNER z pakietem dla Opiekuna (ostatnia instancja). BLOCKED/MERGED/AWAITING_OWNER nie ruszamy."""
+        """v2.7.14 — zadania utknięte (retry_count >= STUCK_RETRY) NIE idą do Opiekuna.
+        Idą na KONIEC kolejki (READY; sortowanie claimable_tasks: priorytet → kara za 3 retry → postęp → wiek),
+        żeby nie kręciły się w kółko przed nowymi zadaniami. Opiekun wchodzi tylko przy realnym
+        rozjeździe (ASK_OWNER od workera / ręczna decyzja), nigdy automatem za retry.
+        BLOCKED/MERGED/AWAITING_OWNER/RUNNING nie ruszamy (RUNNING może jeszcze samo dokończyć)."""
         for task in self.state.list_tasks():
-            if task["status"] not in (READY, RUNNING, FAILED):
+            if task["status"] not in (READY, FAILED):
                 continue
             if (task.get("retry_count") or 0) < STUCK_RETRY:
                 continue
-            packet = (
-                f" | AWAITING_OWNER: zadanie utknęło mimo {task.get('retry_count')} prób. "
-                f"CO AUTOMAT JUŻ PRÓBOWAŁ (ostatnie błędy):\n{self._recent_errors(task['id'])}\n"
-                "DLACZEGO automat nie może tego bezpiecznie rozstrzygnąć sam: powtarzający się błąd wykonania. "
-                "OPCJE dla Opiekuna: [A] rekomendowane — puścić dalej do READY z inną rolą/zakresem, "
-                "[B] zamknąć jako BLOCKED (odrzucone), [C] zdekomponować na mniejsze zadanie."
-            )
+            note = f" | koniec kolejki po {task.get('retry_count')} próbach (bez eskalacji do Opiekuna; ostatnie błędy: {self._recent_errors(task['id'])[:300]})"
+            if "koniec kolejki" in (task.get("review_notes") or ""):
+                continue  # komentarz już dopisany — nie spamujemy co tick
             try:
-                self.state.transition(task["id"], AWAITING_OWNER, substep="OWNER_PACKET",
-                                      review_notes=(task.get("review_notes") or "") + packet)
+                if task["status"] == FAILED:
+                    self.state.transition(task["id"], READY, retry_count=task["retry_count"] + 1,
+                                          review_notes=(task.get("review_notes") or "") + note)
+                else:
+                    self.state.transition(task["id"], READY, review_notes=(task.get("review_notes") or "") + note)
                 self.state.add_comment(task["id"], "orchestrator",
-                                       f"🧑‍💼 {task['id']}: utknęło po {task.get('retry_count')} próbach → AWAITING_OWNER "
-                                       "(pakiet A/B/odrzuć dla Opiekuna — nie wraca już do kolejki automatycznie)")
-                self.state.record_metric("stuck_escalated", {"task": task["id"], "retry": task.get("retry_count")}, task["id"])
-                print(f"[orchestrator] 🧑‍💼 stuck {task['id']} (retry={task.get('retry_count')}) -> AWAITING_OWNER", flush=True)
+                                       f"🔚 {task['id']}: utknęło po {task.get('retry_count')} próbach → koniec kolejki "
+                                       "(sort: priorytet → postęp → wiek), Opiekun nie jest angażowany automatem")
+                self.state.record_metric("stuck_requeued", {"task": task["id"], "retry": task.get("retry_count")}, task["id"])
+                print(f"[orchestrator] 🔚 stuck {task['id']} (retry={task.get('retry_count')}) -> READY koniec kolejki", flush=True)
             except Exception as e:
                 print(f"[orchestrator] stuck {task['id']} błąd: {e!r}", flush=True)
 
@@ -198,28 +199,20 @@ class Orchestrator:
     def _auto_retry_failed(self) -> None:
         """FAILED -> READY automatycznie (fabryka sama się podnosi po przejściowych
         błędach LLM/infra — timeouty, sieć/API, niepełny przelot testów: nikt nie widzi alertu).
-        Po wyczerpaniu limitu prób (max_retries) -> AWAITING_OWNER z pakietem dla Opiekuna:
-        sedno problemu + opcje A/B/odrzuć + rekomendcja. Opiekun to ostatnia instancja."""
+        v2.7.14: po wyczerpaniu limitu prób (retry >= CIRCUIT_BREAKER_RETRIES) zadanie NIE idzie
+        do AWAITING_OWNER — wraca do READY i ląduje na KONCU kolejki (sortowanie claimable_tasks),
+        bo ma najwyższy retry_count w swoim paśmie priorytetu."""
         for task in self.state.list_tasks(status=FAILED):
+            note = "auto-retry po FAILED (próba %d, backoff)" % (task["retry_count"] + 2)
             if task["retry_count"] >= CIRCUIT_BREAKER_RETRIES:
-                packet = (
-                    " | AWAITING_OWNER po wyczerpaniu max_retries "
-                    f"({task['retry_count']} prób FAILED). PAKIET dla Opiekuna: "
-                    "co utknęło: powtarzający się błąd wykonania (patrz review_notes/ostatnie eventy); "
-                    "opcje: [A] rekomendowane — puścić dalej do READY z podniesionym priorytetem i rolą principal-debugger, "
-                    "[B] odrzucić → BLOCKED, [C] zdekomponować na mniejsze zadanie."
-                )
-                self.state.transition(task["id"], AWAITING_OWNER, substep="OWNER_PACKET",
-                                      review_notes=(task.get("review_notes") or "") + packet)
-                self.state.add_comment(task["id"], "orchestrator",
-                                       f"🧑‍💼 {task['id']}: max_retries wyczerpane ({task['retry_count']} FAILED) → AWAITING_OWNER "
-                                       "z pakietem opcji (A/B/odrzuć). Opiekun decyduje tylko tutaj — przy realnym rozjeździe.")
-                self.state.record_metric("owner_packet", {"task": task["id"], "reason": "max_retries"}, task["id"])
-                continue
+                note += (f" | max_retries ({task['retry_count']}) — koniec kolejki, NIE do Opiekuna; "
+                         f"ostatnie błędy: {self._recent_errors(task['id'])[:300]}")
             self.state.transition(task["id"], READY,
                                   retry_count=task["retry_count"] + 1,
-                                  review_notes="auto-retry po FAILED (próba %d, backoff)" % (task["retry_count"] + 2))
-            self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
+                                  review_notes=note)
+            self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1,
+                                                    "to_back_of_queue": task["retry_count"] >= CIRCUIT_BREAKER_RETRIES},
+                                    task["id"])
 
     # --- obowiązki cykliczne (recurring_tasks) -> zadania READY dla roli -----------
     def _launch_recurring(self) -> None:
@@ -342,18 +335,17 @@ class Orchestrator:
                 telegram_reporter.post_event(self.state, task,
                                              f"⚠️ *Circuit breaker* (retry>={task['retry_count']}) → rola `{PRINCIPAL_ROLE}`")
             elif task["retry_count"] >= CIRCUIT_BREAKER_RETRIES + 2 and task["role"] == PRINCIPAL_ROLE:
-                # wyczerpany limit prób naprawczych nawet dla principal-debugger -> pakiet dla Opiekuna
-                self.state.transition(task["id"], AWAITING_OWNER, substep="OWNER_PACKET",
-                                      review_notes=(task.get("review_notes") or "") +
-                                      " | AWAITING_OWNER: nawet principal-debugger po wyczerpaniu max_retries. "
-                                      "Opcje: [A] READY z inną rolą, [B] BLOCKED, [C] dekompozycja.")
-                _push(
-                    f"🧑‍💼 *AWAITING_OWNER* `{task['id']}` — nawet Principal Debugger poległ po {task['retry_count']} próbach. "
-                    f"Bloker: {task.get('review_notes', '')[:300]}")
-                t = self.state.get_task(task["id"])
-                if t:
-                    telegram_reporter.post_event(self.state, t, "🧑‍💼 *AWAITING_OWNER* — wyczerpane retry, czeka decyzja Opiekuna (ostatnia instancja).")
-                    telegram_reporter.update_progress(self.state, t)
+                # v2.7.14: nawet principal-debugger po wyczerpaniu max_retries NIE idzie do Opiekuna —
+                # zostaje w READY na końcu kolejki (najwyższy retry_count w paśmie priorytetu).
+                # Opiekun może podjąć decyzję ręcznie (approve/decline/retry z flow), ale automat nie eskaluje.
+                if "koniec kolejki (circuit)" not in (task.get("review_notes") or ""):
+                    self.state.transition(task["id"], READY,
+                                          review_notes=(task.get("review_notes") or "") +
+                                          f" | koniec kolejki (circuit): nawet {PRINCIPAL_ROLE} po {task['retry_count']} próbach — bez AWAITING_OWNER. "
+                                          f"Ostatnie błędy: {self._recent_errors(task['id'])[:300]}")
+                    self.state.add_comment(task["id"], "orchestrator",
+                                           f"🔚 {task['id']}: wyczerpane retry ({task['retry_count']}) nawet dla {PRINCIPAL_ROLE} → koniec kolejki, Opiekun nieangażowany automatem")
+                    self.state.record_metric("circuit_back_of_queue", {"task": task["id"], "retry": task["retry_count"]}, task["id"])
 
     # --- faza 6: merge do gałęzi milestonu --------------------------------------
     def _handle_merges(self) -> None:
