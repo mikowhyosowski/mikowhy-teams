@@ -3,7 +3,8 @@
   "meta": {
     "name": "Dark Factory — przepływ pracy zespołu",
     "lang": "pl",
-    "description": "Diagram etapów pracy: kolejka → realizacja → review → merge → archiwum, plus tor akceptacji Sponsora (góra) i wyjątków (dół). Edytuj ten plik (lub override w .agents/flow/flow.config.json), aby zmienić etapy, przejścia, kolory, SLA i dostępne akcje."
+    "quick_yes": "Zgadzam się — realizuj. O nic już nie pytaj i nic nie potwierdzaj (żadnych pytań ani potwierdzeń).",
+    "description": "Diagram etapów pracy: kolejka → realizacja → review → merge → archiwum, plus tor akceptacji Sponsora (góra) i wyjątków (dół). Edytuj ten plik (lub override w .agents/flow/flow.config.json), aby zmienić etapy, przejścia, kolory, SLA i dostępne akcje. meta.quick_yes = tekst przycisku „⚡ szybka odp: TAK” w wątkach z agentem."
   },
   "layout": {
     "direction": "horizontal",

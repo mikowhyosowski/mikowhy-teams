@@ -1,5 +1,11 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.5.1] — 2026-11-23
+- ⚡ Przycisk **„szybka odp: TAK”** w wątku rozmowy z agentem (obok „Wyślij ✈”) — jednym klikiem wysyła
+  „Zgadzam się — realizuj. O nic już nie pytaj i nic nie potwierdzaj…” przez POST /api/thread/<id>/post
+  (agent dostaje odpowiedź jak na Telegramie). Tekst konfigurowalny: `meta.quick_yes` w flow config
+- ⚡ Przycisk **„TAK — realizuj, bez pytań”** w komentarzach zadania gdy substep=ASK_SPONSOR (POST /api/task/<id>/comment)
+
 ## [2.5.0] — 2026-11-23
 - 🎯 Zakładka **Tematy** (widok opiekuna, badge 🚨N w nav gdy czekają decyzje): czytelny podgląd „o co chodzi” —
   każdy temat (milestone) z celem, gałęzią, paskiem postępu (% zmergowanych), chipsami per status i listą blokerów;

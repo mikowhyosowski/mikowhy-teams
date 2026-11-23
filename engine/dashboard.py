@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.5.0"
+VERSION = "2.5.1"
 
 
 def _version_info() -> dict:
@@ -706,7 +706,8 @@ async function openTask(id, keep){
     body = `<h2>💬 Komentarze</h2><div class="threadbox">${(t.comments||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(c=>`<div class="tmsg ${c.author==='sponsor'||c.author==='sponsor/dashboard'?'me':'agent'}"><div class="ta"><b>${esc(c.author)}</b> <span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(c.text.slice(0,400))}</div></div>`).join('')||'<span class="muted">brak komentarzy</span>'}</div>
       <h2>✍️ Twój komentarz</h2>
       <textarea id="cbox" placeholder="uwaga do zadania (też leci na PR na GitHubie)…"></textarea>
-      <button onclick="sendComment()">Dodaj komentarz</button>`;
+      <button onclick="sendComment()">Dodaj komentarz</button>
+      ${d.substep==='ASK_SPONSOR'?`<button style="background:#238636;border-color:#2ea043;color:#fff" onclick="sendQuickTaskYes()" title="Wyślij automatycznie: „${esc(quickYesText())}”">⚡ TAK — realizuj, bez pytań</button>`:''}`;
   } else {
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
@@ -740,7 +741,10 @@ async function openThread(tid, keep){
     <div class="threadbox" id="threadbox">${msgs||'<span class="muted">początek wątku — napisz pierwsza wiadomość</span>'}</div>
     ${lastSponsor?'<div class="muted" style="font-size:11px">🤖 '+esc(p.name||t.role)+' pisze odpowiedź…</div>':''}
     <textarea id="tbox" placeholder="napisz do ${esc(p.name||t.role)}…"></textarea>
-    <button onclick="sendThreadMsg()">Wyślij ✈</button>`;
+    <div>
+      <button onclick="sendThreadMsg()">Wyślij ✈</button>
+      <button style="background:#238636;border-color:#2ea043;color:#fff" onclick="sendQuickYes(curThread)" title="Wyślij automatycznie: „${esc(quickYesText())}”">⚡ szybka odp: TAK</button>
+    </div>`;
   const tb = document.getElementById('threadbox'); if(tb) tb.scrollTop = tb.scrollHeight;
 }
 function startThread(role){
@@ -780,6 +784,24 @@ async function sendThreadMsg(){
   refresh();
   setTimeout(() => openThread(curThread, true), 1200);
   setTimeout(() => openThread(curThread, true), 6000);
+}
+// ⚡ szybka odpowiedź „TAK” — tekst z configa flow (meta.quick_yes) lub domyślny
+function quickYesText(){
+  const cfg = (lastFlow && lastFlow.config) || (lastSponsor && lastSponsor.config) || null;
+  return (cfg && cfg.meta && cfg.meta.quick_yes)
+    || 'Zgadzam się — realizuj. O nic już nie pytaj i nic nie potwierdzaj (żadnych pytań ani potwierdzeń).';
+}
+async function sendQuickYes(tid){
+  if(!tid) return;
+  await fetch('/api/thread/'+tid+'/post', {method:'POST', body: JSON.stringify({text: quickYesText()})});
+  refresh();
+  setTimeout(() => openThread(tid, true), 1200);
+  setTimeout(() => openThread(tid, true), 6000);
+}
+async function sendQuickTaskYes(){
+  if(!curTask) return;
+  await fetch('/api/task/'+curTask+'/comment', {method:'POST', body: JSON.stringify({text: quickYesText()})});
+  refresh();
 }
 function closeDetail(){ document.getElementById('detail').classList.remove('open'); curTask=null; curThread=null; }
 async function sendComment(){
