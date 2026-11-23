@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 
 
 def _version_info() -> dict:
@@ -267,7 +267,15 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    .feed{font-size:11px}
    #tasks{display:block;overflow-x:auto}
  }
- /* 🎯 Tematy (widok opiekuna) */
+ /* 🎉 nowa osoba w firmie — banner + toast */
+#newHires{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
+.hire-card{background:#0d2b1a;border:1px solid #3fb950;border-radius:10px;padding:8px 14px;display:flex;gap:10px;align-items:center;cursor:pointer;animation:hirePop .5s ease-out}
+.hire-card:hover{filter:brightness(1.2)}
+@keyframes hirePop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+.hire-card .ava{font-size:26px}
+#toast{position:fixed;bottom:18px;right:18px;background:#0d2b1a;border:1px solid #3fb950;color:#c9d1d9;padding:12px 18px;border-radius:12px;font-size:13px;z-index:99;opacity:0;transform:translateY(20px);transition:all .3s;pointer-events:none;max-width:340px;box-shadow:0 4px 16px #000a}
+#toast.show{opacity:1;transform:none}
+/* 🎯 Tematy (widok opiekuna) */
 #spDecisions{display:flex;gap:10px;flex-wrap:wrap}
 .dec-card{background:#3d3000;border:1px solid #b08800;border-radius:10px;padding:10px 14px;max-width:400px;cursor:pointer;animation:pulseIco 1.6s 6} /* „odczekaj chwilę”: miga ~10s i przestaje */
 .dec-card.esc{border-color:#f85149;background:#3d1215}
@@ -365,6 +373,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <h1>🏭 Dark Factory <button id="liveTg" onclick="toggleAutoRefresh()" title="włącz/wyłącz auto-odświeżanie (LIVE)" style="background:#0d1117;border:1px solid #3fb950;color:#3fb950;border-radius:10px;padding:1px 10px;font-size:12px;cursor:pointer">● LIVE</button> <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span> <span id="ver" class="muted" style="font-size:11px;cursor:pointer;border:1px solid #30363d;border-radius:10px;padding:1px 8px" onclick="openChangelog()" title="wersja dashboardu — klik = changelog"></span></h1>
 <div id="stats"></div>
+<div id="newHires"></div>
 <div id="projFilters" title="Filtry projektów — globalne (działają na wszystkich zakładkach i mapie Firma)"></div>
 <div id="stFilters" title="Filtry statusów — globalne (MERGED domyślnie ukryty; klik = pokaż/ukryj)"></div>
 <nav id="tabs">
@@ -576,6 +585,19 @@ async function refreshInner(){
   }
   const st = d.stats||{};
   const mg = d.merges||{};
+  // 🎉 nowa osoba w firmie — banner (świeża < 1h) + toast przy pierwszym zobaczeniu
+  const seenHires = new Set(JSON.parse(localStorage.getItem('seenHires')||'[]'));
+  document.getElementById('newHires').innerHTML = (d.new_hires||[]).map(h => {
+    if(!seenHires.has(h.role)){
+      seenHires.add(h.role); localStorage.setItem('seenHires', JSON.stringify([...seenHires]));
+      toast('🎉 Nowa osoba w firmie: ' + (h.name||h.role) + ' — ' + (h.position||'') + ' (rola ' + h.role + ')');
+    }
+    return `<div class="hire-card" onclick="showTab('team')">
+      <span class="ava" style="color:${h.color||'#3fb950'}">${h.avatar||h.icon||'🧑'}</span>
+      <span>🎉 <b>Nowa osoba w firmie:</b> <b>${esc(h.name||h.role)}</b> <span class="muted">${esc(h.position||'')} · rola ${esc(h.role)}</span></span>
+      <span class="muted" style="font-size:11px">🏅 staż ${fmtDur(h.tenure_s||0)}</span>
+    </div>`;
+  }).join('');
   document.getElementById('stats').innerHTML =
     `<span class="stat-badge ${st.awaiting?'warn':''}">🕒 czeka na Ciebie: <b>${st.awaiting||0}</b></span>`+
     `<span class="stat-badge">⏳ w kolejce (READY): <b>${st.waiting||0}</b></span>`+
@@ -1547,6 +1569,12 @@ let lastState = null;
 let firmaSlowTick = 0;
 function firmaActive(){ return document.getElementById('tab-firma').classList.contains('on'); }
 let autoRefreshOn = true;
+function toast(msg){
+  let t = document.getElementById('toast');
+  if(!t){ t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 12000);
+}
 function toggleAutoRefresh(){
   autoRefreshOn = !autoRefreshOn;
   const b = document.getElementById('liveTg');
@@ -1728,6 +1756,21 @@ def _snapshot(s: State) -> dict:
                                  if cur else None)})
     # kolejność wg STAŻU pracy (najstarsi pracownicy pierwsi); pracujący mają osobny badge
     team.sort(key=lambda x: (-(x.get("tenure_s") or 0), x["role"]))
+    # --- nowa osoba w firmie: rola widziana pierwszy raz i ŚWIEŻA (tenure < 10 min) -> banner/toast ---
+    seen_roles = set(json.loads(s.get_kv("seen_roles", "[]") or "[]"))
+    new_hires: list[dict] = []
+    for m in team:
+        role = m.get("role") or ""
+        if role and role not in seen_roles:
+            seen_roles.add(role)
+            if (m.get("tenure_s") or 0) < 600:  # naprawdę nowa (stare role przy pierwszym run nie są "new")
+                ts = time.time()
+                s.set_kv(f"new_hire_ts:{role}", ts)
+                s.record_metric("new_hire", {"role": role, "name": m.get("name"), "position": m.get("position")}, None)
+                new_hires.append({"role": role, "name": m.get("name"), "position": m.get("position"),
+                                  "avatar": m.get("avatar"), "icon": m.get("icon"), "color": m.get("color"),
+                                  "tenure_s": m.get("tenure_s") or 0, "ts": ts})
+    s.set_kv("seen_roles", json.dumps(sorted(seen_roles)))
     # bezpośrednie zapytania do Vibe (formularz, bez taska) — ostatnie 10 + odpowiedzi z kv
     asks = []
     for r in s._conn().execute(
@@ -1764,6 +1807,7 @@ def _snapshot(s: State) -> dict:
         # (staż tenure_s / przepracowany work_s są już policzone przy budowaniu team — sort wg stażu)
         from engine import team_threads
         return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team, "asks": asks,
+                "new_hires": new_hires,
                 "stats": stats,
                 "comments": s.recent_comments(40), "metrics": metrics,
                 "runtime": runtime, "logs": logs,

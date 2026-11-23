@@ -87,6 +87,30 @@ def test_firma_rooms_persona_and_conversations():
     assert all(d.get("persona_color", "").startswith("hsl(") for d in desks)
 
 
+def test_new_hires_detection():
+    """Nowa rola ze świeżym zadaniem -> new_hires; stara rola / powtórzenie -> puste."""
+    import time as _t
+    from engine.dashboard import _snapshot
+    tmp = Path(tempfile.mkdtemp())
+    s = State(db_path=tmp / "t.db")
+    s.add_milestone("MS-N", "goal", "b", title="t")
+    now = _t.time()
+    # świeża rola (nowe zadanie)
+    s.add_task("T-NEW", "MS-N", 4, "nowe", "brand-new-role", status="READY")
+    # stara rola (zadanie sprzed 3h)
+    s.add_task("T-OLD", "MS-N", 4, "stare", "old-role", status="READY")
+    s._conn().execute("UPDATE tasks SET created_at=?, updated_at=? WHERE id='T-OLD'", (now - 3 * 3600, now - 3 * 3600))
+    d = _snapshot(s)
+    roles = [h["role"] for h in d["new_hires"]]
+    assert "brand-new-role" in roles, f"świeża rola powinna być new_hire, jest {roles}"
+    assert "old-role" not in roles, "stara rola nie może być new_hire"
+    h = next(x for x in d["new_hires"] if x["role"] == "brand-new-role")
+    assert h["name"] and h["color"] and h["avatar"]
+    # drugie wywołanie — już widziana -> pusto
+    d2 = _snapshot(s)
+    assert d2["new_hires"] == []
+
+
 def test_endpoints_live():
     with urllib.request.urlopen("http://127.0.0.1:8765/api/recurring?role=health-monitor", timeout=5) as r:
         lst = json.loads(r.read().decode())

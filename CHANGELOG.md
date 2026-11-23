@@ -1,5 +1,13 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.6.2] — 2026-11-23
+- 🎉 **Nowa osoba w firmie**: wykrywanie pierwszej świeżej roli (tenure < 10 min, kv seen_roles) → banner nad statystykami
+  (awatar + kolor osoby + „Nowa osoba w firmie: …”) + toast (12s, pokazuje się raz) + event `new_hire` w Live feed;
+  klik banner → zakładka Zespół
+- 📋 Zadanie **HIRE-UX-001 (P0, FIRMA)**: zatrudnienie world-class UI/UX + frontend i redesign widoku Firma
+  → „Enchanted Campus” (pełny opis wymagań w AC: design system, soft-isometric campus, stylizowane awatary
+  z aura/breathing, GSAP/CSS motion, zachowanie wszystkich interakcji)
+
 ## [2.6.1] — 2026-11-23
 - 🐛 FIX filtry znikały po odświeżeniu/zmianie adresu: były tylko w localStorage (per-origin) i showTab nadpisywał hash.
   Teraz filtry są w **3 miejscach**: URL hash (`#flow?hs=MERGED&hp=…`), localStorage i serwerze (kv `filters:*`,
