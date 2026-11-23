@@ -1,0 +1,19 @@
+name: validate-commits
+on:
+  pull_request:
+    branches: [master, staging]
+permissions:
+  contents: read
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Walidacja formatu Conventional Commits (type(scope): opis, max 72)
+        run: |
+          set -euo pipefail
+          for sha in $(git rev-list "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"); do
+            bash engine/validate_commit_msg.sh "$(git log -1 --format=%s "$sha")" "$sha"
+          done
