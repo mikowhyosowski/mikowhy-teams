@@ -46,7 +46,9 @@ def _push(msg: str, **kwargs) -> None:
         telegram_gate.send_message(msg, **kwargs)
 from engine.state import (
     AWAITING_APPROVAL,
+    AWAITING_OWNER,
     BLOCKED,
+    CHANGES_REQUESTED,
     ESCALATED,
     FAILED,
     IN_REVIEW,
@@ -141,22 +143,31 @@ class Orchestrator:
                                          {"policy": policy, "project": pid, "read_only": bool(task.get("read_only"))},
                                          task["id"])
 
-    # --- auto-retry FAILED (max 3 próby, potem ESCALATED do Sponsora) -----------
+    # --- auto-retry FAILED (limit prób, potem AWAITING_OWNER z pakietem opcji) ---
     def _auto_retry_failed(self) -> None:
         """FAILED -> READY automatycznie (fabryka sama się podnosi po przejściowych
-        błędach LLM/infra). Po 3 próbach -> ESCALATED + komentarz w feedzie."""
+        błędach LLM/infra — timeouty, sieć/API, niepełny przelot testów: nikt nie widzi alertu).
+        Po wyczerpaniu limitu prób (max_retries) -> AWAITING_OWNER z pakietem dla Opiekuna:
+        sedno problemu + opcje A/B/odrzuć + rekomendcja. Opiekun to ostatnia instancja."""
         for task in self.state.list_tasks(status=FAILED):
             if task["retry_count"] >= CIRCUIT_BREAKER_RETRIES:
-                self.state.transition(task["id"], ESCALATED,
-                                      review_notes=(task.get("review_notes") or "") +
-                                      " | auto-eskalacja po 3 FAILED (circuit breaker)")
+                packet = (
+                    " | AWAITING_OWNER po wyczerpaniu max_retries "
+                    f"({task['retry_count']} prób FAILED). PAKIET dla Opiekuna: "
+                    "co utknęło: powtarzający się błąd wykonania (patrz review_notes/ostatnie eventy); "
+                    "opcje: [A] rekomendowane — puścić dalej do READY z podniesionym priorytetem i rolą principal-debugger, "
+                    "[B] odrzucić → BLOCKED, [C] zdekomponować na mniejsze zadanie."
+                )
+                self.state.transition(task["id"], AWAITING_OWNER, substep="OWNER_PACKET",
+                                      review_notes=(task.get("review_notes") or "") + packet)
                 self.state.add_comment(task["id"], "orchestrator",
-                                       "🚨 3 próby FAILED z rzędu → ESCALATED. Sponsorze: `list ESCALATED`")
-                self.state.record_metric("auto_escalate", {"task": task["id"]}, task["id"])
+                                       f"🧑‍💼 {task['id']}: max_retries wyczerpane ({task['retry_count']} FAILED) → AWAITING_OWNER "
+                                       "z pakietem opcji (A/B/odrzuć). Opiekun decyduje tylko tutaj — przy realnym rozjeździe.")
+                self.state.record_metric("owner_packet", {"task": task["id"], "reason": "max_retries"}, task["id"])
                 continue
             self.state.transition(task["id"], READY, substep="1/5_PLAN",
                                   retry_count=task["retry_count"] + 1,
-                                  review_notes="auto-retry po FAILED (próba %d)" % (task["retry_count"] + 2))
+                                  review_notes="auto-retry po FAILED (próba %d, backoff)" % (task["retry_count"] + 2))
             self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
 
     # --- faza 4: workery -------------------------------------------------------
@@ -188,7 +199,8 @@ class Orchestrator:
 
     def _launch_workers(self) -> None:
         # projekty nieaktywne (wstrzymane przez opiekuna) nie dostają workerów
-        tasks = [t for t in self.state.ready_tasks()
+        # claimable = READY (z zależnościami) + CHANGES_REQUESTED (pętla poprawek po CR wraca do pracy)
+        tasks = [t for t in self.state.claimable_tasks()
                  if projects.is_active(t.get("project_id") or "mikowhy-teams")]
         cap = self._max_workers_now()
         free = cap - len([t for t in self.running])  # wspólna pula też z review
@@ -234,13 +246,17 @@ class Orchestrator:
                 telegram_reporter.post_event(self.state, task,
                                              f"⚠️ *Circuit breaker* (retry>={task['retry_count']}) → rola `{PRINCIPAL_ROLE}`")
             elif task["retry_count"] >= CIRCUIT_BREAKER_RETRIES + 2 and task["role"] == PRINCIPAL_ROLE:
-                self.state.transition(task["id"], ESCALATED)
+                # wyczerpany limit prób naprawczych nawet dla principal-debugger -> pakiet dla Opiekuna
+                self.state.transition(task["id"], AWAITING_OWNER, substep="OWNER_PACKET",
+                                      review_notes=(task.get("review_notes") or "") +
+                                      " | AWAITING_OWNER: nawet principal-debugger po wyczerpaniu max_retries. "
+                                      "Opcje: [A] READY z inną rolą, [B] BLOCKED, [C] dekompozycja.")
                 _push(
-                    f"🚨 *ESKALACJA* `{task['id']}` — nawet Principal Debugger poległ. "
+                    f"🧑‍💼 *AWAITING_OWNER* `{task['id']}` — nawet Principal Debugger poległ po {task['retry_count']} próbach. "
                     f"Bloker: {task.get('review_notes', '')[:300]}")
                 t = self.state.get_task(task["id"])
                 if t:
-                    telegram_reporter.post_event(self.state, t, "🚨 *ESCALATED* — nawet Principal Debugger poległ. Czeka Product Sponsor.")
+                    telegram_reporter.post_event(self.state, t, "🧑‍💼 *AWAITING_OWNER* — wyczerpane retry, czeka decyzja Opiekuna (ostatnia instancja).")
                     telegram_reporter.update_progress(self.state, t)
 
     # --- faza 6: merge do gałęzi milestonu --------------------------------------
@@ -426,7 +442,7 @@ class Orchestrator:
                 continue
             self.state.set_kv(key, True)
             _push(
-                f"🕒 *{task['id']}* czeka na akceptację (AWAITING_APPROVAL)\n"
+                f"🧑‍💼 *{task['id']}* czeka na decyzję Opiekuna (AWAITING_OWNER — ostatnia instancja)\n"
                 f"{task['title']}\nScope: `{task['scope_paths']}`",
                 reply_markup={"inline_keyboard": [[
                     {"text": "✅ Akceptuj → READY", "callback_data": f"approve_task:{task['id']}"},
@@ -663,13 +679,13 @@ def cmd_status() -> None:
 
 
 def cmd_approve(task_id: str) -> None:
-    """Sponsor: AWAITING_APPROVAL -> READY (orchestrator może ruszyć)."""
+    """Sponsor/Opiekun: AWAITING_OWNER -> READY (decyzja ląduje w kontekście, pełny cykl)."""
     state = State()
     task = state.get_task(task_id)
     if not task:
         raise SystemExit(f"Nieznane zadanie: {task_id}")
     if task["status"] != AWAITING_APPROVAL:
-        raise SystemExit(f"{task_id} ma status {task['status']} — approve tylko z AWAITING_APPROVAL")
+        raise SystemExit(f"{task_id} ma status {task['status']} — approve tylko z AWAITING_OWNER")
     state.transition(task_id, READY, substep="1/5_PLAN",
                      review_notes=(task.get("review_notes") or "") + " | zaakceptowane przez Sponsora (CLI)")
     state.record_metric("sponsor_approve", {"task": task_id}, task_id)
@@ -773,13 +789,13 @@ def cmd_scan() -> int:
 
 
 def cmd_retry(task_id: str) -> None:
-    """Requeue: FAILED/BLOCKED/ESCALATED -> READY (nowa próba od zera)."""
+    """Requeue: FAILED/BLOCKED -> READY (nowa próba od zera; pełny cykl, nic nie omija testów/CR)."""
     state = State()
     task = state.get_task(task_id)
     if not task:
         raise SystemExit(f"Nieznane zadanie: {task_id}")
-    if task["status"] not in (FAILED, BLOCKED, ESCALATED):
-        raise SystemExit(f"{task_id} ma status {task['status']} — retry tylko z FAILED/BLOCKED/ESCALATED")
+    if task["status"] not in (FAILED, BLOCKED):
+        raise SystemExit(f"{task_id} ma status {task['status']} — retry tylko z FAILED/BLOCKED")
     state.transition(task_id, READY, substep="1/5_PLAN", retry_count=0,
                      review_notes="requeue (retry) — stare review_notes wyczyszczone")
     state.record_metric("sponsor_retry", {"task": task_id}, task_id)
@@ -787,7 +803,7 @@ def cmd_retry(task_id: str) -> None:
 
 
 def cmd_decline(task_id: str, reason: str = "") -> None:
-    """Sponsor: AWAITING_APPROVAL -> BLOCKED z uzasadnieniem."""
+    """Opiekun: AWAITING_OWNER -> BLOCKED z uzasadnieniem (odrzucenie)."""
     state = State()
     task = state.get_task(task_id)
     if not task:
@@ -921,7 +937,7 @@ def doctor() -> int:
               "STRICT READ-ONLY — git_guard.assert_writable blokuje zapisy/branchy/checkout w target" if ro
               else "zapis dozwolony")
     awaiting = [t["id"] for t in state.list_tasks() if t["status"] == "AWAITING_APPROVAL"]
-    check("AWAITING_APPROVAL nie startuje sam", True,
+    check("AWAITING_OWNER nie startuje sam", True,
           f"zablokowanych zadań: {len(awaiting)} {awaiting[:5]} — orchestrator uruchamia tylko READY")
 
     width = max(len(c[0]) for c in checks)

@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 from engine import git_guard, projects, quality_gates, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
 from engine.state import (
-    AWAITING_APPROVAL,
+    AWAITING_OWNER,
     FAILED,
     IN_REVIEW,
     READY,
@@ -66,29 +66,33 @@ def _llm_step(task: dict, step: str, user_payload: str, model: str) -> dict:
 
 
 def _ask_sponsor(state: State, task: dict, question: str, options: list | None = None) -> None:
-    """ASK_SPONSOR: zadanie nie podejmuje decyzji spoza swoich kompetencji — pyta Sponsora
-    (Telegram topic + komentarz w feedzie) i czeka: AWAITING_APPROVAL/substep=ASK_SPONSOR.
-    Odpowiedź Sponsora ląduje w review_notes (komentarz) i worker rusza dalej po approve."""
-    opts = [str(o) for o in (options or [])][:6]
+    """ASK_OWNER: agent nie podejmuje decyzji spoza swoich kompetencji — pakuje zwięzłe
+    pytanie dla Opiekuna (sedno problemu + 2-3 opcje + dlaczego automat nie może tego
+    bezpiecznie rozstrzygnąć) i czeka: AWAITING_OWNER/substep=ASK_OWNER.
+    To JEDYNY przypadek, gdy Opiekun wchodzi przed końcem flow (graniczna decyzja).
+    Odpowiedź Opiekuna ląduje w review_notes (decyzja na stałe w kontekście zadania),
+    a po approve zadanie wraca do READY i przechodzi pełny cykl."""
+    opts = [str(o) for o in (options or [])][:3] or ["A: kontynuować z bezpiecznym, odwracalnym wariantem (założenie odnotowane)",
+                                                       "B: zmienić zakres/wymaganie", "C: odrzucić zadanie"]
     opts_txt = "\n".join(f"- {o}" for o in opts)
     q = str(question)[:800]
     state.add_comment(task["id"], f"worker({task['role']})",
-                      f"❓ Pytanie do Sponsora: {q}" + (f"\nOpcje:\n{opts_txt}" if opts_txt else ""))
+                      f"🧑‍💼 Pytanie do Opiekuna (ostatnia instancja): {q}\nOpcje:\n{opts_txt}")
     try:
         telegram_reporter.post_event(state, task,
-                                     f"❓ *Pytanie* `{task['id']}` ({task['role']}): {q}"
-                                     + (f"\nOpcje: {', '.join(opts)}" if opts else "")
-                                     + "\nOdpisz w wątku zadania, potem zatwierdź.")
+                                     f"🧑‍💼 *AWAITING_OWNER* `{task['id']}` ({task['role']}): {q}"
+                                     + f"\nOpcje: {', '.join(opts)}"
+                                     + "\nOdpisz w wątku zadania, potem zatwierdź (decyzja → READY, pełny cykl).")
     except Exception:
         pass
-    state.transition(task["id"], AWAITING_APPROVAL, substep="ASK_SPONSOR",
-                     review_notes=f"Pytanie do Sponsora: {q}" + (f" | Opcje: {opts_txt}" if opts_txt else ""))
-    state.record_metric("ask_sponsor", {"question": q[:300], "options": opts}, task["id"])
-    _log(task["id"], f"ASK_SPONSOR: {q[:200]}")
+    state.transition(task["id"], AWAITING_OWNER, substep="ASK_OWNER",
+                     review_notes=f"Pakiet dla Opiekuna — co utknęło: {q} | Opcje: {opts_txt}")
+    state.record_metric("ask_owner", {"question": q[:300], "options": opts}, task["id"])
+    _log(task["id"], f"ASK_OWNER: {q[:200]}")
 
 
 def step1_plan(state: State, task: dict) -> None:
-    """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK lub ASK_SPONSOR."""
+    """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK lub ASK_OWNER (graniczna decyzja Opiekuna)."""
     t0 = time.time()
     state.transition(task["id"], "RUNNING", substep="1/5_PLAN")
     sponsor_notes = state.recent_comments(5, task_id=task["id"])
@@ -109,7 +113,7 @@ def step1_plan(state: State, task: dict) -> None:
         model=skill_compiler.model_for_role(task["role"], kind="fast"),
     )
     state.record_metric("step_time", {"step": "1/5_PLAN", "seconds": round(time.time() - t0, 2)}, task["id"])
-    if result.get("signal") == "ASK_SPONSOR":
+    if result.get("signal") in ("ASK_SPONSOR", "ASK_OWNER"):  # ASK_OWNER = alias, graniczna decyzja Opiekuna
         _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
         return
     if result.get("signal") == "SPLIT_TASK":
@@ -138,7 +142,7 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
     }
     result = _llm_step(task, "2/5_IMPL", json.dumps(payload, ensure_ascii=False),
                        model=skill_compiler.model_for_role(task["role"], kind="strong"))
-    if result.get("signal") == "ASK_SPONSOR":
+    if result.get("signal") in ("ASK_SPONSOR", "ASK_OWNER"):  # ASK_OWNER = alias, graniczna decyzja Opiekuna
         _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
         return
     files = result.get("files") or {}
@@ -440,7 +444,7 @@ def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
     _log(tid, f"LLM_EXEC start (model={model}, worktree={worktree})")
     report_rel = _llm_agent_loop(state, task, worktree, base)
     task = state.get_task(tid)
-    if task["status"] != "RUNNING":  # ASK_SPONSOR — czekamy na odpowiedź, nie commitujemy
+    if task["status"] != "RUNNING":  # ASK_OWNER/AWAITING_OWNER — czekamy na decyzję Opiekuna, nie commitujemy
         _log(tid, "LLM_EXEC zatrzymany: czekamy na Sponsora")
         return
     report = worktree / report_rel
@@ -489,7 +493,7 @@ def run(task_id: str) -> int:
         _tg(state, task_id)
         step2_implement(state, task, worktree)
         task = state.get_task(task_id)
-        if task["status"] != "RUNNING":  # np. ASK_SPONSOR — czekamy na Sponsora
+        if task["status"] != "RUNNING":  # np. AWAITING_OWNER — czekamy na decyzję Opiekuna
             _tg(state, task_id)
             return 0
         _tg(state, task_id)

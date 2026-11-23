@@ -17,9 +17,9 @@ def test_sponsor_view_structure():
         assert 0.0 <= m["progress"] <= 1.0
         assert sum(m["per_status"].values()) == m["tasks_total"]
         for b in m["blockers"]:
-            assert b["status"] in ("BLOCKED", "ESCALATED", "FAILED", "AWAITING_APPROVAL")
+            assert b["status"] in ("BLOCKED", "ESCALATED", "FAILED", "AWAITING_OWNER")
     for t in d["decisions"]:
-        assert t["status"] in ("AWAITING_APPROVAL", "ESCALATED")
+        assert t["status"] in ("AWAITING_OWNER", "ESCALATED")
         assert isinstance(t["available_actions"], list)
     assert all(t["status"] == "READY" for t in d["backlog"])
 
@@ -28,12 +28,12 @@ def test_sponsor_view_tmp_db_decision_actions():
     tmp = Path(tempfile.mkdtemp())
     s = State(db_path=tmp / "t.db")
     s.add_milestone("MS-X", "cel testowy", "feat/x", title="Temat X", project_id="mikowhy-teams")
-    s.add_task("T-A", "MS-X", 4, "tech tytul", "backend-dev", status="AWAITING_APPROVAL",
+    s.add_task("T-A", "MS-X", 4, "tech tytul", "backend-dev", status="AWAITING_OWNER",
                title_sponsor="Po ludzku: o co chodzi")
     s.add_task("T-B", "MS-X", 4, "zadanie gotowe", "worker", status="READY", priority="P0")
     d = _sponsor_view(s)
     ms = next(m for m in d["milestones"] if m["id"] == "MS-X")
-    assert ms["tasks_total"] == 2 and ms["per_status"] == {"AWAITING_APPROVAL": 1, "READY": 1}
+    assert ms["tasks_total"] == 2 and ms["per_status"] == {"AWAITING_OWNER": 1, "READY": 1}
     assert ms["progress"] == 0.0 and ms["blockers"][0]["id"] == "T-A"
     dec = next(t for t in d["decisions"] if t["id"] == "T-A")
     assert dec["title_sponsor"] == "Po ludzku: o co chodzi"

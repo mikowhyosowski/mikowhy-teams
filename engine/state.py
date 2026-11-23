@@ -19,26 +19,36 @@ DB_PATH = ROOT / ".agents" / "state.db"
 SNAPSHOT_PATH = ROOT / ".agents" / "pipeline.json"
 
 # --- Statusy zadań w DAG ---------------------------------------------------
-READY = "READY"                    # gotowe do przejęcia
-RUNNING = "RUNNING"                # przejęte przez workera
+# Docelowy model (samoregulująca się linia produkcyjna, Opiekun = ostatnia instancja):
+#   READY -> RUNNING -> IN_REVIEW -> READY_TO_MERGE -> MERGED
+#   IN_REVIEW -> CHANGES_REQUESTED -> RUNNING   (pętla poprawek po CR, bez Opiekuna)
+#   dowolny etap pracy -> AWAITING_OWNER        (tylko graniczne decyzje / wyczerpane retry)
+#   AWAITING_OWNER -> READY (decyzja w kontekście, pełny cykl) | -> BLOCKED (odrzucenie)
+#   BLOCKED -> READY tylko po usunięciu przyczyny (pełny cykl od READY)
+#   FAILED/ESCALATED zostają jako legacy (auto-retry i migracja w __init__).
+READY = "READY"                    # kolejka: kompletne, z priorytetem, gotowe do przejęcia
+RUNNING = "RUNNING"                # aktywna praca wykonawcza (implementacja, testy, poprawki)
 IN_REVIEW = "IN_REVIEW"            # czeka na niezależny Code Review
+CHANGES_REQUESTED = "CHANGES_REQUESTED"  # CR zwrócił uwagi — wraca do RUNNING z listą poprawek
 READY_TO_MERGE = "READY_TO_MERGE"  # CR zatwierdził
-MERGED = "MERGED"                  # zmergowane do gałęzi milestonu
-BLOCKED = "BLOCKED"
-FAILED = "FAILED"
-ESCALATED = "ESCALATED"            # człowiek (Product Sponsor) musi podjąć decyzję
-AWAITING_APPROVAL = "AWAITING_APPROVAL"  # zadania migracyjne czekają na ręczną akceptację Product Sponsora
+MERGED = "MERGED"                  # zmergowane do gałęzi milestonu — koniec standardowego obiegu
+AWAITING_OWNER = "AWAITING_OWNER"  # czeka na Opiekuna (Sponsora) — TYLKO ostateczność
+BLOCKED = "BLOCKED"                # twarda blokada (odrzucenie Opiekuna / brak dostępu / wyczerpane auto-retry)
+FAILED = "FAILED"                  # legacy: błąd przejściowy — auto-retry z limitem prób (backoff)
+ESCALATED = "ESCALATED"            # legacy: migrowane do AWAITING_OWNER przy starcie
+AWAITING_APPROVAL = AWAITING_OWNER  # alias wsteczny — stare odniesienia w kodzie = AWAITING_OWNER
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
     READY: {RUNNING, BLOCKED, ESCALATED},
-    RUNNING: {IN_REVIEW, READY, FAILED, BLOCKED, ESCALATED, AWAITING_APPROVAL},  # AWAITING_APPROVAL = ASK_SPONSOR (pytanie, nie decyzja)
-    IN_REVIEW: {READY_TO_MERGE, READY, ESCALATED},
-    READY_TO_MERGE: {MERGED, READY, ESCALATED},
+    RUNNING: {IN_REVIEW, CHANGES_REQUESTED, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER},
+    CHANGES_REQUESTED: {RUNNING, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER},
+    IN_REVIEW: {READY_TO_MERGE, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
+    READY_TO_MERGE: {MERGED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
     MERGED: set(),
-    FAILED: {READY, ESCALATED},  # auto-eskalacja po 3 próbach (circuit breaker)
-    BLOCKED: {READY, ESCALATED, AWAITING_APPROVAL},
-    ESCALATED: {READY},
-    AWAITING_APPROVAL: {READY, BLOCKED, ESCALATED},  # tylko człowiek (zmiana statusu na READY) odblokowuje
+    FAILED: {READY, BLOCKED, ESCALATED, AWAITING_OWNER},  # auto-retry -> READY; po max_retries -> AWAITING_OWNER
+    BLOCKED: {READY, ESCALATED, AWAITING_OWNER},          # odblokowanie WYŁĄCZNIE do READY (pełny cykl)
+    ESCALATED: {READY, AWAITING_OWNER, BLOCKED},          # legacy
+    AWAITING_OWNER: {READY, BLOCKED},                     # decyzja Opiekuna -> READY (z decyzją w kontekście); odrzucenie -> BLOCKED
 }
 
 SCHEMA = """
@@ -185,11 +195,18 @@ class State:
             ):
                 cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
                 if col not in cols:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                    try:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                    except sqlite3.OperationalError:
+                        pass  # wyścig: inny wątek/proces dodał kolumnę pierwszy (duplicate column)
             conn.execute("""CREATE TABLE IF NOT EXISTS projects (
                 project_id TEXT PRIMARY KEY, name TEXT NOT NULL,
                 target_repo_path TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0,
                 config TEXT NOT NULL DEFAULT '{}')""")
+            # migracja statusów do docelowego modelu: AWAITING_APPROVAL/ESCALATED -> AWAITING_OWNER
+            # (Opiekun jako ostatnia instancja; stare zadania nie wiszą w martwych statusach)
+            conn.execute("UPDATE tasks SET status='AWAITING_OWNER', updated_at=? "
+                         "WHERE status IN ('AWAITING_APPROVAL','ESCALATED')", (time.time(),))
 
     def set_telegram(self, task_id: str, thread_id: int | None, summary_msg_id: int | None) -> None:
         self._conn().execute(
@@ -363,12 +380,26 @@ class State:
         ok.sort(key=lambda t: (order.get(t.get("priority") or "P2", 2), t.get("created_at") or 0))
         return ok
 
+    def claimable_tasks(self) -> list[dict[str, Any]]:
+        """READY (z zależnościami) + CHANGES_REQUESTED — oba statusy worker przejmuje do RUNNING.
+
+        CHANGES_REQUESTED = pętla poprawek po Code Review: zadanie wraca do pracy
+        bez angażowania Opiekuna (lista poprawek jest w review_notes).
+        """
+        out = self.ready_tasks()
+        for t in self.list_tasks(status=CHANGES_REQUESTED):
+            if t["id"] not in {x["id"] for x in out}:
+                out.append(t)
+        order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        out.sort(key=lambda t: (order.get(t.get("priority") or "P2", 2), t.get("created_at") or 0))
+        return out
+
     def claim_task(self, task_id: str, claimed_by: str) -> dict[str, Any] | None:
-        """Atomowe przejęcie: tylko jeśli status nadal READY (ACID, bez fcntl)."""
+        """Atomowe przejęcie: tylko jeśli status nadal READY lub CHANGES_REQUESTED (ACID, bez fcntl)."""
         now = time.time()
         cur = self._conn().execute(
             """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?, started_at=?
-               WHERE id=? AND status='READY'
+               WHERE id=? AND status IN ('READY','CHANGES_REQUESTED')
                RETURNING *""",
             (claimed_by, now, now, task_id),
         )

@@ -28,7 +28,7 @@ API = "https://api.telegram.org"
 
 STATUS_ICON = {
     "READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "READY_TO_MERGE": "📦",
-    "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨",
+    "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨", "CHANGES_REQUESTED": "🛠️", "AWAITING_OWNER": "🧑‍💼",
 }
 STEP_OF = {"1/5_PLAN": 1, "2/5_IMPL": 2, "3/5_TEST": 3, "4/5_QG": 4, "4.5_SIMPLIFY": 4, "5/5_COMMIT": 5, "done": 5}
 

@@ -1,10 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "meta": {
-    "name": "Dark Factory — przepływ pracy zespołu",
+    "name": "Dark Factory — przepływ pracy (samoregulująca się linia produkcyjna, Opiekun jako ostatnia instancja)",
     "lang": "pl",
     "quick_yes": "Zgadzam się — realizuj. O nic już nie pytaj i nic nie potwierdzaj (żadnych pytań ani potwierdzeń).",
-    "description": "Diagram etapów pracy: kolejka → realizacja → review → merge → archiwum, plus tor akceptacji Sponsora (góra) i wyjątków (dół). Edytuj ten plik (lub override w .agents/flow/flow.config.json), aby zmienić etapy, przejścia, kolory, SLA i dostępne akcje. meta.quick_yes = tekst przycisku „⚡ szybka odp: TAK” w wątkach z agentem."
+    "description": "Docelowy model: READY → RUNNING → IN_REVIEW → READY_TO_MERGE → MERGED, pętla IN_REVIEW → CHANGES_REQUESTED → RUNNING (poprawki po CR bez Opiekuna), automatyczny retry błędów przejściowych (FAILED, limit prób z backoffem) zanim ktokolwiek zobaczy alert. AWAITING_OWNER (tor góra) tylko przy granicznym rozjeździe: sprzeczne wymagania, ryzykowna decyzja (API/schema/płatności/prod) lub wyczerpany max_retries — Opiekun dostaje pakiet: sedno + 2-3 opcje + rekomendcja; decyzja → READY (pełny cykl), odrzucenie → BLOCKED. BLOCKED (tor dół) odblokowuje się WYŁĄCZNIE do READY. Edytuj ten plik (lub override w .agents/flow/flow.config.json), aby zmienić etapy, przejścia, kolory, SLA i akcje. meta.quick_yes = tekst przycisku „⚡ szybka odp: TAK” w wątkach z agentem."
   },
   "layout": {
     "direction": "horizontal",
@@ -16,9 +16,9 @@
     "maxChips": 7,
     "arrowGap": 34,
     "lanes": {
-      "top": { "label": "🧑‍💼 Decyzje Sponsora", "y": 0 },
-      "main": { "label": "⚙️ Pipeline realizacji", "y": 1 },
-      "bottom": { "label": "🚨 Wyjątki (wymagają ruchu)", "y": 2 }
+      "top": { "label": "🧑‍💼 Opiekun (ostatnia instancja — tylko graniczne decyzje)", "y": 0 },
+      "main": { "label": "⚙️ Linia produkcyjna (samoregulująca się: auto-retry + pętla CR)", "y": 1 },
+      "bottom": { "label": "🚫 Blokady (BLOCKED/FAILED — wymagają usunięcia przyczyny)", "y": 2 }
     }
   },
   "theme": {
@@ -41,7 +41,7 @@
   "stages": [
     {
       "id": "queue",
-      "label": "Kolejka",
+      "label": "Kolejka (READY)",
       "icon": "📥",
       "lane": "main",
       "order": 0,
@@ -49,12 +49,12 @@
       "color": "#6e7681",
       "hot": false,
       "sla_s": 3600,
-      "description": "Zadania gotowe do przejęcia przez workera (posortowane wg priorytetu).",
+      "description": "Zadania kompletne (kontekst + AC + priorytet), gotowe do przejęcia przez workera. Tu trafiają też po decyzji Opiekuna i po odblokowaniu — zawsze pełny, czysty cykl.",
       "actions": ["comment", "set_priority"]
     },
     {
       "id": "working",
-      "label": "Realizacja",
+      "label": "Realizacja (RUNNING)",
       "icon": "🔨",
       "lane": "main",
       "order": 1,
@@ -62,120 +62,139 @@
       "color": "#1f6feb",
       "hot": false,
       "sla_s": 7200,
-      "description": "Zadania aktualnie realizowane przez agentów (zegar tyka na żywo).",
+      "description": "Aktywna praca agenta: implementacja, testy, lokalne poprawki. Błędy przejściowe (timeout/LLM/infra) = automatyczny retry z backoffem w workerze — bez alertu dla nikogo.",
+      "actions": ["comment", "set_priority"]
+    },
+    {
+      "id": "changes",
+      "label": "Poprawki po review (CHANGES_REQUESTED)",
+      "icon": "🛠️",
+      "lane": "main",
+      "order": 2,
+      "statuses": ["CHANGES_REQUESTED"],
+      "color": "#d29922",
+      "hot": false,
+      "sla_s": 5400,
+      "description": "Code Review wykrył usterki — zadanie wraca do RUNNING z konkretną listą poprawek (review_notes). Pętla naprawcza bez udziału Opiekuna, do limitu prób.",
       "actions": ["comment", "set_priority"]
     },
     {
       "id": "review",
-      "label": "Code review",
+      "label": "Code review (IN_REVIEW)",
       "icon": "🔍",
       "lane": "main",
-      "order": 2,
+      "order": 3,
       "statuses": ["IN_REVIEW"],
       "color": "#a371f7",
       "hot": false,
       "sla_s": 3600,
-      "description": "Czekają na niezależny code review.",
+      "description": "Niezależny przegląd: testy, lint/typy, zgodność ze specyfikacją i AC. Uwagi → CHANGES_REQUESTED; OK → READY_TO_MERGE. Kod nie przechodzi na słowo autora.",
       "actions": ["comment", "set_priority"]
     },
     {
       "id": "merge",
-      "label": "Do merge'a",
+      "label": "Do merge'a (READY_TO_MERGE)",
       "icon": "📤",
       "lane": "main",
-      "order": 3,
+      "order": 4,
       "statuses": ["READY_TO_MERGE"],
       "color": "#238636",
       "hot": false,
       "sla_s": 1800,
-      "description": "CR zatwierdził — czeka na merge do gałęzi milestonu.",
+      "description": "CR zaliczony — paczka gotowa do włączenia do gałęzi milestonu (auto-merge gdy polityka projektu na to pozwala).",
       "actions": ["comment"]
     },
     {
       "id": "done",
-      "label": "Zmergowane",
+      "label": "Zmergowane (MERGED)",
       "icon": "✅",
       "lane": "main",
-      "order": 4,
+      "order": 5,
       "statuses": ["MERGED"],
       "color": "#2ea043",
       "hot": false,
       "sla_s": 0,
-      "description": "Zmergowane — koniec przepływu (archiwum).",
+      "description": "Zmergowane — koniec standardowego obiegu (archiwum).",
       "actions": ["comment"]
     },
     {
-      "id": "approval",
-      "label": "Czeka na Sponsora",
-      "icon": "✍️",
+      "id": "owner",
+      "label": "Czeka na Opiekuna (AWAITING_OWNER)",
+      "icon": "🧑‍💼",
       "lane": "top",
       "order": 0,
-      "statuses": ["AWAITING_APPROVAL"],
+      "statuses": ["AWAITING_OWNER"],
       "color": "#b08800",
       "hot": true,
       "sla_s": 3600,
-      "description": "Zadania zatrzymane decyzją Sponsora — pulsują, gdy czekają.",
+      "description": "TYLKO ostateczność: sprzeczne/niejednoznaczne wymagania biznesowe, ryzykowna decyzja o dużym koszcie cofnięcia (API/schema/płatności/prod/zakres) lub wyczerpany max_retries. Opiekun dostaje pakiet: sedno problemu + 2-3 opcje + rekomendcja. Decyzja → READY (z dopisaną decyzją do kontekstu), odrzucenie → BLOCKED.",
       "actions": ["approve", "decline", "comment", "set_priority"]
     },
     {
-      "id": "exceptions",
-      "label": "Wyjątki",
-      "icon": "🚨",
+      "id": "blocked",
+      "label": "Zablokowane (BLOCKED / FAILED)",
+      "icon": "🚫",
       "lane": "bottom",
       "order": 0,
-      "statuses": ["FAILED", "ESCALATED", "BLOCKED"],
+      "statuses": ["BLOCKED", "FAILED"],
       "color": "#f85149",
       "hot": true,
       "sla_s": 0,
-      "description": "FAILED / ESCALATED / BLOCKED — wymagają ręcznego ruchu (retry lub decyzja).",
+      "description": "Twarda blokada: odrzucenie Opiekuna, brak dostępu/zależności zewnętrznej, wyczerpane automatyczne próby (max_retries). FAILED = błąd przejściowy czekający na auto-retry z backoffem. Odblokowanie prowadzi WYŁĄCZNIE do READY — pełny cykl, nic nie omija testów ani CR.",
       "actions": ["retry", "comment", "set_priority"]
     }
   ],
   "transitions": [
     { "from": "queue", "to": "working", "label": "przejmij", "icon": "▶️", "kind": "auto" },
-    { "from": "working", "to": "review", "label": "na review", "icon": "🔍", "kind": "auto" },
+    { "from": "working", "to": "review", "label": "zmiany + testy zielone", "icon": "🔍", "kind": "auto" },
+    { "from": "review", "to": "changes", "label": "uwagi z CR", "icon": "🛠️", "kind": "auto" },
+    { "from": "changes", "to": "working", "label": "poprawki (do limitu prób)", "icon": "🔁", "kind": "auto" },
     { "from": "review", "to": "merge", "label": "CR OK", "icon": "👍", "kind": "auto" },
     { "from": "merge", "to": "done", "label": "merge", "icon": "🔀", "kind": "auto" },
-    { "from": "working", "to": "approval", "label": "ASK_SPONSOR", "icon": "❓", "kind": "sponsor" },
-    { "from": "approval", "to": "queue", "label": "zaakceptuj → READY", "icon": "✅", "kind": "sponsor", "action": "approve" },
-    { "from": "approval", "to": "exceptions", "label": "odrzuć → BLOCKED", "icon": "🛑", "kind": "sponsor", "action": "decline" },
-    { "from": "working", "to": "exceptions", "label": "błąd/eskalacja", "icon": "💥", "kind": "auto" },
-    { "from": "exceptions", "to": "queue", "label": "retry → READY", "icon": "🔁", "kind": "sponsor", "action": "retry" },
-    { "from": "merge", "to": "exceptions", "label": "eskalacja", "icon": "🚨", "kind": "auto" }
+    { "from": "working", "to": "blocked", "label": "błąd przejściowy (auto-retry) / blokada", "icon": "💥", "kind": "auto" },
+    { "from": "changes", "to": "blocked", "label": "utknął w pętli błędów", "icon": "💥", "kind": "auto" },
+    { "from": "review", "to": "blocked", "label": "brak postępu po N próbach", "icon": "💥", "kind": "auto" },
+    { "from": "working", "to": "owner", "label": "ASK_OWNER (niejednoznaczność / ryzyko)", "icon": "❓", "kind": "owner" },
+    { "from": "changes", "to": "owner", "label": "max_retries wyczerpane", "icon": "❓", "kind": "owner" },
+    { "from": "review", "to": "owner", "label": "sprzeczne wymagania", "icon": "❓", "kind": "owner" },
+    { "from": "blocked", "to": "queue", "label": "retry → READY (pełny cykl)", "icon": "🔁", "kind": "owner", "action": "retry" },
+    { "from": "owner", "to": "queue", "label": "decyzja Opiekuna → READY", "icon": "✅", "kind": "owner", "action": "approve" },
+    { "from": "owner", "to": "blocked", "label": "odrzuć → BLOCKED", "icon": "🛑", "kind": "owner", "action": "decline" },
+    { "from": "merge", "to": "blocked", "label": "eskalacja przy merge'u", "icon": "🚨", "kind": "auto" }
   ],
   "actions": {
     "approve": {
-      "label": "Zaakceptuj",
+      "label": "Zaakceptuj decyzję",
       "icon": "✅",
       "type": "approve",
-      "allowed_from": ["AWAITING_APPROVAL"],
+      "allowed_from": ["AWAITING_OWNER"],
       "target_status": "READY",
       "requires_reason": false,
-      "confirm": "Zaakceptować zadanie i puścić je do kolejki (READY)?"
+      "confirm": "Zaakceptować decyzję Opiekuna i puścić zadanie do kolejki (READY — pełny cykl)?"
     },
     "decline": {
       "label": "Odrzuć",
       "icon": "🛑",
       "type": "decline",
-      "allowed_from": ["AWAITING_APPROVAL"],
+      "allowed_from": ["AWAITING_OWNER"],
       "target_status": "BLOCKED",
       "requires_reason": true,
-      "confirm": "Odrzucić zadanie (→ BLOCKED)? Podaj powód."
+      "confirm": "Odrzucić zadanie (→ BLOCKED)? Podaj powód — odblokowanie będzie tylko przez READY."
     },
     "retry": {
-      "label": "Retry",
+      "label": "Retry → READY",
       "icon": "🔁",
       "type": "retry",
-      "allowed_from": ["FAILED", "BLOCKED", "ESCALATED"],
+      "allowed_from": ["FAILED", "BLOCKED"],
       "target_status": "READY",
       "requires_reason": false,
-      "confirm": "Wstawić zadanie ponownie do kolejki (READY, retry_count=0)?"
+      "confirm": "Odblokować zadanie do READY (pełny cykl od zera, retry_count=0)?"
     },
     "comment": {
       "label": "Komentarz",
       "icon": "💬",
       "type": "comment",
-      "allowed_from": ["READY", "RUNNING", "IN_REVIEW", "READY_TO_MERGE", "MERGED", "FAILED", "BLOCKED", "ESCALATED", "AWAITING_APPROVAL"],
+      "allowed_from": ["READY", "RUNNING", "CHANGES_REQUESTED", "IN_REVIEW", "READY_TO_MERGE", "MERGED", "FAILED", "BLOCKED", "AWAITING_OWNER"],
       "target_status": null,
       "requires_reason": true,
       "text_label": "Treść komentarza (leci też na PR):",
@@ -185,7 +204,7 @@
       "label": "Priorytet",
       "icon": "🎚️",
       "type": "set_priority",
-      "allowed_from": ["READY", "RUNNING", "IN_REVIEW", "READY_TO_MERGE", "FAILED", "BLOCKED", "ESCALATED", "AWAITING_APPROVAL"],
+      "allowed_from": ["READY", "RUNNING", "CHANGES_REQUESTED", "IN_REVIEW", "READY_TO_MERGE", "FAILED", "BLOCKED", "AWAITING_OWNER"],
       "target_status": null,
       "requires_reason": false,
       "param": "priority",

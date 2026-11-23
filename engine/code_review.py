@@ -20,9 +20,9 @@ sys.path.insert(0, str(ROOT))
 
 from engine import git_guard, lessons_gardener, projects, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
-from engine.state import IN_REVIEW, READY, READY_TO_MERGE, State
+from engine.state import AWAITING_OWNER, CHANGES_REQUESTED, IN_REVIEW, READY_TO_MERGE, State
 
-CIRCUIT_BREAKER_RETRIES = 3
+CIRCUIT_BREAKER_RETRIES = 3  # max prób pętli CR -> po limicie AWAITING_OWNER (pakiet dla Opiekuna)
 
 
 def review(task_id: str) -> int:
@@ -74,28 +74,37 @@ def review(task_id: str) -> int:
             telegram_reporter.update_progress(state, t)
         return 0
 
-    # REJECTED — system sam się uczy (zmiana #2: lekcja per-stack, nie globalnie)
+    # REJECTED — pętla naprawcza: CHANGES_REQUESTED -> worker wraca do RUNNING z listą poprawek.
+    # Opiekun NIE jest angażowany w zwykłe poprawki kodu (samoregulująca się linia produkcyjna).
     notes = verdict.get("notes", [])
+    reasons = "; ".join((n.get("rule", str(n)) if isinstance(n, dict) else str(n)) for n in notes)
     state.add_comment(task_id, "code-reviewer",
-                      f"🔍 CR REJECTED (próba {task['retry_count'] + 1}): " +
-                      "; ".join((n.get("rule", str(n)) if isinstance(n, dict) else str(n)) for n in notes)[:300])
-    state.transition(task_id, READY, retry_count=task["retry_count"] + 1,
-                     review_notes=json.dumps(verdict, ensure_ascii=False))
-    t = state.get_task(task_id)
-    if t:
-        reasons = "; ".join((n.get("rule", str(n)) if isinstance(n, dict) else str(n)) for n in notes)[:500]
-        telegram_reporter.post_event(state, t, f"🔍 CR *REJECTED* (próba {task['retry_count'] + 1}): {reasons}")
-        telegram_reporter.update_progress(state, t)
+                      f"🔍 CR REJECTED (próba {task['retry_count'] + 1}) → CHANGES_REQUESTED: " + reasons[:300])
+    if task["retry_count"] + 1 >= CIRCUIT_BREAKER_RETRIES:
+        # limit prób pętli CR wyczerpany -> pakiet dla Opiekuna (ostatnia instancja), nie rutynowa eskalacja
+        state.transition(task_id, AWAITING_OWNER, substep="OWNER_PACKET", retry_count=task["retry_count"] + 1,
+                         review_notes=json.dumps(verdict, ensure_ascii=False) +
+                         " | AWAITING_OWNER: CR odrzucił po wyczerpaniu max_retries. "
+                         "Opcje: [A] READY z rolą principal-debugger, [B] BLOCKED, [C] dekompozycja.")
+        state.record_metric("circuit_breaker_owner", {"task": task_id}, task_id)
+        t = state.get_task(task_id)
+        if t:
+            telegram_reporter.post_event(state, t,
+                                         f"🧑‍💼 CR odrzucił {task['retry_count'] + 1}. próbę z rzędu → AWAITING_OWNER (pakiet A/B/odrzuć)")
+            telegram_reporter.update_progress(state, t)
+    else:
+        state.transition(task_id, CHANGES_REQUESTED, retry_count=task["retry_count"] + 1,
+                         review_notes=json.dumps(verdict, ensure_ascii=False))
+        t = state.get_task(task_id)
+        if t:
+            telegram_reporter.post_event(state, t, f"🛠️ CR *CHANGES_REQUESTED* (próba {task['retry_count'] + 1}): {reasons[:500]}")
+            telegram_reporter.update_progress(state, t)
     for note in notes:
         rule = note.get("rule") if isinstance(note, dict) else str(note)
         if rule:
             lessons_gardener.add_lesson(stack="python-3.14-async", rule=rule, task_id=task_id)
     state.record_metric("cr_reject", {"retry": task["retry_count"] + 1, "notes": notes}, task_id)
     skill_compiler.record_skill_usage(task, "REJECTED")         # Skill Fitness Score
-
-    if task["retry_count"] + 1 >= CIRCUIT_BREAKER_RETRIES:
-        # Circuit breaker: orchestrator podmieni rolę na principal-debugger
-        state.record_metric("circuit_breaker", {"task": task_id}, task_id)
     return 0
 
 

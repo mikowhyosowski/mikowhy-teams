@@ -4,9 +4,9 @@
 
 Funkcje:
   - tabela zadań: klik w wiersz = szczegóły zadania (panel boczny)
-  - zadania AWAITING_APPROVAL są PODŚWIETLONE (pulsują żółte) — to czeka na Ciebie
+  - zadania AWAITING_OWNER są PODŚWIETLONE (pulsują żółte) — to czeka na Ciebie
   - w szczegółach: komentarze agentów, pole do komentarza Sponsora,
-    przyciski ✅ Zaakceptuj / 🛑 Odrzuć (dla AWAITING_APPROVAL), link PR na GitHubie
+    przyciski ✅ Zaakceptuj / 🛑 Odrzuć (dla AWAITING_OWNER), link PR na GitHubie
   - API: GET /api/state, GET /api/task/<id>, POST /api/task/<id>/{comment,approve,decline}
 Odświeżanie: fetch /api/state co 2s. Zero zależności (stdlib http.server).
 """
@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 from engine import projects
 from engine.state import State
 
-ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
+ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "CHANGES_REQUESTED": "🛠️", "AWAITING_OWNER": "🧑‍💼",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
 VERSION = "2.6.4"
@@ -135,7 +135,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  /* żywe ikony / kolory statusów */
  .ic{display:inline-block}
  .ic-RUNNING{animation:spin 1s linear infinite;color:#58a6ff}
- .ic-AWAITING_APPROVAL{animation:pulseIco 1.2s infinite;color:#b08800}
+ .ic-AWAITING_OWNER{animation:pulseIco 1.2s infinite;color:#b08800}
+.ic-CHANGES_REQUESTED{color:#d29922}
  .ic-FAILED,.ic-ESCALATED{color:#f85149;animation:pulseIco .8s infinite}
  .ic-MERGED{color:#3fb950}
  .ic-READY{color:#8b949e}
@@ -144,7 +145,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  tr.running td{background:#0d2137}
  tr.running{box-shadow:inset 3px 0 0 #1f6feb}
  /* kolory wierszy wg statusu — status widać od razu */
- tr.st-AWAITING_APPROVAL td{background:#3d3000}
+ tr.st-AWAITING_OWNER td{background:#3d3000}
+tr.st-CHANGES_REQUESTED td{background:#2e2410}
  tr.st-RUNNING td{background:#0d2137}
  tr.st-IN_REVIEW td{background:#241b38}
  tr.st-READY_TO_MERGE td{background:#0d3038}
@@ -154,7 +156,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  tr.st-READY td{background:#11151c}
  .chip{border-left:3px solid #30363d}
  .chip.st-RUNNING{border-left-color:#58a6ff}
- .chip.st-AWAITING_APPROVAL{border-left-color:#b08800}
+ .chip.st-AWAITING_OWNER{border-left-color:#b08800}
+.chip.st-CHANGES_REQUESTED{border-left-color:#d29922}
  .chip.st-IN_REVIEW{border-left-color:#a371f7}
  .chip.st-READY_TO_MERGE{border-left-color:#39c5cf}
  .chip.st-MERGED{border-left-color:#3fb950}
@@ -564,7 +567,7 @@ function renderStFilters(d){
   }).join('') + `<button class="pchip reset" onclick="resetSts()">✖ wszystkie</button>`;
 }
 function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
-const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','AWAITING_APPROVAL':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
+const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','CHANGES_REQUESTED':'#d29922','AWAITING_OWNER':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
 function pbadge(pid){ return `<span class="pbadge" style="background:${projColor(pid||'(brak)')}">${esc(pid||'(brak)')}</span>`; }
 function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); persistFilters(); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna — bez dubli renderu */ }
@@ -669,10 +672,10 @@ async function refreshInner(){
   const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)') && !hiddenSts.has(t.status));
   renderProjFilters(d, visTasks);
   renderStFilters(d);
-  const alerts = visTasks.filter(t=>t.status==='AWAITING_APPROVAL');
+  const alerts = visTasks.filter(t=>t.status==='AWAITING_OWNER');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
-    `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
-       <b>${t.substep==='ASK_SPONSOR'?'❓ ODPOWIEDZ':'🚨 TWÓJ RUCH'}</b> <b>${esc(t.id)}</b> ${sbadge(t.status)} ${pbadge(t.project_id)}
+    `<div class="alert-card ${['ASK_OWNER','ASK_SPONSOR'].includes(t.substep)?'ask':''}" onclick="openTask('${t.id}')">
+       <b>${['ASK_OWNER','ASK_SPONSOR'].includes(t.substep)?'❓ ODPOWIEDZ':'🚨 TWÓJ RUCH'}</b> <b>${esc(t.id)}</b> ${sbadge(t.status)} ${pbadge(t.project_id)}
        <div>${esc((t.title_sponsor||t.title||'').slice(0,80))}</div>
        <div class="muted">${esc((t.review_notes||'').slice(0,120))}</div>
        <div class="muted">czeka ${fmtDur(t.age||0)} · ${esc(t.persona||t.role||'')}</div>
@@ -681,11 +684,11 @@ async function refreshInner(){
     `<span class="muted">🗂</span> ${pbadge(p.project_id)} ${p.active===false?'🛑 <b style="color:#f85149">NIEAKTYWNY</b>':''} policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
   const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
   // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
-  const FLOW = ['AWAITING_APPROVAL','READY','RUNNING','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
+  const FLOW = ['AWAITING_OWNER','READY','RUNNING','CHANGES_REQUESTED','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
   const byStatus = {}; for(const t of visTasks){ (byStatus[t.status] = byStatus[t.status]||[]).push(t); }
   document.getElementById('flow').innerHTML = FLOW.map((st,i) => {
     const items = byStatus[st]||[];
-    const hot = st==='AWAITING_APPROVAL' && items.length, run = st==='RUNNING';
+    const hot = st==='AWAITING_OWNER' && items.length, run = st==='RUNNING';
     const chips = items.slice(0,8).map(t =>
       `<span class="chip st-${st}" onclick="openTask('${t.id}')">${PIC[t.priority||'P2']||''}<b>${esc(t.id)}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
        <span class="who">${esc(t.persona||t.role||'')}</span></span>`).join('') + (items.length>8?`<span class="chip muted">+${items.length-8} więcej…</span>`:'');
@@ -698,11 +701,11 @@ async function refreshInner(){
   const sorted = [...visTasks].sort((a,b)=>(PRIO[b.priority||'P2']-PRIO[a.priority||'P2']) || ((b.status==='RUNNING')-(a.status==='RUNNING')) || ((b.updated_at||0)-(a.updated_at||0)));
   const nowCards = [];
   for(const t of sorted){
-    if(t.status==='AWAITING_APPROVAL') awaiting++;
+    if(t.status==='AWAITING_OWNER') awaiting++;
     if(t.status==='RUNNING') nowCards.push(t);
     const tr = tb.insertRow();
     tr.className = 'st-' + t.status;
-    if(t.status==='AWAITING_APPROVAL') tr.className+=' awaiting';
+    if(t.status==='AWAITING_OWNER') tr.className+=' awaiting';
     if(t.status==='RUNNING') tr.className+=' running';
     if(taskStatus[t.id] && taskStatus[t.id] !== t.status){ tr.className += ' flash'; }
     taskStatus[t.id] = t.status;
@@ -715,7 +718,7 @@ async function refreshInner(){
     const res = t.res ? ` <span class="muted" title="zużycie workera (pid ${t.res.pid})">⚙️${t.res.cpu}% 🧠${t.res.rss_mb}MB</span>` : '';
     const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>${res}` : '';
     tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
-      <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> '):''}${sbadge(t.status)}</td>
+      <td class="st">${t.status==='AWAITING_OWNER'?(['ASK_OWNER','ASK_SPONSOR'].includes(t.substep)?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> '):''}${sbadge(t.status)}</td>
       <td class="muted">${esc(t.substep||'')}</td><td>${t.retry_count}</td>
       <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted">${pbadge(t.project_id)}</td>
       <td class="muted">${clock}</td>
@@ -839,7 +842,7 @@ async function openTask(id, keep){
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
     <div class="kv"><b>uwagi:</b> ${esc((d.review_notes||'').slice(0,300))}</div>`;
-    if(d.status==='AWAITING_APPROVAL'){
+    if(d.status==='AWAITING_OWNER'){
       body += `<button class="ok" onclick="approve()">✅ Zaakceptuj → READY</button>
                <button class="no" onclick="decline()">🛑 Odrzuć → BLOCKED</button>`;
     }
@@ -1917,14 +1920,14 @@ def _snapshot(s: State) -> dict:
             tasks[-1]["elapsed"] = max(0, time.time() - t["started_at"])
         if t.get("status") == "RUNNING":
             tasks[-1]["res"] = _proc_stats(t.get("claimed_by"))
-    tasks.sort(key=lambda t: (t["status"] != "AWAITING_APPROVAL", t["status"] != "RUNNING", -(t["updated_at"] or 0)))
+    tasks.sort(key=lambda t: (t["status"] != "AWAITING_OWNER", t["status"] != "RUNNING", t["status"] != "CHANGES_REQUESTED", -(t["updated_at"] or 0)))
     events = s.recent_events(30)
     # statystyki kolejki: ile czeka, ile już "spóźnionych" (READY/AWAITING starsze niż 1h), ile długo biegnie
     stats = {
         "waiting": sum(1 for t in tasks if t["status"] == "READY"),
-        "awaiting": sum(1 for t in tasks if t["status"] == "AWAITING_APPROVAL"),
+        "awaiting": sum(1 for t in tasks if t["status"] == "AWAITING_OWNER"),
         "running": sum(1 for t in tasks if t["status"] == "RUNNING"),
-        "overdue": sum(1 for t in tasks if t["status"] in ("READY", "AWAITING_APPROVAL") and t.get("age", 0) > 3600),
+        "overdue": sum(1 for t in tasks if t["status"] in ("READY", "AWAITING_OWNER") and t.get("age", 0) > 3600),
         "running_long": sum(1 for t in tasks if t["status"] == "RUNNING" and (t.get("elapsed") or 0) > 3600),
     }
     # zespół: jedna karta per rola (persona + backstory + aktualne zadanie + liczniki)
@@ -2039,7 +2042,7 @@ def _run_ask(qid: str, text: str) -> None:
 
 def _sponsor_view(s: State) -> dict:
     """Widok opiekuna (Sponsor): tematy (milestone'y) z postępem per status + blokerami,
-    zadania wymagające decyzji (AWAITING_APPROVAL/ESCALATED) z dostępnymi akcjami z flow configa,
+    zadania wymagające decyzji (AWAITING_OWNER/ESCALATED) z dostępnymi akcjami z flow configa,
     oczekujące zgody (approvals) i backlog READY. Czytelny podgląd „o co chodzi”."""
     from engine.flow import flow as flowmod
     from engine import github_bridge, personas
@@ -2070,7 +2073,7 @@ def _sponsor_view(s: State) -> dict:
             per[t["status"]] = per.get(t["status"], 0) + 1
         total = len(ts)
         merged = per.get("MERGED", 0)
-        blockers = [t_brief(t) for t in ts if t["status"] in ("BLOCKED", "ESCALATED", "FAILED", "AWAITING_APPROVAL")]
+        blockers = [t_brief(t) for t in ts if t["status"] in ("BLOCKED", "ESCALATED", "FAILED", "AWAITING_OWNER")]
         blockers.sort(key=lambda b: -b["age"])
         milestones.append({**m, "tasks_total": total, "per_status": per, "merged": merged,
                            "progress": (merged / total) if total else 0.0, "open_tasks": total - merged,
@@ -2080,7 +2083,7 @@ def _sponsor_view(s: State) -> dict:
 
     decisions = []
     for t in tasks:
-        if t["status"] in ("AWAITING_APPROVAL", "ESCALATED"):
+        if t["status"] in ("AWAITING_OWNER", "ESCALATED"):
             stage = flowmod.stage_of_status(cfg, t["status"])
             acts: list[str] = []
             for st in cfg.get("stages", []):
@@ -2323,7 +2326,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, b'{"ok":true}', "application/json")
             return
         if u.path == "/api/milestone":
-            # opiekun zakłada nowy temat (milestone) — read-only dopiero po review, jak zadania AWAITING_APPROVAL
+            # opiekun zakłada nowy temat (milestone) — read-only dopiero po review, jak zadania AWAITING_OWNER
             mid = str(body.get("id") or "").strip()
             goal = str(body.get("goal") or "").strip()
             branch = str(body.get("branch") or "").strip() or ("feat/" + (mid.lower().replace(" ", "-") if mid else " temat"))

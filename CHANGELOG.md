@@ -1,5 +1,24 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.0] — 2026-11-23 — docelowy model przepływu: samoregulująca się linia produkcyjna, Opiekun jako ostatnia instancja
+- 🔄 **Nowy zestaw statusów** (`engine/state.py`): `READY → RUNNING → IN_REVIEW → READY_TO_MERGE → MERGED` + pętla
+  `IN_REVIEW → CHANGES_REQUESTED → RUNNING` (poprawki po CR bez Opiekuna) + `AWAITING_OWNER` (tylko graniczne decyzje)
+  + `BLOCKED` (odblokowanie WYŁĄCZNIE do READY — pełny cykl). `AWAITING_APPROVAL`/`ESCALATED` = legacy alias/migracja do AWAITING_OWNER
+- 🤖 **Auto-retry zamiast eskalacji**: błędy przejściowe (FAILED: timeout/LLM/infra) lecą auto-retry z backoffem do READY;
+  dopiero po wyczerpaniu max_retries (circuit breaker, też po stronie CR) → `AWAITING_OWNER` z **pakietem dla Opiekuna**
+  (sedno problemu + opcje A/B/odrzuć + rekomendcja), nie rutynowy alert
+- 🔍 **Niezależny CR przed merge**: REJECTED → `CHANGES_REQUESTED` (lista poprawek w review_notes, worker przejmuje jak READY
+  przez `claimable_tasks()`), APPROVED → READY_TO_MERGE; kod nie przechodzi na słowo autora
+- 🧑‍💼 **ASK_OWNER** (`worker_lifecycle._ask_sponsor`): agent przy niejednoznaczności/ryzyku pakuje pytanie + 2-3 opcje
+  i czeka w AWAITING_OWNER; decyzja Opiekuna ląduje na stałe w kontekście zadania, po approve → READY (pełny cykl)
+- 🌊 Zakładka Flow = 3 tory: góra **Opiekun (ostatnia instancja, hot)**, środek **linia produkcyjna**
+  (Kolejka → Realizacja → Poprawki po review → Code review → Do merge'a → Zmergowane), dół **Blokady (BLOCKED/FAILED)**;
+  `default_flow.json` v2 + przejścia wg modelu (16), akcje Opiekuna tylko z AWAITING_OWNER (approve→READY, decline→BLOCKED, retry→READY)
+- 🗄️ Migracja przy starcie State: `AWAITING_APPROVAL`/`ESCALATED` → `AWAITING_OWNER`; fix race `ALTER TABLE ... duplicate column`
+  przy równoczesnych State()
+- ✅ Testy: `test_model_valid_transitions`, `test_legacy_status_migration`, `test_claim_changes_requested`,
+  `test_flow_config_v2_model`, `test_apply_action_owner_lifecycle` — 46 passed
+
 ## [2.6.5] — 2026-11-23
 - 🏗️ Zakładka 🌊 Flow ma teraz **dwa pod-widoki** (przełącznik, stan w localStorage + hash `fv=org`): ⚙️ **Flow pracy** (bez zmian)
   i 🏗️ **Flow stanowisk** — org chart hierarchii zespołu: kto jest czyim szefem (`reports_to`), każda rola = osoba (persona: imię,

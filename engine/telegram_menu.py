@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 API = "https://api.telegram.org"
 LOCK_PATH = ROOT / ".agents" / "telegram.lock"
 MAX_LIST_BUTTONS = 25
-STATUSES = ["READY", "RUNNING", "IN_REVIEW", "AWAITING_APPROVAL", "READY_TO_MERGE", "MERGED", "FAILED", "BLOCKED", "ESCALATED"]
+STATUSES = ["AWAITING_OWNER", "READY", "RUNNING", "CHANGES_REQUESTED", "IN_REVIEW", "READY_TO_MERGE", "MERGED", "BLOCKED", "FAILED", "ESCALATED"]
 ICON = telegram_reporter.STATUS_ICON
 
 
@@ -143,7 +143,7 @@ def _task_text(state: State, task_id: str) -> str:
 
 def _task_kb(task_id: str, status: str) -> dict:
     rows = []
-    if status == "AWAITING_APPROVAL":
+    if status == "AWAITING_OWNER":  # Opiekun jako ostatnia instancja
         rows.append([{"text": "✅ Approve → READY", "callback_data": f"menu:act:approve:{task_id}"},
                      {"text": "🛑 Decline → BLOCKED", "callback_data": f"menu:act:decline:{task_id}"}])
     rows.append([{"text": "💬 Komentuj (następna wiadomość = uwaga)", "callback_data": f"menu:act:comment:{task_id}"},
@@ -276,7 +276,7 @@ def handle_text(state: State, chat_id: str, text: str) -> None:
 
 
 def _handle_legacy_callback(state: State, cb_id: str, data: str) -> None:
-    """Stare callbacki: approve:/decline: (deploy 7b) i approve_task:/decline_task: (AWAITING_APPROVAL)."""
+    """Stare callbacki: approve:/decline: (deploy 7b) i approve_task:/decline_task: (AWAITING_OWNER)."""
     action, _, ref = data.partition(":")
     if action == "approve":
         state.resolve_approval(ref, "APPROVED")
