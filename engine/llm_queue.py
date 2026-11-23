@@ -191,10 +191,10 @@ def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", s
         return row[0]
     jid = "llmj-" + uuid.uuid4().hex[:12]
     s._conn().execute(
-        "INSERT INTO llm_jobs(id, kind, payload, status, attempts, delay_until, lease_until, requester, step, priority, dedup_key, model, created_at) "
-        "VALUES(?,?,?,'QUEUED',0,0,0,?,?,?,?,?,?)",
+        "INSERT INTO llm_jobs(id, kind, payload, status, attempts, delay_until, lease_until, requester, step, priority, dedup_key, model, created_at, task_id) "
+        "VALUES(?,?,?,  'QUEUED',0,0,0,  ?,?,?,?,?,?,?)",
         (jid, kind, json.dumps(payload, ensure_ascii=False), requester, step, prio, dk,
-         str(payload.get("model", "")), now))
+         str(payload.get("model", "")), now, tid))
     s.record_metric("llm_job_enqueued", {"job": jid, "kind": kind, "step": step, "requester": requester, "priority": prio}, None)
     # v2.7.23: rejestr operacji — job LLM jako op kind='llm' (QUEUED = „czeka na wysłanie”), ref=job id
     s.op_enqueue("llm", f"🤖 LLM {kind}" + (f" · {step}" if step else "") + (f" · {requester}" if requester else ""),

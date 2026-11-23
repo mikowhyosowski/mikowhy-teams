@@ -105,8 +105,8 @@ def test_gateway_complete_uses_queue(monkeypatch):
     # v2: per-model timeout w payloadu i priorytet zadania w kolejce
     assert calls["enq"]["timeout_s"] == llm_queue.model_timeout_s("fast-model") == 120
     assert calls["prio"] == "P2"
-    # v4: cap timeoutu — min(stary wzór, 2 próby + 120s), żeby worker nie wisiał 19 min
-    assert calls["wait_timeout"] == min(120 * llm_queue.MAX_ATTEMPTS + 240, 120 * 2 + 120)
+    # v2.7.25: floor czekania >= drain kolejki (backlog ~26 jobów × 2–4 min nie może ubijać workera TimeoutError)
+    assert calls["wait_timeout"] == 3600
     out2 = g.complete(system="sys", user="usr", step="STEP2", model="strong-model", priority="P0")
     assert calls["enq"]["timeout_s"] == 300 and calls["prio"] == "P0"
 

@@ -258,8 +258,10 @@ class VibeCliGateway(LLMGateway):
                                     requester="gateway", step=step, priority=priority)
             # czekamy aż job przejdzie próby w kolejce; v4: krótszy cap (max 2 próby + 120s zapasu) —
             # przy timeout worker od razu dostaje wyjątek i robi własny auto-retry zadania (nie wisi 19 min)
-            return llm_queue.wait_result(s, jid, timeout=min(job_timeout * llm_queue.MAX_ATTEMPTS + 240,
-                                                             job_timeout * 2 + 120))
+            # v2.7.25: floor 900s — job czeka w kolejce (serialny dispatcher, backlog 25+ jobów),
+            # wait cap pod backlog NIE MOŻE być krótszy niż drain kolejki; lease-reclaim i tak
+            # odzyskuje zawieszone joby, więc 1h hard-cap jest bezpieczny dla worker thread
+            return llm_queue.wait_result(s, jid, timeout=3600)
         alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
         enabled = os.environ.get("VIBE_ENABLED_TOOLS", "__none__")
         attempts = 3 if enabled == "__none__" else 2  # bez tooli: model czasem mimo zakazu próbuje tooli — retry z mocniejszym przypomnieniem

@@ -801,9 +801,14 @@ async function refreshInner(){
   const PRIO = {'P0':0,'P1':1,'P2':2,'P3':3};
   const sorted = [...visTasks].sort((a,b)=>(PRIO[b.priority||'P2']-PRIO[a.priority||'P2']) || ((b.status==='RUNNING')-(a.status==='RUNNING')) || ((b.updated_at||0)-(a.updated_at||0)));
   const nowCards = [];
+  let staleNow = 0;
+  const NOW_WIN = 300;  // v2.7.25: RUNNING bez aktywności >5 min schodzi z panelu „Teraz pracują”
   for(const t of sorted){
     if(t.status==='AWAITING_OWNER') awaiting++;
-    if(t.status==='RUNNING') nowCards.push(t);
+    if(t.status==='RUNNING'){
+      const lastAct = Math.max(t.updated_at||0, t.substep_since||0, t.started_at||0);
+      if(lastAct >= Date.now()/1000 - NOW_WIN) nowCards.push(t); else staleNow++;
+    }
     const tr = tb.insertRow();
     tr.className = 'st-' + t.status;
     if(t.status==='AWAITING_OWNER') tr.className+=' awaiting';
