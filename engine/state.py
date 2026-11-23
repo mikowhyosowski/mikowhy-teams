@@ -344,6 +344,33 @@ class State:
             role = task.get("role") or "worker"
             cur = float(self.get_kv(f"work_s:{role}", 0) or 0)
             self.set_kv(f"work_s:{role}", cur + el)
+        # jednozdaniowy komentarz „co się dzieje” przy każdej zmianie statusu —
+        # Sponsor ma podgląd procesu w historii/komentarzach (bez LLM, deterministycznie)
+        try:
+            note = str(fields.get("review_notes") or "")[:120]
+            key = (current, new_status)
+            tmpl = {
+                ("READY", "RUNNING"): "🔨 przejmuję zadanie i zaczynam pracę.",
+                ("RUNNING", "IN_REVIEW"): "🔍 implementacja gotowa — oddaję do code review.",
+                ("IN_REVIEW", "READY_TO_MERGE"): "📦 review przeszło — zadanie czeka na merge.",
+                ("READY_TO_MERGE", "MERGED"): "✅ zadanie zmergowane — zmiany są już na masterze.",
+                ("RUNNING", "FAILED"): f"❌ próba nieudana ({note or 'błąd wykonania'}) — leci retry.",
+                ("FAILED", "READY"): "🔁 wracam do kolejki po nieudanym podejściu.",
+                ("RUNNING", "ESCALATED"): "🚨 eskaluję — potrzebuję decyzji Sponsora.",
+                ("READY", "ESCALATED"): "🚨 eskaluję — potrzebuję decyzji Sponsora.",
+                ("RUNNING", "AWAITING_APPROVAL"): ("❓ mam pytanie do Sponsora — czekam na odpowiedź."
+                                                    if fields.get("substep") == "ASK_SPONSOR"
+                                                    else "🕒 czekam na akceptację Sponsora."),
+                ("AWAITING_APPROVAL", "READY"): "👍 Sponsor zaakceptował — kontynuuję.",
+                ("RUNNING", "BLOCKED"): f"⛔ wstrzymane ({note or 'zewnętrzna zależność'}).",
+                ("READY", "BLOCKED"): f"⛔ wstrzymane ({note or 'zewnętrzna zależność'}).",
+                ("AWAITING_APPROVAL", "BLOCKED"): f"⛔ odrzucone/wstrzymane przez Sponsora ({note}).",
+                ("IN_REVIEW", "READY"): "↩️ review odrzucone — wracam do poprawek.",
+                ("READY_TO_MERGE", "READY"): "↩️ cofam z kolejki do merge'a — konflikt/poprawka.",
+            }.get(key, f"🔁 status: {current} → {new_status}.")
+            self.add_comment(task_id, by, tmpl)
+        except Exception:
+            pass
         return self.get_task(task_id)  # type: ignore[return-value]
 
     MAX_SUBTASKS = 3  # więcej zmian w jednym commicie, mniej podzadań/commitów

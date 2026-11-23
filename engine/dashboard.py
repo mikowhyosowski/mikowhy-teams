@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 
 def _version_info() -> dict:
@@ -406,7 +406,7 @@ async function refreshInner(){
        <div class="muted">czeka ${fmtDur(t.age||0)} · ${esc(t.persona||t.role||'')}</div>
      </div>`).join('') : '<span class="muted">nic nie czeka na Twoją decyzję ✅</span>';
   document.getElementById('projects').innerHTML = d.projects.map(p =>
-    `<span class="muted">🗂</span> <b>${esc(p.project_id)}</b> policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
+    `<span class="muted">🗂</span> <b>${esc(p.project_id)}</b> ${p.active===false?'🛑 <b style="color:#f85149">NIEAKTYWNY</b>':''} policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
   const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
   // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
   const FLOW = ['AWAITING_APPROVAL','READY','RUNNING','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
@@ -536,14 +536,14 @@ async function openTask(id, keep){
   if(detailTab === 'history'){
     const nowS = Date.now()/1000;
     body = `<h2>🕘 Historia zmian <span class="muted">(najświeższe na górze — zielone = <60s, niebieskie = <1h)</span></h2>
-      <div class="histbox">${(t.events||[]).slice().reverse().map(e=>{
+      <div class="histbox">${(t.events||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(e=>{
         const age = nowS - (e.ts||0);
         const cls = age<60 ? 'fresh2' : (age<3600 ? 'fresh1' : '');
         const ch = e.changes ? ' · ' + Object.entries(e.changes).map(([k,v])=>`${esc(k)}: ${esc(String(v).slice(0,50))}`).join(' · ') : '';
         return `<div class="${cls}"><span class="muted">${new Date((e.ts||0)*1000).toLocaleTimeString()}</span> ${esc(e.event||((e.from||'?')+' → '+(e.to||'?')))}${ch}${(e.by)?(' <span class="muted">— '+esc(String(e.by).slice(0,60))+'</span>'):''}</div>`;
       }).join('')||'<span class="muted">brak historii</span>'}</div>`;
   } else if(detailTab === 'comments'){
-    body = `<h2>💬 Komentarze</h2><div class="threadbox">${(t.comments||[]).map(c=>`<div class="tmsg ${c.author==='sponsor'||c.author==='sponsor/dashboard'?'me':'agent'}"><div class="ta"><b>${esc(c.author)}</b> <span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(c.text.slice(0,400))}</div></div>`).join('')||'<span class="muted">brak komentarzy</span>'}</div>
+    body = `<h2>💬 Komentarze</h2><div class="threadbox">${(t.comments||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(c=>`<div class="tmsg ${c.author==='sponsor'||c.author==='sponsor/dashboard'?'me':'agent'}"><div class="ta"><b>${esc(c.author)}</b> <span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(c.text.slice(0,400))}</div></div>`).join('')||'<span class="muted">brak komentarzy</span>'}</div>
       <h2>✍️ Twój komentarz</h2>
       <textarea id="cbox" placeholder="uwaga do zadania (też leci na PR na GitHubie)…"></textarea>
       <button onclick="sendComment()">Dodaj komentarz</button>`;
@@ -1077,7 +1077,8 @@ def _snapshot(s: State) -> dict:
     for p in projects.list_projects():
         projs.append({"project_id": p["project_id"], "target": p.get("target_repo_path"),
                       "read_only": bool(p.get("read_only")),
-                      "approval_policy": p.get("approval_policy", "manual")})
+                      "approval_policy": p.get("approval_policy", "manual"),
+                      "active": projects.is_active(p["project_id"])})
     runtime_dir = ROOT / ".agents" / "runtime"
     runtime = []
     if runtime_dir.exists():

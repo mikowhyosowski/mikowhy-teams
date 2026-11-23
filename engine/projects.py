@@ -67,6 +67,26 @@ def register_project(project_id: str, name: str, target_repo_path: str, read_onl
 POLICIES = ("manual", "auto", "auto_readonly")
 
 
+def is_active(project_id: str) -> bool:
+    """Czy projekt jest aktywny (nie wstrzymany przez opiekuna). Domyślnie tak."""
+    try:
+        return bool(project_config(project_id).get("active", True))
+    except KeyError:
+        return True
+
+
+def set_active(project_id: str, active: bool) -> dict:
+    p = AGENTS / "projects" / project_id / "project.json"
+    cfg = project_config(project_id) if p.exists() or project_id == SELF_ID else None
+    if cfg is None:
+        raise KeyError(project_id)
+    cfg = dict(cfg)
+    cfg["active"] = bool(active)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return cfg
+
+
 def approval_policy(project_id: str) -> str:
     """Polityka akceptacji zadań AWAITING_APPROVAL dla projektu (config w project.json):
     - 'manual'        — wszystko czeka na klik Sponsora (domyślnie)

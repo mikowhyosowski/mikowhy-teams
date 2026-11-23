@@ -127,6 +127,8 @@ class Orchestrator:
         'auto' = wszystkie zadania; 'auto_readonly' = tylko read_only (zero commitów);
         'manual' (domyślnie) = wszystko czeka na klik Sponsora."""
         for task in self.state.list_tasks(status=AWAITING_APPROVAL):
+            if not projects.is_active(task.get("project_id") or "mikowhy-teams"):
+                continue  # projekt wstrzymany — nie auto-approve'ujemy
             if task.get("substep") == "ASK_SPONSOR":
                 continue  # pytanie do Sponsora NIGDY nie leci auto — tylko człowiek odpowiada
             pid = task.get("project_id") or "mikowhy-teams"
@@ -185,7 +187,9 @@ class Orchestrator:
         return cap
 
     def _launch_workers(self) -> None:
-        tasks = self.state.ready_tasks()
+        # projekty nieaktywne (wstrzymane przez opiekuna) nie dostają workerów
+        tasks = [t for t in self.state.ready_tasks()
+                 if projects.is_active(t.get("project_id") or "mikowhy-teams")]
         cap = self._max_workers_now()
         free = cap - len([t for t in self.running])  # wspólna pula też z review
         for task in tasks:

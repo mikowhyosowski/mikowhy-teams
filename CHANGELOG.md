@@ -1,5 +1,12 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.1.0] — 2026-11-22
+- 💬 Przy każdej zmianie statusu agent dopisuje jedno zdanie „co się dzieje” (komentarz w historii zadania)
+- 🛑 Projekt news-video-generator oznaczony NIEAKTYWNY (wstrzymany przez opiekuna): nie dostaje workerów ani auto-approve;
+  zadania CHAT-* błędnie do niego przypisane przeniesione do mikowhy-teams; zadania tylko o repo NVG (NVG-*, FIX-NEWS-…)
+  → BLOCKED z komentarzem „wstrzymane przez opiekuna”
+- 🕘 Historia i komentarze w widoku zadania: najświeższe NA GÓRZE
+
 ## [2.0.0] — 2026-11-22
 - 🏢 Widok **Firma**: kreskówkowa mapka osiedla (ogrodzenie, brama z szyldem, drogi z liniami,
   rośliny, biura z dachami/drzwiami/oknami) — bez animacji przejazdu (szybciej), rzadkie auto-refresh
