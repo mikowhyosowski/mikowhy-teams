@@ -2384,37 +2384,37 @@ def _snapshot(s: State) -> dict:
         for f in sorted(logs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
             st = f.stat()
             logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
-        # (staż tenure_s / przepracowany work_s są już policzone przy budowaniu team — sort wg stażu)
-        from engine import team_threads
-        # v2.7.15 — boks Opiekuna „Kolejka & Logi”: kolejka w kolejności pobierania + logi aplikacji + powiadomienia
-        queue = []
-        for i, t in enumerate(s.claimable_tasks()):
-            p = personas.persona_for_role(t.get("role") or "")
-            queue.append({"pos": i + 1, "id": t["id"], "title": t.get("title") or "",
-                          "title_sponsor": t.get("title_sponsor") or "", "priority": t.get("priority") or "P2",
-                          "substep": t.get("substep") or "", "progress": t.get("progress") if t.get("progress") is not None else substep_progress(t.get("substep")),
-                          "retry_count": t.get("retry_count") or 0, "role": t.get("role") or "",
-                          "persona": p.get("name") or "", "project_id": t.get("project_id"),
-                          "age": max(0, time.time() - (t.get("created_at") or time.time())),
-                          "eta_s": float(t.get("eta_s") or 0),
-                          "review_notes": (t.get("review_notes") or "")[:200]})
-        applogs = []
-        for r in s._conn().execute(
-                "SELECT ts, kind, task_id, payload FROM metrics ORDER BY ts DESC LIMIT 150").fetchall():
-            try:
-                pl = json.loads(r[3])
-            except Exception:
-                pl = {"raw": str(r[3])[:200]}
-            applogs.append({"ts": r[0], "kind": r[1], "task_id": r[2],
-                            "payload": json.dumps(pl, ensure_ascii=False)[:220]})
-        return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team, "asks": asks,
-                "new_hires": new_hires,
-                "stats": stats,
-                "comments": s.recent_comments(40), "metrics": metrics,
-                "runtime": runtime, "logs": logs,
-                "queue": queue, "applogs": applogs,
-                "notifications": s.list_notifications(60), "notif_unread": s.unread_notifications(),
-                "ops": s.recent_ops(100), "ops_stats": s.ops_stats(),  # v2.7.23: rejestr operacji
+    # (staż tenure_s / przepracowany work_s są już policzone przy budowaniu team — sort wg stażu)
+    from engine import team_threads
+    # v2.7.15 — boks Opiekuna „Kolejka & Logi”: kolejka w kolejności pobierania + logi aplikacji + powiadomienia
+    queue = []
+    for i, t in enumerate(s.claimable_tasks()):
+        p = personas.persona_for_role(t.get("role") or "")
+        queue.append({"pos": i + 1, "id": t["id"], "title": t.get("title") or "",
+                      "title_sponsor": t.get("title_sponsor") or "", "priority": t.get("priority") or "P2",
+                      "substep": t.get("substep") or "", "progress": t.get("progress") if t.get("progress") is not None else substep_progress(t.get("substep")),
+                      "retry_count": t.get("retry_count") or 0, "role": t.get("role") or "",
+                      "persona": p.get("name") or "", "project_id": t.get("project_id"),
+                      "age": max(0, time.time() - (t.get("created_at") or time.time())),
+                      "eta_s": float(t.get("eta_s") or 0),
+                      "review_notes": (t.get("review_notes") or "")[:200]})
+    applogs = []
+    for r in s._conn().execute(
+            "SELECT ts, kind, task_id, payload FROM metrics ORDER BY ts DESC LIMIT 150").fetchall():
+        try:
+            pl = json.loads(r[3])
+        except Exception:
+            pl = {"raw": str(r[3])[:200]}
+        applogs.append({"ts": r[0], "kind": r[1], "task_id": r[2],
+                        "payload": json.dumps(pl, ensure_ascii=False)[:220]})
+    return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team, "asks": asks,
+            "new_hires": new_hires,
+            "stats": stats,
+            "comments": s.recent_comments(40), "metrics": metrics,
+            "runtime": runtime, "logs": logs,
+            "queue": queue, "applogs": applogs,
+            "notifications": s.list_notifications(60), "notif_unread": s.unread_notifications(),
+            "ops": s.recent_ops(100), "ops_stats": s.ops_stats(),  # v2.7.23: rejestr operacji
                 "milestones": s.list_milestones(),
                 "threads": team_threads.list_threads(s, limit=15),
                 "version": _version_info(),
