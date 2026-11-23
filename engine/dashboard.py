@@ -338,7 +338,7 @@ function openMerges(){
   document.getElementById('detailBody').dataset.key = 'merges';
   document.getElementById('detailBody').innerHTML = `<h3>🔀 Merge'e</h3>
     <div class="kv">w ostatnich 24h: <b>${mg.count_24h||0}</b>${mg.last_ago_s!=null?` · ostatni <b>${fmtDur(mg.last_ago_s)}</b> temu`:''}</div>
-    <h2>Ostatnie (max 10)</h2><div class="histbox">${(mg.recent||[]).map(m=>`<div><span class="muted">${new Date(m.ts*1000).toLocaleString()}</span> ${m.task_id?`<a href="#" onclick="openTask('${esc(m.task_id)}');return false" style="color:#58a6ff">${esc(m.task_id)}</a>`:'—'} <span class="muted">${esc(m.kind)}</span> <span class="muted">(${fmtDur(Date.now()/1000-m.ts)} temu)</span></div>`).join('')||'<span class="muted">brak merge\'ów</span>'}</div>`;
+    <h2>Ostatnie (max 10)</h2><div class="histbox">${(mg.recent||[]).map(m=>`<div><span class="muted">${new Date(m.ts*1000).toLocaleString()}</span> ${m.task_id?`<a href="#" onclick="openTask('${esc(m.task_id)}');return false" style="color:#58a6ff">${esc(m.task_id)}</a>`:'—'} <span class="muted">${esc(m.kind)}</span> <span class="muted">(${fmtDur(Date.now()/1000-m.ts)} temu)</span></div>`).join('')||'<span class="muted">brak merge’ów</span>'}</div>`;
 }
 function openChangelog(){
   curTask = null; curThread = null;
@@ -391,7 +391,7 @@ async function refreshInner(){
   if(d.version){
     const v = d.version;
     document.getElementById('ver').textContent = `v${v.version} · ${v.last_commit||''} · aktualizacja ${v.age_s!=null?fmtDur(v.age_s)+' temu':'?'}`;
-    document.getElementById('ver').title = (v.commit_subject||'') + '\nklik = changelog';
+    document.getElementById('ver').title = (v.commit_subject||'') + '\\nklik = changelog';
     lastVersion = v;
   }
   // kolorowe filtry projektów — GLOBALNE (nad zakładkami), render tylko gdy zmieni się lista projektów (cache)
