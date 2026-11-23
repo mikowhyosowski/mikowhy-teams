@@ -935,7 +935,12 @@ async function openTask(id, keep){
     <div class="kv"><b>status:</b> ${sbadge(d.status)} | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
     <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${pbadge(d.project_id)} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
     <div class="kv"><b>przejął:</b> ${esc(d.claimed_by||'-')}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''} | <b>aktualizacja:</b> ${d.updated_at?new Date(d.updated_at*1000).toLocaleTimeString():'-'}</div>
-    <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${esc(d.parent_task)}');return false" style="color:#58a6ff">${esc(d.parent_task)}</a>`:'— (zadanie główne)'} | <b>branch:</b> ${esc(d.branch||'-')} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>`;
+    <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${esc(d.parent_task)}');return false" style="color:#58a6ff">${esc(d.parent_task)}</a>`:'— (zadanie główne)'} | <b>branch:</b> ${esc(d.branch||'-')} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>
+    ${(d.status!=='MERGED'&&d.status!=='AWAITING_OWNER')?`<div class="kv"><b>kontrola agenta:</b>
+      ${d.stop_requested?`<span class="sbadge" style="background:#b08800">⏹ stop zlecony — worker zakończy na granicy etapu</span> `:''}
+      ${d.status==='RUNNING'&&!d.stop_requested?`<button class="tbtn" style="border-color:#f85149;color:#f85149" onclick="taskCtl('${esc(d.id)}','stop')" title="worker dokończy bieżący etap i pauzuje (→ READY)">⏹️ zatrzymaj po etapie</button>`:''}
+      ${d.stop_requested?`<button class="tbtn" style="border-color:#3fb950;color:#3fb950" onclick="taskCtl('${esc(d.id)}','activate')" title="usuń zlecenie stopu — agent pracuje dalej">▶️ wznów (anuluj stop)</button>`:''}
+    </div>`:''}`;
   let body = '';
   if(detailTab === 'history'){
     const nowS = Date.now()/1000;
@@ -1111,6 +1116,15 @@ async function sendAsk(){
   refresh();
 }
 async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'POST', body:'{}'}); refresh(); }
+async function taskCtl(id, act){
+  // act: 'stop' = łagodny stop na granicy etapu · 'activate' = anuluj stop / aktywuj agenta
+  try{
+    const r = await fetch('/api/task/'+id+'/'+act, {method:'POST', body:'{}'});
+    const j = await r.json().catch(()=>({}));
+    toast(j.ok ? (act==='stop' ? '⏹ zlecono stop po etapie: '+id : '▶️ aktywowano: '+id) : '⚠ '+(j.error||'błąd'));
+  }catch(e){ toast('⚠ '+e); }
+  openTask(id, true); refresh();
+}
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
 // v2.7.10 — podgląd załącznika inline (tekst) / obrazek
@@ -2948,8 +2962,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": True, "id": aid, "action": act}).encode(), "application/json")
             return
         if len(parts) == 4 and parts[:2] == ["api", "task"]:
-            _, _, tid, action = parts
             from engine.orchestrator import cmd_approve, cmd_decline, cmd_note
+            _, _, tid, action = parts
+            s = State()
             try:
                 if action == "comment":
                     cmd_note(tid, body.get("text", ""))
@@ -2961,12 +2976,31 @@ class Handler(BaseHTTPRequestHandler):
                 elif action == "decline":
                     cmd_decline(tid, body.get("reason", "odrzucone z dashboardu"))
                     self._send(200, b'{"ok":true}', "application/json")
+                elif action == "stop":
+                    # ⏹️ łagodny stop: worker kończy bieżący etap, potem pauza (READY) — bez zabijania procesu
+                    s.request_stop(tid)
+                    s.add_comment(tid, "sponsor/dashboard",
+                                  "⏹️ STOP zlecony z dashboardu — agent dokończy bieżący etap i pauzuje (→ READY)")
+                    self._send(200, b'{"ok":true}', "application/json")
+                elif action == "activate":
+                    # ▶️ aktywacja: zdejmij stop + wybudź — z każdego statusu (poza MERGED) wraca do READY,
+                    # orchestrator od razu podpina workera (worker sam wznowi od max_substep)
+                    s.clear_stop(tid)
+                    _t = s.get_task(tid)
+                    if _t and _t.get("status") not in ("READY", "MERGED"):
+                        try:
+                            s.transition(tid, "READY", role="sponsor/dashboard",
+                                         review_notes="▶️ aktywacja z dashboardu — agent wstaje i bierze zadanie")
+                        except Exception:
+                            pass
+                    s.add_comment(tid, "sponsor/dashboard",
+                                  "▶️ AKTYWACJA z dashboardu — agent wstaje i podejmuje zadanie od wypracowanego etapu")
+                    self._send(200, b'{"ok":true}', "application/json")
                 else:
-                    self._send(404, b'{"error":"unknown action"}', "application/json")
-            except SystemExit as e:
-                self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+                    self._send(404, b'{"error":"unknown task action"}', "application/json")
             except Exception as e:
-                self._send(500, json.dumps({"error": repr(e)}).encode(), "application/json")
+                self._send(400, json.dumps({"ok": False, "error": repr(e)}).encode(), "application/json")
+            return
         else:
             self._send(404, b"not found", "text/plain")
 
