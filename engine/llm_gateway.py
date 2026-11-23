@@ -169,7 +169,7 @@ class LLMGateway:
 
 
 class StubGateway(LLMGateway):
-    def complete(self, *, system: str, user: str, step: str, model: str) -> str:
+    def complete(self, *, system: str, user: str, step: str, model: str, **_kw) -> str:
         raise RuntimeError(
             f"LLM provider nie skonfigurowany (LLM_PROVIDER={os.environ.get('LLM_PROVIDER', 'stub')!r}). "
             f"Podłącz provider w engine/llm_gateway.py, aby uruchomić mikro-etap {step}."
@@ -231,10 +231,11 @@ class VibeCliGateway(LLMGateway):
                 return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                       timeout=self.timeout + 60, env=clean_env)
 
-    def complete(self, *, system: str, user: str, step: str, model: str) -> str:
+    def complete(self, *, system: str, user: str, step: str, model: str, _direct: bool = False) -> str:
         # KOLEJKA LLM: krótkie wywołania (complete) idą przez llm_jobs — wykonuje je
         # seryjnie dispatcher w ticku orchestratora (rate limit + retry/backoff + lease).
         # Dzięki temu keyring/vibe CLI dotyka tylko jeden proces (koniec rc=3 keyring).
+        # _direct=True (używa tego dispatch_once) = wykonaj OD RAZU, bez kolejki — inaczej deadlock.
         s = None
         queue_on = False
         try:
@@ -244,7 +245,7 @@ class VibeCliGateway(LLMGateway):
             queue_on = llm_queue.enabled(s)
         except Exception:
             queue_on = False
-        if queue_on and s is not None:
+        if queue_on and s is not None and not _direct:
             from engine import llm_queue
             jid = llm_queue.enqueue(s, "complete",
                                     {"system": system, "user": user, "step": step, "model": model},

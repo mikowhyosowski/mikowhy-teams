@@ -57,13 +57,19 @@ def test_dispatch_once_with_fake_gateway(monkeypatch):
     import engine.llm_gateway as gw
 
     class FakeGW:
-        def complete(self, *, system, user, step, model):
+        def __init__(self):
+            self.direct_seen = None
+
+        def complete(self, *, system, user, step, model, _direct=False, **_kw):
+            self.direct_seen = _direct  # dispatcher MUSI wołać z _direct=True (inaczej deadlock: kolejka czeka sama na siebie)
             return f"OK:{step}"
 
-    monkeypatch.setitem(gw._REGISTRY, "fake", FakeGW)
+    fake = FakeGW()
+    monkeypatch.setitem(gw._REGISTRY, "fake", lambda *a, **k: fake)
     monkeypatch.setenv("LLM_PROVIDER", "fake")
     assert llm_queue.dispatch_once(s, max_jobs=5, min_interval_s=0) == 1
     assert llm_queue.wait_result(s, j, timeout=2) == "OK:S9"
+    assert fake.direct_seen is True, "dispatch_once musi wołać gw.complete(_direct=True)"
 
 
 def test_gateway_complete_uses_queue(monkeypatch):

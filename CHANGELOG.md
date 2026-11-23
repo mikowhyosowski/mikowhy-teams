@@ -1,5 +1,11 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.6.4] — 2026-11-23
+- 🐛 FIX deadlock kolejki LLM: dispatch_once wołał gw.complete, która sama enqueue'owała do kolejki i czekała
+  sama na siebie. Teraz dispatcher woła `gw.complete(..., _direct=True)` — wykonuje od razu, bez kolejki
+- 🧹 Mass-retry utkniętych zadań przez Sponsora: wszystkie ESCALATED/BLOCKED/FAILED -> READY przez flow retry
+  (0 utkniętych po akcji; READY 25, RUNNING rośnie); llm_queue=1; kolejka żyje (DONE rośnie, 0 błędów rc=3 keyring)
+
 ## [2.6.3] — 2026-11-23
 - 🔄 Banner „Nowa wersja dashboardu”: karta porównuje `version|last_commit` z /api/state z zapamiętanym w localStorage
   (`dashVer`) — gdy serwer (proces dashboardu) ma nowszy kod, na górze pojawia się banner „odśwież Ctrl+R”

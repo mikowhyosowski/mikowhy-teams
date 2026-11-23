@@ -169,8 +169,10 @@ def dispatch_once(s: State, max_jobs: int = 1, min_interval_s: float = MIN_INTER
                                 model=payload.get("model", "strong-model"))
                 finish(s, job["id"], f"rc={proc.returncode}\n{proc.stdout[-8000:]}")
             else:
+                # _direct=True: dispatcher wykonuje OD RAZU (bez kolejki — inaczej deadlock: kolejka czekałaby sama na siebie)
                 out = gw.complete(system=payload.get("system", ""), user=payload.get("user", ""),
-                                  step=job["step"] or payload.get("step", "llm"), model=payload.get("model", "strong-model"))
+                                  step=job["step"] or payload.get("step", "llm"), model=payload.get("model", "strong-model"),
+                                  _direct=True)
                 finish(s, job["id"], out)
             did += 1
         except Exception as e:
