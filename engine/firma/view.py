@@ -112,7 +112,27 @@ def build_world(snapshot: dict, state=None) -> dict:
                 "res": (cur or {}).get("res"),
                 "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority")} if cur else None),
                 "taskCount": len(ts),
+                "threadCount": 0,
             })
+        # agenci, którzy odpowiadali w wątkach (nie mają zadań, ale "brali udział") — lądują w biurze fabryki
+        if pid == "mikowhy-teams" and state is not None:
+            try:
+                c = state._conn()
+                c.row_factory = __import__("sqlite3").Row
+                have = {r["role"] for r in rooms}
+                for row in c.execute(
+                        "SELECT t.role, COUNT(m.id) n FROM threads t JOIN thread_messages m ON m.thread_id=t.id "
+                        "WHERE m.author=t.role GROUP BY t.role ORDER BY n DESC").fetchall():
+                    if row["role"] in have:
+                        next(r for r in rooms if r["role"] == row["role"])["threadCount"] = row["n"]
+                    else:
+                        m = team.get(row["role"], {})
+                        rooms.append({"role": row["role"], "name": m.get("name") or row["role"],
+                                      "position": m.get("position") or row["role"],
+                                      "avatar": m.get("avatar") or "🧑‍💻", "gender": m.get("gender") or "",
+                                      "res": None, "current": None, "taskCount": 0, "threadCount": row["n"]})
+            except Exception:
+                pass
         desks = [{
             "id": t.get("id"), "title": t.get("title") or "", "title_sponsor": t.get("title_sponsor") or "",
             "status": t.get("status"), "zone": ZONE.get(t.get("status"), "tray"),

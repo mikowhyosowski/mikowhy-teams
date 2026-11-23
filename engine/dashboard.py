@@ -255,7 +255,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .tcard{border:1px solid #21262d;border-left:3px solid #1f6feb;border-radius:8px;padding:6px 10px;margin:4px 0;cursor:pointer;background:#111823}
  .tcard:hover{border-color:#58a6ff}
 </style></head><body>
-<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span> <span id="ver" class="muted" style="font-size:11px;cursor:pointer;border:1px solid #30363d;border-radius:10px;padding:1px 8px" onclick="openChangelog()" title="wersja dashboardu — klik = changelog"></span></h1>
+<h1>🏭 Dark Factory <button id="liveTg" onclick="toggleAutoRefresh()" title="włącz/wyłącz auto-odświeżanie (LIVE)" style="background:#0d1117;border:1px solid #3fb950;color:#3fb950;border-radius:10px;padding:1px 10px;font-size:12px;cursor:pointer">● LIVE</button> <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span> <span id="ver" class="muted" style="font-size:11px;cursor:pointer;border:1px solid #30363d;border-radius:10px;padding:1px 8px" onclick="openChangelog()" title="wersja dashboardu — klik = changelog"></span></h1>
 <div id="stats"></div>
 <div id="projFilters" title="Filtry projektów — globalne (działają na wszystkich zakładkach i mapie Firma)"></div>
 <nav id="tabs">
@@ -521,10 +521,17 @@ async function openTask(id, keep){
   if(keep && document.getElementById('detailBody').dataset.key === key) return;
   document.getElementById('detailBody').dataset.key = key;
   const tabs = `<div class="dtabs">
-    <button class="${detailTab==='overview'?'on':''}" onclick="detailTab='overview';openTask(curTask,true)">📋 Przegląd</button>
+    <button class="${detailTab==='overview'?'on':''}" onclick="detailTab='overview';openTask(curTask,true)">📋 Szczegóły</button>
     <button class="${detailTab==='history'?'on':''}" onclick="detailTab='history';openTask(curTask,true)">🕘 Historia (${(t.events||[]).length})</button>
     <button class="${detailTab==='comments'?'on':''}" onclick="detailTab='comments';openTask(curTask,true)">💬 Komentarze (${(t.comments||[]).length})</button>
   </div>`;
+  // blok podsumowania — ZAWSZE widoczny (tytuł, status, czas, rola, projekt, branch/PR)
+  const summary = `<div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
+    <div class="kv muted" style="font-size:10px">tech: ${esc(d.title||'')}</div>
+    <div class="kv"><b>status:</b> <span class="st st-${d.status}">${esc(d.status)}</span> | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
+    <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${esc(d.project_id||'')} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
+    <div class="kv"><b>przejął:</b> ${esc(d.claimed_by||'-')}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''} | <b>aktualizacja:</b> ${d.updated_at?new Date(d.updated_at*1000).toLocaleTimeString():'-'}</div>
+    <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${esc(d.parent_task)}');return false" style="color:#58a6ff">${esc(d.parent_task)}</a>`:'— (zadanie główne)'} | <b>branch:</b> ${esc(d.branch||'-')} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>`;
   let body = '';
   if(detailTab === 'history'){
     const nowS = Date.now()/1000;
@@ -541,15 +548,7 @@ async function openTask(id, keep){
       <textarea id="cbox" placeholder="uwaga do zadania (też leci na PR na GitHubie)…"></textarea>
       <button onclick="sendComment()">Dodaj komentarz</button>`;
   } else {
-    body = `
-    <div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
-    <div class="kv muted" style="font-size:10px">tech: ${esc(d.title||'')}</div>
-    <div class="kv"><b>status:</b> <span class="st st-${d.status}">${esc(d.status)}</span> | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
-    <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${esc(d.project_id||'')} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
-    <div class="kv"><b>przejął:</b> ${esc(d.claimed_by||'-')}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''}</div>
-    <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${esc(d.parent_task)}');return false" style="color:#58a6ff">${esc(d.parent_task)}</a>`:'— (zadanie główne)'}</div>
-    <div class="kv"><b>branch:</b> ${esc(d.branch||'-')} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>
-    <div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
+    body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
     <div class="kv"><b>uwagi:</b> ${esc((d.review_notes||'').slice(0,300))}</div>`;
     if(d.status==='AWAITING_APPROVAL'){
@@ -557,7 +556,7 @@ async function openTask(id, keep){
                <button class="no" onclick="decline()">🛑 Odrzuć → BLOCKED</button>`;
     }
   }
-  document.getElementById('detailBody').innerHTML = `<h3>${t.icons[d.status]||''} ${esc(d.id)}</h3>` + tabs + body;
+  document.getElementById('detailBody').innerHTML = `<h3>${t.icons[d.status]||''} ${esc(d.id)}</h3>` + summary + tabs + body;
 }
 // ===== wątki rozmów z agentami =====
 async function openThread(tid, keep){
@@ -584,15 +583,36 @@ async function openThread(tid, keep){
     <button onclick="sendThreadMsg()">Wyślij ✈</button>`;
   const tb = document.getElementById('threadbox'); if(tb) tb.scrollTop = tb.scrollHeight;
 }
-async function startThread(role){
-  const p = prompt('O co zapytasz osobę z roli: ' + role + ' ?');
-  if(!p) return;
-  const r = await fetch('/api/threads/start', {method:'POST', body: JSON.stringify({role, text: p})});
+function startThread(role){
+  // od razu widok czatu (jak SMS) — bez dialogu prompt(); pierwsza wiadomość -> nowy wątek
+  curThread = null; curTask = null;
+  const m = (lastState && lastState.team || []).find(x => x.role === role);
+  const p = m || {name: role, position: role, avatar: '🧑‍💻', role};
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'newthread|' + role;
+  document.getElementById('detailBody').innerHTML = `<h3>💬 ${esc(p.avatar||'🧑‍💻')} ${esc(p.name)} <span class="muted">${esc(p.position||role)} · rola ${esc(role)}</span></h3>
+    <div class="threadbox" id="threadbox" style="min-height:140px"><span class="muted">Nowa rozmowa — napisz pierwszą wiadomość poniżej.</span></div>
+    <textarea id="tbox" placeholder="napisz do ${esc(p.name)}… (Enter = wyślij)"></textarea>
+    <button onclick="sendNewThread('${esc(role)}')">Wyślij ✈</button>`;
+  setTimeout(() => { const t = document.getElementById('tbox'); if(t) t.focus(); }, 60);
+}
+async function sendNewThread(role){
+  const el = document.getElementById('tbox');
+  const txt = el.value.trim(); if(!txt) return;
+  el.value = '';
+  const r = await fetch('/api/threads/start', {method:'POST', body: JSON.stringify({role, text: txt})});
   const j = await r.json();
   detailTab = 'overview';
   openThread(j.thread_id);
   refresh();
 }
+// Enter w polu wątku = wyślij (Shift+Enter = nowa linia)
+document.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter' && !e.shiftKey && e.target && e.target.id === 'tbox'){
+    e.preventDefault();
+    if(curThread) sendThreadMsg(); else if(e.target.closest('#detailBody')) { const b = document.querySelector('#detailBody button'); }
+  }
+});
 async function sendThreadMsg(){
   const txt = document.getElementById('tbox').value.trim(); if(!txt || !curThread) return;
   document.getElementById('tbox').value = '';
@@ -647,11 +667,16 @@ async function renderFirma(){
   const W = firmaWorld, cfg = W.config, C = cfg.colors, s2 = cfg.stage2 || {};
   const g = cfg.estate.grid, off = cfg.office, R = cfg.rooms, D = cfg.desks;
   const cols = Math.max(1, g.cols|0), gap = g.gap, margin = g.margin + 26; // +26 na ogrodzenie
-  const ow = off.w, oh = off.h;
+  const ow = off.w;
   const visOffices = W.offices.filter(o => !hiddenProjs.has(o.project_id));
   const rows = Math.max(1, Math.ceil(visOffices.length / cols));
+  // wysokość biura rośnie z liczbą pokoi (żeby WSZYSCY agenci projektu byli w środku)
+  const zonesH = off.h - cfg.zones.alarm.rect[1];  // wysokość pasa stref od góry (alarm=150)
+  const ohArr = visOffices.map(o => Math.max(off.h, R.y0 + 46 + Math.ceil(o.rooms.length / R.perRow) * (R.h + R.gap) + 12 + zonesH));
+  const rowH = [], rowY = []; let yAcc = margin;
+  for(let i = 0; i < rows; i++){ rowH[i] = Math.max(off.h, ...ohArr.slice(i*cols, (i+1)*cols)); rowY[i] = yAcc; yAcc += rowH[i] + gap; }
   const Wsvg = margin*2 + cols*ow + (cols-1)*gap;
-  const Hsvg = margin*2 + rows*oh + (rows-1)*gap + 110;
+  const Hsvg = yAcc - gap + margin + 110;
   if(!firmaView) firmaView = {x:-10, y:-10, w:Wsvg+20, h:Hsvg+20};
   const svg = document.getElementById('estate');
   svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
@@ -702,7 +727,9 @@ async function renderFirma(){
     // biura — kreskówkowe budynki: korpus z gradientem, dach (trójkąt), komin, drzwi, okna, szyld
     visOffices.forEach((o, oi) => {
       const col = oi % cols, row = Math.floor(oi / cols);
-      const ox = margin + col*(ow+gap), oy = margin + row*(oh+gap);
+      const ox = margin + col*(ow+gap), oy = rowY[row];
+      const oh = ohArr[oi];                       // wysokość TEGO biura
+      const zoneOff = oh - off.h;                // strefy „przyklejone” do dołu biura
       const gid = 'grad-' + String(o.project_id).replace(/[^a-z0-9_-]/gi, '_');
       s += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="${o.color}" stop-opacity="0.65"/><stop offset="100%" stop-color="${C.plot}" stop-opacity="1"/></linearGradient></defs>`;
@@ -724,7 +751,7 @@ async function renderFirma(){
         s += `<rect x="${ox+off.w-64+wi*18}" y="${oy+34}" width="12" height="14" rx="2" fill="#bfe3ff" opacity="0.9" stroke="#0d1117"/>`;
       s += `<rect x="${ox+ow/2-12}" y="${oy+oh-16}" width="24" height="16" rx="3" fill="${o.color}" stroke="#0d1117"/>`;
       // gabinet kierownika + trofea (milestony)
-      const mz = cfg.zones.manager, mx = ox+mz.rect[0], my = oy+mz.rect[1]+8;
+      const mz = cfg.zones.manager, mx = ox+mz.rect[0], my = oy+mz.rect[1]+8+zoneOff;
       s += `<g class="manager"><rect x="${mx}" y="${my}" width="${mz.rect[2]}" height="${mz.rect[3]}" rx="6" fill="${C.room}" stroke="${C.roomStroke}" stroke-width="1.5"/>
         <text x="${mx+mz.rect[2]/2}" y="${my+12}" text-anchor="middle" font-size="9" fill="${C.muted}">🏆 kierownik</text>`;
       o.milestones.slice(0,4).forEach((m, mi) => {
@@ -738,7 +765,7 @@ async function renderFirma(){
       o.rooms.forEach((room, ri) => {
         const rx = ox + R.x0 + (ri % R.perRow) * (R.w + R.gap);
         const ry = oy + R.y0 + 40 + Math.floor(ri / R.perRow) * (R.h + R.gap);
-        if(ry + R.h > oy + cfg.zones.alarm.rect[1] - 8) return;
+        // wszystkie pokoje mieszczą się — wysokość biura liczona wyżej
         const busy = !!room.current;
         s += `<g class="room" data-role="${esc(room.role)}" style="cursor:pointer">
           <rect x="${rx}" y="${ry}" width="${R.w}" height="${R.h}" rx="8" fill="${C.room}" stroke="${busy?'#1f6feb':C.roomStroke}" stroke-width="${busy?2.5:1.5}"/>
@@ -746,20 +773,20 @@ async function renderFirma(){
           <text x="${rx+26}" y="${ry+15}" font-size="10" font-weight="bold" fill="${C.text}">${esc(room.name)}</text>
           <text x="${rx+8}" y="${ry+26}" font-size="8" fill="${C.muted}">${esc(room.position)}</text>
           ${room.res?`<text x="${rx+R.w-8}" y="${ry+15}" text-anchor="end" font-size="8" fill="${C.muted}">⚙️${room.res.cpu}% 🧠${room.res.rss_mb}MB</text>`:''}
-          <text x="${rx+8}" y="${ry+R.h-8}" font-size="9" fill="${busy?'#58a6ff':C.muted}">${busy?('🔨 '+esc(room.current.id)):('wolny/a · zadań: '+room.taskCount)}</text>
+          <text x="${rx+8}" y="${ry+R.h-8}" font-size="9" fill="${busy?'#58a6ff':C.muted}">${busy?('🔨 '+esc(room.current.id)):('wolny/a · zadań: '+room.taskCount+(room.threadCount?' · 💬'+room.threadCount:''))}</text>
           <title>klik = rozmowa z ${esc(room.name)} (${esc(room.role)})</title></g>`;
         room._x = rx; room._y = ry;
       });
       // strefy biura (półki na teczki)
       for(const [zk, z] of Object.entries(cfg.zones)){
         if(zk === 'manager' || zk === 'desk') continue;
-        const zx = ox+z.rect[0], zy = oy+z.rect[1];
+        const zx = ox+z.rect[0], zy = oy+z.rect[1]+zoneOff;
         const hasAlarm = zk==='alarm' && o.desks.some(d=>d.zone==='alarm');
         s += `<g class="zone ${hasAlarm?'alarmzone':''}"><rect x="${zx}" y="${zy}" width="${z.rect[2]}" height="${z.rect[3]}" rx="6" fill="${C.room}" fill-opacity="0.45" stroke="${C.roomStroke}" stroke-dasharray="4 3"/>
           <text x="${zx+4}" y="${zy+11}" font-size="8" fill="${C.muted}">${esc(z.label)}</text></g>`;
       }
       s += `</g>`;
-      o._ox = ox; o._oy = oy;
+      o._ox = ox; o._oy = oy; o._zoneOff = zoneOff;
     });
     stLayer.innerHTML = s;
     // klik: biuro=filtr projektu, pokój=wątek z osobą
@@ -803,7 +830,7 @@ async function renderFirma(){
           } else { x = ox+20; y = oy+70; }
         } else {
           const z = cfg.zones[zone]; if(!z) return;
-          const zx = ox+z.rect[0], zy = oy+z.rect[1];
+          const zx = ox+z.rect[0], zy = oy+z.rect[1]+(o._zoneOff||0);
           const perRow = Math.max(1, Math.floor((z.rect[2]-10)/(D.w+D.gap)));
           x = zx + 5 + (i % perRow)*(D.w+D.gap);
           y = zy + 16 + Math.floor(i/perRow)*(D.h+D.gap);
@@ -833,15 +860,53 @@ async function renderFirma(){
     if(!seen.has(id)){ deskEls[id].remove(); delete deskEls[id]; }
   }
 }
+// pan/zoom mapy osiedla (wheel = zoom wokół kursora, drag = przesuwaj)
+function initFirmaPanZoom(){
+  const svg = document.getElementById('estate');
+  if(!svg || svg.dataset.pz) return; svg.dataset.pz = '1';
+  let drag = null;
+  svg.addEventListener('wheel', (e) => {
+    if(!firmaView) return;
+    e.preventDefault();
+    const f = e.deltaY > 0 ? 1.15 : 1/1.15;
+    const r = svg.getBoundingClientRect();
+    const mx = firmaView.x + (e.clientX - r.left) / r.width * firmaView.w;
+    const my = firmaView.y + (e.clientY - r.top) / r.height * firmaView.h;
+    const nw = Math.min(5000, Math.max(200, firmaView.w * f));
+    firmaView.h = nw * (r.height / r.width);
+    firmaView.w = nw;
+    firmaView.x = mx - (e.clientX - r.left) / r.width * firmaView.w;
+    firmaView.y = my - (e.clientY - r.top) / r.height * firmaView.h;
+    svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
+  }, {passive:false});
+  svg.addEventListener('mousedown', (e) => { drag = {x:e.clientX, y:e.clientY, vx:firmaView?firmaView.x:0, vy:firmaView?firmaView.y:0}; });
+  window.addEventListener('mousemove', (e) => {
+    if(!drag || !firmaView) return;
+    const r = svg.getBoundingClientRect();
+    firmaView.x = drag.vx - (e.clientX - drag.x) / r.width * firmaView.w;
+    firmaView.y = drag.vy - (e.clientY - drag.y) / r.height * firmaView.h;
+    svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
+  });
+  window.addEventListener('mouseup', () => { drag = null; });
+}
 initFirmaPanZoom();
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1)||'overview', false));
 showTab(location.hash.slice(1)||'overview', false);
 let lastState = null;
 let firmaSlowTick = 0;
 function firmaActive(){ return document.getElementById('tab-firma').classList.contains('on'); }
+let autoRefreshOn = true;
+function toggleAutoRefresh(){
+  autoRefreshOn = !autoRefreshOn;
+  const b = document.getElementById('liveTg');
+  if(b){ b.textContent = autoRefreshOn ? '● LIVE' : '⏸ PAUZA';
+         b.style.borderColor = b.style.color = autoRefreshOn ? '#3fb950' : '#f85149'; }
+  document.getElementById('ts').textContent = autoRefreshOn ? new Date().toLocaleTimeString() : '⏸ zatrzymano';
+  if(autoRefreshOn) refresh();
+}
 refresh();
 setInterval(() => {
-  if(refreshPaused) return;
+  if(refreshPaused || !autoRefreshOn) return;
   if(firmaActive()){
     // na mapie Firma nie odświeżamy co 2s (wieszałoby widok) — tylko co 10s lekkie /api/firma + zegary osobno
     firmaSlowTick++;
@@ -850,7 +915,7 @@ setInterval(() => {
   }
   refresh();
 }, 2000);
-setInterval(() => { if (refreshPaused) return; const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
+setInterval(() => { if (refreshPaused || !autoRefreshOn) return; const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
 // zegarki tykają co sekundę — widać że coś się dzieje
 setInterval(() => {
   document.querySelectorAll('.clock[data-started]').forEach(el => {
