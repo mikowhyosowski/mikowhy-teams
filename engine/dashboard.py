@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 
 def _version_info() -> dict:
@@ -231,7 +231,40 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    .feed{font-size:11px}
    #tasks{display:block;overflow-x:auto}
  }
- /* widok FIRMA (osiedle z góry) */
+ /* 🌊 FLOW — diagram przepływu pracy (config-based: engine/flow/default_flow.json + override) */
+#flowWrap{width:100%;overflow:auto;border:1px solid #21262d;border-radius:10px;background:#0b0f14}
+#flowSvg{width:100%;min-width:960px;height:auto;display:block}
+#flowSvg .laneBg{fill:#0d1117;stroke:#21262d}
+#flowSvg .laneLabel{fill:#8b949e;font-size:11px;font-weight:bold}
+#flowSvg .stage rect.box{fill:#161b22;stroke:#30363d;stroke-width:1.5}
+#flowSvg .stage.hot rect.box{animation:flowHot 1.2s infinite}
+@keyframes flowHot{0%,100%{stroke-width:2;filter:drop-shadow(0 0 4px #b0880066)}50%{stroke-width:3.5;filter:drop-shadow(0 0 14px #b08800cc)}}
+#flowSvg .stage .ttl{cursor:pointer}
+#flowSvg .stage .ttl:hover{fill:#58a6ff}
+#flowSvg .chip{cursor:pointer}
+#flowSvg .chip rect{fill:#0d1117;stroke:#30363d}
+#flowSvg .chip:hover rect{stroke:#58a6ff}
+#flowSvg .chip.overdue rect{stroke:#f85149;stroke-width:1.5}
+#flowSvg .chip .cid{fill:#c9d1d9;font-weight:bold}
+#flowSvg .chip .who{fill:#8b949e}
+#flowSvg .chip .clk{fill:#3fb950;font-variant-numeric:tabular-nums}
+#flowSvg .chip .act{cursor:pointer}
+#flowSvg .chip .act:hover{filter:brightness(1.6)}
+#flowSvg path.arrow{stroke:#484f58;stroke-width:2;fill:none}
+#flowSvg path.arrow.hot{stroke:#b08800}
+#flowSvg path.arrow.anim{stroke-dasharray:7 7;animation:flowDash 1.6s linear infinite}
+@keyframes flowDash{to{stroke-dashoffset:-28}}
+#flowSvg .arrowLbl{fill:#8b949e;font-size:9px;text-anchor:middle}
+#flowSvg .arrowLbl.hot{fill:#d29922;font-weight:bold}
+#flowToolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+#flowToolbar button{background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer}
+#flowToolbar button:hover{border-color:#58a6ff}
+#flowToolbar button.cfg{background:#1f6feb;color:#fff;border-color:#1f6feb;font-weight:bold}
+#flowMeta{font-size:11px}
+#flowCfgBox{width:100%;height:52vh;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit;font-size:11px;border-radius:8px;padding:8px}
+.flowErr{color:#f85149;font-size:11px;white-space:pre-wrap;background:#3d1215;border:1px solid #f85149;border-radius:6px;padding:6px;margin:6px 0}
+.flowOk{color:#3fb950;font-size:11px}
+/* widok FIRMA (osiedle z góry) */
  #estateWrap{width:100%;overflow:hidden;border:1px solid #21262d;border-radius:10px}
  #estate{width:100%;height:72vh;display:block;cursor:grab;background:#0b0f14;touch-action:none}
  #estate:active{cursor:grabbing}
@@ -270,6 +303,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <nav id="tabs">
   <button data-tab="overview" onclick="showTab('overview')">📊 Przegląd<span id="navAlert"></span></button>
   <button data-tab="tasks" onclick="showTab('tasks')">📋 Zadania</button>
+  <button data-tab="flow" onclick="showTab('flow')">🌊 Flow</button>
   <button data-tab="team" onclick="showTab('team')">👥 Zespół</button>
   <button data-tab="chat" onclick="showTab('chat')">💬 Czat Vibe</button>
   <button data-tab="live" onclick="showTab('live')">⚡ Live</button>
@@ -287,6 +321,15 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <section class="tabpage" id="tab-tasks">
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację; filtry projektów są wyżej — globalne)</span></h2>
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
+</section>
+<section class="tabpage" id="tab-flow">
+<h2>🌊 Flow — przepływ pracy zespołu <span class="muted">(diagram budowany z configa · klik kafelek = szczegóły zadania · klik ikonka akcji na kafelku = akcja Sponsora · klik nagłówek etapu = opis + wszystkie zadania)</span></h2>
+<div id="flowToolbar">
+  <button onclick="renderFlow()">🔄 odśwież diagram</button>
+  <button class="cfg" onclick="openFlowCfg()">⚙️ zarządzaj flow (config JSON)</button>
+  <span id="flowMeta" class="muted"></span>
+</div>
+<div id="flowWrap"><svg id="flowSvg" preserveAspectRatio="xMidYMin meet"></svg></div>
 </section>
 <section class="tabpage" id="tab-team">
 <h2>👥 Zespół <span class="muted">(kto aktualnie nad czym pracuje + krótka historia + staż; 💬 = rozmowa z osobą)</span></h2>
@@ -509,6 +552,7 @@ async function refreshInner(){
   if(curTask) openTask(curTask, true);
   if(curThread) openThread(curThread, true);
   if(document.getElementById('tab-firma').classList.contains('on')) renderFirma();
+  if(document.getElementById('tab-flow').classList.contains('on')) renderFlow();
   document.getElementById('runtime').innerHTML = (d.runtime||[]).map(f =>
     `<div><a href="#" onclick="view('/api/raw/'+encodeURIComponent(f.name));return false" style="color:#58a6ff">${esc(f.name)}</a> <span class="muted">${f.size}B, ${f.age}s temu</span></div>`).join('');
   document.getElementById('logs').innerHTML = (d.logs||[]).map(f =>
@@ -650,13 +694,173 @@ async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
 // zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
-const TABS = ['overview','tasks','team','chat','live','firma'];
+const TABS = ['overview','tasks','flow','team','chat','live','firma'];
 function showTab(name, push){
   if(!TABS.includes(name)) name = 'overview';
   document.querySelectorAll('.tabpage').forEach(el => el.classList.toggle('on', el.id === 'tab-'+name));
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   if(push !== false) history.replaceState(null, '', '#'+name);
   if(name === 'firma') renderFirma();
+  if(name === 'flow') renderFlow();
+}
+// ===== 🌊 FLOW: diagram przepływu pracy budowany z configa (engine/flow) =====
+let lastFlow = null;
+async function renderFlow(){
+  const svg = document.getElementById('flowSvg');
+  let f;
+  try{ const r = await fetch('/api/flow'); f = await r.json(); }catch(e){ return; }
+  lastFlow = f;
+  const cfg = f.config, L = cfg.layout || {}, T = cfg.theme || {};
+  const lanes = L.lanes || {};
+  const laneKeys = Object.keys(lanes).sort((a,b)=>(lanes[a].y||0)-(lanes[b].y||0));
+  const nodeW = L.nodeW||210, gap = L.arrowGap||34, laneH = L.laneHeight||250, laneGap = L.laneGap||74;
+  const maxChips = L.maxChips||7, chipH = L.chipH||30;
+  const stages = f.stages || [];
+  const byLane = {};
+  for(const st of stages){ (byLane[st.lane] = byLane[st.lane]||[]).push(st); }
+  for(const k in byLane) byLane[k].sort((a,b)=>a.order-b.order);
+  const maxN = Math.max(1, ...laneKeys.map(k=>(byLane[k]||[]).length));
+  const W = 16 + maxN*(nodeW+gap) + 8;
+  const laneY = {}; let yAcc = 10;
+  for(const k of laneKeys){ laneY[k] = yAcc; yAcc += laneH + laneGap; }
+  const H = yAcc - laneGap + 10;
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  const pos = {};
+  let s = '<defs>' +
+    '<marker id="flowArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="' + (T.arrow||'#484f58') + '"/></marker>' +
+    '<marker id="flowArrowHot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="' + (T.arrowHot||'#b08800') + '"/></marker>' +
+    '</defs>';
+  for(const k of laneKeys){
+    const y = laneY[k];
+    s += '<g class="lane"><rect class="laneBg" x="6" y="' + y + '" width="' + (W-12) + '" height="' + laneH + '" rx="12"/>' +
+         '<text class="laneLabel" x="14" y="' + (y+16) + '">' + esc(lanes[k].label||k) + '</text></g>';
+  }
+  for(const k of laneKeys){
+    (byLane[k]||[]).forEach((st, i) => {
+      const x = 16 + i*(nodeW+gap), y = laneY[k] + 26, w = nodeW, h = laneH - 36;
+      pos[st.id] = {x:x, y:y, w:w, h:h};
+      const over = st.overdue ? ' · <tspan fill="' + (T.overdue||'#f85149') + '">⚠ ' + st.overdue + ' po SLA</tspan>' : '';
+      s += '<g class="stage ' + (st.hot && st.count ? 'hot' : '') + '">' +
+        '<rect class="box" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="12" stroke="' + st.color + '"/>' +
+        '<text class="ttl" x="' + (x+10) + '" y="' + (y+22) + '" font-size="15" onclick="openStageInfo(\\'' + esc(st.id) + '\\')">' + st.icon + ' <tspan font-size="12" font-weight="bold" fill="' + (T.nodeTitle||'#c9d1d9') + '">' + esc(st.label) + '</tspan></text>' +
+        '<circle cx="' + (x+w-16) + '" cy="' + (y+18) + '" r="10" fill="' + st.color + '"/><text class="cnt" x="' + (x+w-16) + '" y="' + (y+22) + '" font-size="10" text-anchor="middle">' + st.count + '</text>' +
+        '<text x="' + (x+10) + '" y="' + (y+36) + '" font-size="9" fill="' + (T.muted||'#8b949e') + '">' + esc((st.statuses||[]).join(' · ')) + over + '</text>';
+      const chips = st.tasks.slice(0, maxChips);
+      const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
+      chips.forEach((t, ci) => {
+        const cx = x+8, cy = y + 44 + ci*(chipH+5);
+        const acts = t.available_actions || [];
+        const clk = (t.status==='RUNNING' && t.started_at)
+          ? '<tspan class="clk" data-started="' + t.started_at + '"> ⏱' + fmtDur(Date.now()/1000 - t.started_at) + '</tspan>'
+          : (t.overdue ? ' <tspan fill="' + (T.overdue||'#f85149') + '">⚠' + fmtDur(t.age) + '</tspan>' : ' <tspan class="who">' + fmtDur(t.age) + '</tspan>');
+        s += '<g class="chip ' + (t.overdue?'overdue':'') + '" transform="translate(' + cx + ',' + cy + ')" onclick="openTask(\\'' + esc(t.id) + '\\')">' +
+          '<rect width="' + (w-16) + '" height="' + chipH + '" rx="6"/>' +
+          '<text x="6" y="13" font-size="10"><tspan>' + (PIC[t.priority]||'') + '</tspan> <tspan class="cid" fill="' + st.color + '">' + esc(t.id) + '</tspan>' + clk + '</text>' +
+          '<text class="who" x="6" y="24" font-size="8">' + esc((t.persona||t.role||'').slice(0,16)) + (t.pr ? (' · !'+t.pr) : '') + '</text>';
+        acts.forEach((a, ai) => {
+          const ad = (f.actions||{})[a] || {};
+          s += '<text class="act" x="' + (w-16-8-(acts.length-1-ai)*17) + '" y="17" font-size="12" onclick="event.stopPropagation();flowAction(\\'' + esc(t.id) + '\\',\\'' + esc(a) + '\\')"><title>' + esc(ad.label||a) + '</title>' + (ad.icon||'▶') + '</text>';
+        });
+        s += '</g>';
+      });
+      if(st.tasks.length > chips.length){
+        s += '<text class="who" x="' + (x+8) + '" y="' + (y+44+chips.length*(chipH+5)+12) + '" font-size="9" fill="' + (T.muted||'#8b949e') + '" style="cursor:pointer" onclick="openStageInfo(\\'' + esc(st.id) + '\\')">+' + (st.tasks.length-chips.length) + ' więcej… (klik nagłówek)</text>';
+      }
+      s += '</g>';
+    });
+  }
+  for(const tr of (f.transitions||[])){
+    const a = pos[tr.from], b = pos[tr.to];
+    if(!a || !b) continue;
+    const x1 = a.x + a.w, y1 = a.y + a.h/2, x2 = b.x, y2 = b.y + b.h/2;
+    const hot = tr.kind === 'sponsor';
+    let d;
+    if(Math.abs(y1-y2) < 4 && x2 > x1) d = 'M ' + x1 + ' ' + y1 + ' L ' + (x2-8) + ' ' + y2;
+    else d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1+46) + ' ' + y1 + ', ' + Math.max(x2-46, x1+10) + ' ' + y2 + ', ' + (x2-8) + ' ' + y2;
+    s += '<path class="arrow ' + (hot?'hot':'') + ' ' + (tr.kind==='auto'?'anim':'') + '" d="' + d + '" marker-end="url(#' + (hot?'flowArrowHot':'flowArrow') + ')"/>' +
+         '<text class="arrowLbl ' + (hot?'hot':'') + '" x="' + ((x1+x2)/2) + '" y="' + ((y1+y2)/2 - 6) + '">' + (tr.icon||'') + ' ' + esc(tr.label||'') + '</text>';
+  }
+  svg.innerHTML = s;
+  const hot = (f.stats && f.stats.hot) || 0, over = (f.stats && f.stats.overdue) || 0;
+  document.getElementById('flowMeta').innerHTML =
+    'etapy: <b>' + f.stages.length + '</b> · zadania: <b>' + f.stats.total + '</b> · hot: <b style="color:' + (hot?'#d29922':'#3fb950') + '">' + hot + '</b> · po SLA: <b style="color:' + (over?'#f85149':'#3fb950') + '">' + over + '</b>' +
+    ' · override configu: <b>' + (f.override_active ? '✅ aktywny (.agents/flow/flow.config.json)' : 'nie (default)') + '</b>' +
+    (f.errors && f.errors.length ? ' · <b style="color:#f85149">⚠ błędy configu: ' + f.errors.length + '</b>' : '');
+}
+function openStageInfo(sid){
+  const f = lastFlow; if(!f) return;
+  const st = f.stages.find(x => x.id === sid); if(!st) return;
+  curTask = null; curThread = null;
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'flowstage|' + sid + '|' + st.count;
+  document.getElementById('detailBody').innerHTML = '<h3>' + st.icon + ' ' + esc(st.label) + '</h3>' +
+    '<div class="kv"><b>etap:</b> ' + esc(st.id) + ' · tor: ' + esc(st.lane) + ' · statusy: ' + esc((st.statuses||[]).join(', ')) + '</div>' +
+    '<div class="kv"><b>zadań:</b> ' + st.count + (st.overdue ? ' · <span style="color:#f85149">⚠ ' + st.overdue + ' po SLA</span>' : '') + (st.sla_s ? ' · SLA: ' + fmtDur(st.sla_s) : '') + '</div>' +
+    '<div class="kv muted">' + esc(st.description||'') + '</div>' +
+    '<div class="kv"><b>akcje w etapie:</b> ' + (st.actions||[]).map(a => { const ad = (f.actions||{})[a]||{}; return (ad.icon||'') + ' ' + esc(ad.label||a); }).join(' · ') + '</div>' +
+    '<h2>Zadania w etapie (' + st.count + ')</h2>' +
+    '<div class="histbox">' + (st.tasks.map(t =>
+      '<div onclick="openTask(\\'' + esc(t.id) + '\\')" style="cursor:pointer">' +
+      '<b style="color:' + st.color + '">' + esc(t.id) + '</b> ' + esc((t.title||'').slice(0,60)) + '<br>' +
+      '<span class="muted">' + esc(t.status) + ' · ' + esc(t.priority||'P2') + ' · ' + esc(t.persona||t.role||'') + ' · ' + pbadge(t.project_id) + ' · ' + (t.overdue ? '<span style="color:#f85149">⚠</span> ' : '') + fmtDur(t.age) + '</span><br>' +
+      (t.available_actions||[]).map(a => { const ad = (f.actions||{})[a]||{}; return '<button class="tbtn" onclick="event.stopPropagation();flowAction(\\'' + esc(t.id) + '\\',\\'' + esc(a) + '\\')">' + (ad.icon||'') + ' ' + esc(ad.label||a) + '</button>'; }).join('') +
+      '</div>').join('') || '<span class="muted">pusto</span>') + '</div>';
+}
+async function flowAction(taskId, actionId){
+  const f = lastFlow; const ad = (f && f.actions && f.actions[actionId]) || {};
+  const payload = {};
+  if(ad.requires_reason){
+    const txt = prompt(ad.text_label || (ad.label + ':'), '');
+    if(txt === null) return;
+    payload.text = txt; payload.reason = txt;
+  }
+  if(ad.type === 'set_priority'){
+    const cur = ((lastState && lastState.tasks.find(t => t.id === taskId)) || {}).priority || 'P2';
+    const p = prompt('Priorytet (' + (ad.choices || ['P0','P1','P2','P3']).join(', ') + '):', cur);
+    if(p === null) return;
+    payload.priority = p.trim();
+  }
+  if(ad.confirm && !confirm(ad.confirm)) return;
+  try{
+    const r = await fetch('/api/flow/action', {method:'POST', body: JSON.stringify(Object.assign({task_id: taskId, action: actionId}, payload))});
+    const j = await r.json();
+    if(!r.ok || !j.ok){ alert('❌ ' + (j.error || 'błąd akcji')); return; }
+    refresh(); renderFlow();
+  }catch(e){ alert('❌ ' + e); }
+}
+// ===== ⚙️ zarządzanie flow configem (override .agents/flow/flow.config.json) =====
+async function openFlowCfg(){
+  curTask = null; curThread = null;
+  let c;
+  try{ const r = await fetch('/api/flow/config'); c = await r.json(); }catch(e){ alert('❌ ' + e); return; }
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'flowcfg';
+  const src = (c.override_raw != null) ? c.override_raw : c.default_raw;
+  const errs = c.errors || [];
+  document.getElementById('detailBody').innerHTML = '<h3>⚙️ Config flow (JSON)</h3>' +
+    '<div class="kv muted" style="font-size:11px">Edytuj definicję przepływu: etapy <b>stages</b> (id/lane/statuses/kolor/SLA/akcje), przejścia <b>transitions</b>, akcje Sponsora <b>actions</b> (type/allowed_from/target_status), wygląd <b>layout</b> i <b>theme</b>. Zapis tworzy override <b>.agents/flow/flow.config.json</b> (deep-merge z default; listy zastępują). Błędy walidacji (np. przejście niedozwolone przez VALID_TRANSITIONS) blokują zapis.</div>' +
+    '<div class="kv">stan: ' + (c.override_active ? 'override <b>AKTYWNY</b>' : 'default (engine/flow/default_flow.json)') + ' · błędy bieżącego configu: <b style="color:' + (errs.length?'#f85149':'#3fb950') + '">' + errs.length + '</b></div>' +
+    (errs.length ? '<div class="flowErr">' + esc(errs.join('\\n')) + '</div>' : '') +
+    '<textarea id="flowCfgBox" spellcheck="false">' + esc(src) + '</textarea>' +
+    '<div><button class="ok" onclick="saveFlowCfg()">💾 Zapisz override</button> ' +
+    '<button onclick="resetFlowCfg()">🗑️ Reset do defaultu</button> ' +
+    '<button onclick="closeDetail()">✖ Zamknij</button></div>' +
+    '<div id="flowCfgMsg"></div>';
+}
+async function saveFlowCfg(){
+  const el = document.getElementById('flowCfgBox'); if(!el) return;
+  const msg = document.getElementById('flowCfgMsg');
+  try{
+    const r = await fetch('/api/flow/config', {method:'POST', body: JSON.stringify({config: el.value})});
+    const j = await r.json();
+    if(r.ok && j.ok){ msg.innerHTML = '<div class="flowOk">✅ zapisano override — diagram przeładowany</div>'; renderFlow(); refresh(); }
+    else { msg.innerHTML = '<div class="flowErr">❌ odrzucono:\\n' + esc(((j.errors||[j.error||'błąd']).join('\\n'))) + '</div>'; }
+  }catch(e){ msg.innerHTML = '<div class="flowErr">❌ ' + esc(String(e)) + '</div>'; }
+}
+async function resetFlowCfg(){
+  if(!confirm('Usunąć override .agents/flow/flow.config.json i wrócić do default_flow.json?')) return;
+  await fetch('/api/flow/config/reset', {method:'POST', body:'{}'});
+  openFlowCfg(); renderFlow(); refresh();
 }
 // ===== FIRMA: widok świata (osiedle biur, SVG top-down, animacje przepływu) =====
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -1236,6 +1440,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, ("\n".join(lines[-n:])).encode(), "text/plain; charset=utf-8")
             else:
                 self._send(404, b"not found", "text/plain")
+        elif u.path == "/api/flow":
+            # FLOW: diagram przepływu pracy z configa (engine/flow) + snapshot zadań
+            from engine.flow import flow as flowmod
+            self._send(200, json.dumps(flowmod.build_flow(snapshot(), State()),
+                                       ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
+        elif u.path == "/api/flow/config":
+            # FLOW: surowy config (merged) + override + default + błędy walidacji (do edytora w UI)
+            from engine.flow import flow as flowmod
+            cfg = flowmod.load_config()
+            self._send(200, json.dumps({
+                "config": cfg,
+                "default_raw": flowmod.DEFAULT_CFG.read_text(encoding="utf-8"),
+                "override_raw": (flowmod.OVERRIDE_CFG.read_text(encoding="utf-8")
+                                 if flowmod.OVERRIDE_CFG.exists() else None),
+                "override_active": flowmod.OVERRIDE_CFG.exists(),
+                "errors": flowmod.validate_config(cfg),
+            }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
         elif u.path.startswith("/api/task/"):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),
@@ -1299,6 +1521,30 @@ class Handler(BaseHTTPRequestHandler):
             s.record_metric("direct_ask", {"qid": qid, "q": text[:500], "status": "running"}, None)
             threading.Thread(target=_run_ask, args=(qid, text), daemon=True).start()
             self._send(200, json.dumps({"ok": True, "qid": qid}).encode(), "application/json")
+            return
+        if u.path == "/api/flow/action":
+            # FLOW: akcja Sponsora zdefiniowana w configu (approve/decline/retry/comment/set_priority)
+            from engine.flow import flow as flowmod
+            try:
+                res = flowmod.apply_action(str(body.get("task_id") or ""), str(body.get("action") or ""), body)
+                self._send(200, json.dumps(res, ensure_ascii=False, default=str).encode(), "application/json")
+            except ValueError as e:
+                self._send(400, json.dumps({"ok": False, "error": str(e)}).encode(), "application/json")
+            return
+        if u.path == "/api/flow/config":
+            # FLOW: zapis override configu (walidacja; błędy blokują zapis)
+            from engine.flow import flow as flowmod
+            errs = flowmod.save_override(body.get("config"))
+            if errs:
+                self._send(400, json.dumps({"ok": False, "errors": errs}).encode(), "application/json")
+            else:
+                self._send(200, json.dumps({"ok": True}).encode(), "application/json")
+            return
+        if u.path == "/api/flow/config/reset":
+            # FLOW: usuń override -> powrót do default_flow.json
+            from engine.flow import flow as flowmod
+            removed = flowmod.reset_override()
+            self._send(200, json.dumps({"ok": True, "removed": removed}).encode(), "application/json")
             return
         if len(parts) == 4 and parts[:2] == ["api", "task"]:
             _, _, tid, action = parts

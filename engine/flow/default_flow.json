@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "meta": {
+    "name": "Dark Factory — przepływ pracy zespołu",
+    "lang": "pl",
+    "description": "Diagram etapów pracy: kolejka → realizacja → review → merge → archiwum, plus tor akceptacji Sponsora (góra) i wyjątków (dół). Edytuj ten plik (lub override w .agents/flow/flow.config.json), aby zmienić etapy, przejścia, kolory, SLA i dostępne akcje."
+  },
+  "layout": {
+    "direction": "horizontal",
+    "laneHeight": 250,
+    "laneGap": 74,
+    "nodeW": 210,
+    "nodeMinH": 150,
+    "chipH": 30,
+    "maxChips": 7,
+    "arrowGap": 34,
+    "lanes": {
+      "top": { "label": "🧑‍💼 Decyzje Sponsora", "y": 0 },
+      "main": { "label": "⚙️ Pipeline realizacji", "y": 1 },
+      "bottom": { "label": "🚨 Wyjątki (wymagają ruchu)", "y": 2 }
+    }
+  },
+  "theme": {
+    "bg": "#0b0f14",
+    "laneBg": "#0d1117",
+    "laneStroke": "#21262d",
+    "laneLabel": "#8b949e",
+    "nodeBg": "#161b22",
+    "nodeStroke": "#30363d",
+    "nodeTitle": "#c9d1d9",
+    "chipBg": "#0d1117",
+    "chipText": "#c9d1d9",
+    "arrow": "#484f58",
+    "arrowHot": "#b08800",
+    "text": "#c9d1d9",
+    "muted": "#8b949e",
+    "overdue": "#f85149",
+    "hotGlow": "#b08800"
+  },
+  "stages": [
+    {
+      "id": "queue",
+      "label": "Kolejka",
+      "icon": "📥",
+      "lane": "main",
+      "order": 0,
+      "statuses": ["READY"],
+      "color": "#6e7681",
+      "hot": false,
+      "sla_s": 3600,
+      "description": "Zadania gotowe do przejęcia przez workera (posortowane wg priorytetu).",
+      "actions": ["comment", "set_priority"]
+    },
+    {
+      "id": "working",
+      "label": "Realizacja",
+      "icon": "🔨",
+      "lane": "main",
+      "order": 1,
+      "statuses": ["RUNNING"],
+      "color": "#1f6feb",
+      "hot": false,
+      "sla_s": 7200,
+      "description": "Zadania aktualnie realizowane przez agentów (zegar tyka na żywo).",
+      "actions": ["comment", "set_priority"]
+    },
+    {
+      "id": "review",
+      "label": "Code review",
+      "icon": "🔍",
+      "lane": "main",
+      "order": 2,
+      "statuses": ["IN_REVIEW"],
+      "color": "#a371f7",
+      "hot": false,
+      "sla_s": 3600,
+      "description": "Czekają na niezależny code review.",
+      "actions": ["comment", "set_priority"]
+    },
+    {
+      "id": "merge",
+      "label": "Do merge'a",
+      "icon": "📤",
+      "lane": "main",
+      "order": 3,
+      "statuses": ["READY_TO_MERGE"],
+      "color": "#238636",
+      "hot": false,
+      "sla_s": 1800,
+      "description": "CR zatwierdził — czeka na merge do gałęzi milestonu.",
+      "actions": ["comment"]
+    },
+    {
+      "id": "done",
+      "label": "Zmergowane",
+      "icon": "✅",
+      "lane": "main",
+      "order": 4,
+      "statuses": ["MERGED"],
+      "color": "#2ea043",
+      "hot": false,
+      "sla_s": 0,
+      "description": "Zmergowane — koniec przepływu (archiwum).",
+      "actions": ["comment"]
+    },
+    {
+      "id": "approval",
+      "label": "Czeka na Sponsora",
+      "icon": "✍️",
+      "lane": "top",
+      "order": 0,
+      "statuses": ["AWAITING_APPROVAL"],
+      "color": "#b08800",
+      "hot": true,
+      "sla_s": 3600,
+      "description": "Zadania zatrzymane decyzją Sponsora — pulsują, gdy czekają.",
+      "actions": ["approve", "decline", "comment", "set_priority"]
+    },
+    {
+      "id": "exceptions",
+      "label": "Wyjątki",
+      "icon": "🚨",
+      "lane": "bottom",
+      "order": 0,
+      "statuses": ["FAILED", "ESCALATED", "BLOCKED"],
+      "color": "#f85149",
+      "hot": true,
+      "sla_s": 0,
+      "description": "FAILED / ESCALATED / BLOCKED — wymagają ręcznego ruchu (retry lub decyzja).",
+      "actions": ["retry", "comment", "set_priority"]
+    }
+  ],
+  "transitions": [
+    { "from": "queue", "to": "working", "label": "przejmij", "icon": "▶️", "kind": "auto" },
+    { "from": "working", "to": "review", "label": "na review", "icon": "🔍", "kind": "auto" },
+    { "from": "review", "to": "merge", "label": "CR OK", "icon": "👍", "kind": "auto" },
+    { "from": "merge", "to": "done", "label": "merge", "icon": "🔀", "kind": "auto" },
+    { "from": "working", "to": "approval", "label": "ASK_SPONSOR", "icon": "❓", "kind": "sponsor" },
+    { "from": "approval", "to": "queue", "label": "zaakceptuj → READY", "icon": "✅", "kind": "sponsor", "action": "approve" },
+    { "from": "approval", "to": "exceptions", "label": "odrzuć → BLOCKED", "icon": "🛑", "kind": "sponsor", "action": "decline" },
+    { "from": "working", "to": "exceptions", "label": "błąd/eskalacja", "icon": "💥", "kind": "auto" },
+    { "from": "exceptions", "to": "queue", "label": "retry → READY", "icon": "🔁", "kind": "sponsor", "action": "retry" },
+    { "from": "merge", "to": "exceptions", "label": "eskalacja", "icon": "🚨", "kind": "auto" }
+  ],
+  "actions": {
+    "approve": {
+      "label": "Zaakceptuj",
+      "icon": "✅",
+      "type": "approve",
+      "allowed_from": ["AWAITING_APPROVAL"],
+      "target_status": "READY",
+      "requires_reason": false,
+      "confirm": "Zaakceptować zadanie i puścić je do kolejki (READY)?"
+    },
+    "decline": {
+      "label": "Odrzuć",
+      "icon": "🛑",
+      "type": "decline",
+      "allowed_from": ["AWAITING_APPROVAL"],
+      "target_status": "BLOCKED",
+      "requires_reason": true,
+      "confirm": "Odrzucić zadanie (→ BLOCKED)? Podaj powód."
+    },
+    "retry": {
+      "label": "Retry",
+      "icon": "🔁",
+      "type": "retry",
+      "allowed_from": ["FAILED", "BLOCKED", "ESCALATED"],
+      "target_status": "READY",
+      "requires_reason": false,
+      "confirm": "Wstawić zadanie ponownie do kolejki (READY, retry_count=0)?"
+    },
+    "comment": {
+      "label": "Komentarz",
+      "icon": "💬",
+      "type": "comment",
+      "allowed_from": ["READY", "RUNNING", "IN_REVIEW", "READY_TO_MERGE", "MERGED", "FAILED", "BLOCKED", "ESCALATED", "AWAITING_APPROVAL"],
+      "target_status": null,
+      "requires_reason": true,
+      "text_label": "Treść komentarza (leci też na PR):",
+      "confirm": null
+    },
+    "set_priority": {
+      "label": "Priorytet",
+      "icon": "🎚️",
+      "type": "set_priority",
+      "allowed_from": ["READY", "RUNNING", "IN_REVIEW", "READY_TO_MERGE", "FAILED", "BLOCKED", "ESCALATED", "AWAITING_APPROVAL"],
+      "target_status": null,
+      "requires_reason": false,
+      "param": "priority",
+      "choices": ["P0", "P1", "P2", "P3"],
+      "confirm": null
+    }
+  },
+  "anim": {
+    "arrowDashMs": 1600,
+    "hotPulseMs": 1200,
+    "chipFlashS": 2.5
+  }
+}

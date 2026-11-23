@@ -1,5 +1,14 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.2.0] — 2026-11-23
+- 🌊 Zakładka **Flow**: diagram przepływu pracy zespołu (SVG, 3 tory: decyzje Sponsora / pipeline / wyjątki,
+  strzałki przejść z configu, kafelki zadań z akcjami, SLA/overdue, hot-pulsowanie) — klik kafelek = szczegóły,
+  klik nagłówek etapu = opis + wszystkie zadania
+- ⚙️ Zarządzanie flow z poziomu UI przez config: `engine/flow/default_flow.json` + override
+  `.agents/flow/flow.config.json` (edytor JSON w dashboardzie, walidacja przeciw VALID_TRANSITIONS, zapis/reset)
+- 🖱️ Akcje Sponsora prosto z diagramu (POST /api/flow/action): approve / decline / retry / comment / set_priority
+- API: GET /api/flow, GET+POST /api/flow/config, POST /api/flow/config/reset
+
 ## [2.1.0] — 2026-11-22
 - 💬 Przy każdej zmianie statusu agent dopisuje jedno zdanie „co się dzieje” (komentarz w historii zadania)
 - 🛑 Projekt news-video-generator oznaczony NIEAKTYWNY (wstrzymany przez opiekuna): nie dostaje workerów ani auto-approve;
