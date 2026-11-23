@@ -1,5 +1,16 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.7] — 2026-11-23 — komentarze zadań w formacie 🎯 Cel → ✅ Efekt (czytelne dla człowieka)
+- 💬 `State.add_comment` automatycznie opakowuje każdy komentarz bez formatu jako `🎯 Cel: … → ✅ Efekt: …`;
+  nowa metoda `State.add_comment_report(task_id, author, cel, efekt)`; reguła w sponsor-notes.md
+- 🔄 `transition()` generuje komentarze Cel/Efekt per przejście (także RUNNING→RUNNING z opisem etapu z `substep`)
+  zamiast technicznych „status: X → Y” — widać od razu co ktoś robił i co uzyskał
+- 🛠️ worker raportuje Cel/Efekt po każdym kroku: plan (i SPLIT), implementacja (ile plików), katalog-zamiast-pliku, commit+PR
+- 🔍 Analiza CHAT-0003: wracało do `1/5_PLAN`, bo każdy auto-retry/requeue ustawia `substep=1/5_PLAN` przy powrocie
+  do READY (pełny cykl od nowa wg modelu) + TimeoutError 600s ze starej kolejki LLM sprzed v2/v3 (job wisiał w QUEUED) —
+  kolejka już zoptymalizowana (wątek dispatchera, per-model timeout, batch, cache)
+- ✅ Test `test_comments_have_cel_efekt_format` — 62 passed
+
 ## [2.7.6] — 2026-11-23 — pasek postępu zadania (zielony, % z podetapów) na widoku aktywnych zadań
 - 📊 `state.substep_progress()`: postęp 0..1 z substepu — `2/5_IMPL`→40%, `4.5_SIMPLIFY`→90%, `5/5_COMMIT`/`done`→100%,
   `LLM_EXEC`→50%, `ASK_OWNER`→0; pole `progress` na każdym zadaniu w API (`/api/state`, `/api/flow`, `get_task`)

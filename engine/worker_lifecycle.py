@@ -150,11 +150,20 @@ def step1_plan(state: State, task: dict) -> None:
             ids = state.split_task(task["id"], result.get("subtasks", []), max_split_depth=MAX_SPLIT_DEPTH)
             _log(task["id"], f"SPLIT_TASK -> {ids}")
             state.record_metric("split_task", {"children": ids}, task["id"])
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"rozbić {task['id']} na części, bo jest za duże na jedno podejście",
+                                     f"utworzono podzadania: {', '.join(ids)} — każde dostało własny zakres i rolę")
             return
         except Exception as exc:  # limit głębokości — każemy iść dalej
             _log(task["id"], f"SPLIT_TASK odrzucony ({exc}) — kontynuacja bez podziału")
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"rozbić {task['id']} na części",
+                                     f"podział odrzucony ({exc}) — realizuję jako całość, żeby nie mnożyć podzadań")
     plan = result.get("plan", "")
     Path(ROOT / ".agents" / "runtime" / f"{task['id']}.plan.md").write_text(plan, encoding="utf-8")
+    state.add_comment_report(task["id"], f"worker({task['role']})",
+                             f"zaplanować realizację: {(task.get('title') or '')[:80]}",
+                             f"plan gotowy ({len(plan)} znaków, zapisany w .agents/runtime/{task['id']}.plan.md) — przechodzę do implementacji")
     state.transition(task["id"], "RUNNING", substep="2/5_IMPL")
 
 
@@ -190,13 +199,17 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
         target = worktree / rel
         if target.exists() and target.is_dir():
             # LLM zwrócił katalog zamiast pliku — nie failujemy całego zadania, pomijamy z logiem
-            state.add_comment(task["id"], f"worker({task['role']})",
-                              f"⚠️ LLM zwrócił katalog zamiast pliku: `{rel}` — pomijam (auto-heal)")
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"zapisać plik `{rel}`",
+                                     f"LLM zwrócił katalog zamiast pliku — pomijam ten wpis (auto-heal), reszta idzie dalej")
             state.record_metric("llm_dir_instead_of_file", {"path": rel}, task["id"])
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     state.record_metric("step_time", {"step": "2/5_IMPL", "seconds": round(time.time() - t0, 2)}, task["id"])
+    state.add_comment_report(task["id"], f"worker({task['role']})",
+                             f"zaimplementować zmiany w zakresie {', '.join(task.get('scope_paths') or [])[:80]}",
+                             f"zapisano {len(files)} plików — przechodzę do testów")
     state.transition(task["id"], "RUNNING", substep="3/5_TEST")
 
 
@@ -326,15 +339,17 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         _log(task["id"], f"konflikt z origin/{base}: {exc}")
         return
     git_guard.push(task["branch"], worktree)
-    state.add_comment(task["id"], f"worker({task['role']})",
-                      f"✅ zrobiłem i zacommitowałem ({lines} linii, branch {task['branch']}) → proszę o Code Review")
+    state.add_comment_report(task["id"], f"worker({task['role']})",
+                             f"dostarczyć zmiany z {task['id']} do review",
+                             f"zacommitowano {lines} linii na gałęzi {task['branch']} i wypchnięto — czekam na niezależny Code Review")
     # GitHub: push branch + PR (base = gałąź milestonu albo master)
     try:
         from engine import github_bridge
         pr = github_bridge.ensure_pr_for_task(task, base)
         if pr:
-            state.add_comment(task["id"], f"worker({task['role']})",
-                              f"🐙 PR !{pr} otwarty na GitHubie ({task['branch']} -> {base})")
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"otworzyć PR dla {task['id']}",
+                                     f"PR !{pr} otwarty na GitHubie ({task['branch']} → {base})")
     except Exception as exc:
         _log(task["id"], f"github bridge: {exc!r}")
     state.transition(task["id"], IN_REVIEW, substep="done")

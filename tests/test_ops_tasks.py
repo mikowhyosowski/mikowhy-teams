@@ -151,3 +151,23 @@ def test_substep_progress():
     s.add_task("T-P", "MS", 4, "t", "backend-dev", status="RUNNING")
     s.transition("T-P", "RUNNING", substep="2/5_IMPL")
     assert s.get_task("T-P")["progress"] == 0.4
+
+
+def test_comments_have_cel_efekt_format():
+    """Każdy komentarz ma format 🎯 Cel → ✅ Efekt (czytelny dla człowieka)."""
+    s = _tmp_state()
+    s.add_task("T-C", "FACTORY-OPS", 9, "komentarze", "backend-dev", status="READY")
+    # zwykły add_comment bez formatu -> auto-opakowanie
+    s.add_comment("T-C", "worker(x)", "napisałem testy")
+    # jawny raport
+    s.add_comment_report("T-C", "worker(x)", "zaimplementować X", "zapisano 3 pliki")
+    # transition generuje komentarz Cel/Efekt
+    s.transition("T-C", "RUNNING", substep="1/5_PLAN")
+    rows = s._conn().execute(
+        "SELECT payload FROM metrics WHERE kind='agent_comment' AND task_id='T-C' ORDER BY ts").fetchall()
+    import json as _json
+    texts = [_json.loads(r[0])["text"] for r in rows]
+    assert len(texts) == 3
+    for t in texts:
+        assert "Cel:" in t and "Efekt:" in t, f"brak formatu Cel/Efekt w: {t[:80]}"
+    assert "napisałem testy" in texts[0]  # oryginalny tekst zachowany w Efekt

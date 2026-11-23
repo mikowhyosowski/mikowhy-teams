@@ -6,6 +6,8 @@
   3. Każde pytanie do Opiekuna musi być takie, że jego odpowiedź realnie przyspiesza pracę (tak/nie/A/B). Jeśli decyzja może być bezpieczna i odwracalna — podejmij ją sam, odnotuj założenie w komentarzu zadania. Nie pytaj "dobra robota?" — rób i raportuj.
   4. Nie wracaj do tych samych pytań — decyzja Opiekuna ląduje na stałe w kontekście zadania (review_notes/komentarz).
 
+- [2026-11-23 17:20] TWARDA REGUŁA (komentarze do zadań): każdy komentarz w zadaniu ma być krótkim, zrozumiałym zdaniem dla człowieka w formacie **🎯 Cel: … → ✅ Efekt: …** (co robisz i co to daje). Bez tego formatu system sam opakowuje komentarz (engine/state.py add_comment). Nie pisz technicznych „status: X → Y" — pisz po ludzku: po co to było i jaki jest wynik.
+
 - [2026-11-22 15:57] Zawsze zachowuj kompatybilność z istniejącym visual_history w news-video-generator.
 
 - [2026-11-22 18:42] od teraz pamiętać: nigdy nie commituj sekretów do repo, .env tylko lokalnie

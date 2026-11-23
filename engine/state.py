@@ -467,30 +467,48 @@ class State:
             role = task.get("role") or "worker"
             cur = float(self.get_kv(f"work_s:{role}", 0) or 0)
             self.set_kv(f"work_s:{role}", cur + el)
-        # jednozdaniowy komentarz „co się dzieje” przy każdej zmianie statusu —
-        # Sponsor ma podgląd procesu w historii/komentarzach (bez LLM, deterministycznie)
+        # komentarz „co się dzieje” przy każdej zmianie statusu — format 🎯 Cel → ✅ Efekt,
+        # krótkie zrozumiałe zdanie dla człowieka (co robimy i co to daje), deterministycznie
         try:
             note = str(fields.get("review_notes") or "")[:120]
+            sub = str(fields.get("substep") or "")
             key = (current, new_status)
+            SUBSTEP_CEL = {
+                "1/5_PLAN": "zaplanować szczegóły zadania",
+                "2/5_IMPL": "zaimplementować zmiany",
+                "3/5_TEST": "napisać i odpalić testy",
+                "4/5_QG": "przejść bramki jakości (lint/testy)",
+                "4.5_SIMPLIFY": "uprościć rozwiązanie po nieudanym QG",
+                "5/5_COMMIT": "scommitować i wypchnąć gałąź",
+                "LLM_EXEC": "wykonać zadanie w trybie LLM",
+                "done": "zakończyć zadanie",
+            }
             tmpl = {
-                ("READY", "RUNNING"): "🔨 przejmuję zadanie i zaczynam pracę.",
-                ("RUNNING", "IN_REVIEW"): "🔍 implementacja gotowa — oddaję do code review.",
-                ("IN_REVIEW", "READY_TO_MERGE"): "📦 review przeszło — zadanie czeka na merge.",
-                ("READY_TO_MERGE", "MERGED"): "✅ zadanie zmergowane — zmiany są już na masterze.",
-                ("RUNNING", "FAILED"): f"❌ próba nieudana ({note or 'błąd wykonania'}) — leci retry.",
-                ("FAILED", "READY"): "🔁 wracam do kolejki po nieudanym podejściu.",
-                ("RUNNING", "ESCALATED"): "🚨 eskaluję — potrzebuję decyzji Sponsora.",
-                ("READY", "ESCALATED"): "🚨 eskaluję — potrzebuję decyzji Sponsora.",
-                ("RUNNING", "AWAITING_APPROVAL"): ("❓ mam pytanie do Sponsora — czekam na odpowiedź."
-                                                    if fields.get("substep") == "ASK_SPONSOR"
-                                                    else "🕒 czekam na akceptację Sponsora."),
-                ("AWAITING_APPROVAL", "READY"): "👍 Sponsor zaakceptował — kontynuuję.",
-                ("RUNNING", "BLOCKED"): f"⛔ wstrzymane ({note or 'zewnętrzna zależność'}).",
-                ("READY", "BLOCKED"): f"⛔ wstrzymane ({note or 'zewnętrzna zależność'}).",
-                ("AWAITING_APPROVAL", "BLOCKED"): f"⛔ odrzucone/wstrzymane przez Sponsora ({note}).",
-                ("IN_REVIEW", "READY"): "↩️ review odrzucone — wracam do poprawek.",
-                ("READY_TO_MERGE", "READY"): "↩️ cofam z kolejki do merge'a — konflikt/poprawka.",
-            }.get(key, f"🔁 status: {current} → {new_status}.")
+                ("READY", "RUNNING"): f"🎯 Cel: rozpocząć realizację {task_id} → ✅ Efekt: worker przejął zadanie, praca wystartowała",
+                ("RUNNING", "RUNNING"): (f"🎯 Cel: {SUBSTEP_CEL.get(sub, 'kontynuować pracę')} (etap {sub or '—'}) → ✅ Efekt: etap wykonany, przechodzę dalej"
+                                          if sub else f"🎯 Cel: kontynuować {task_id} → ✅ Efekt: status bez zmiany ({new_status})"),
+                ("RUNNING", "IN_REVIEW"): "🎯 Cel: oddać kod do niezależnego review → ✅ Efekt: paczka zmian czeka na code review",
+                ("IN_REVIEW", "READY_TO_MERGE"): "🎯 Cel: uzyskać akceptację review → ✅ Efekt: CR OK, zadanie gotowe do merge'a",
+                ("IN_REVIEW", "CHANGES_REQUESTED"): "🎯 Cel: poprawić kod wg uwag z review → ✅ Efekt: lista poprawek zapisana, wracam do implementacji",
+                ("CHANGES_REQUESTED", "RUNNING"): "🎯 Cel: wprowadzić poprawki po review → ✅ Efekt: pracuję nad uwagami recenzenta",
+                ("READY_TO_MERGE", "MERGED"): "🎯 Cel: włączyć zmiany do gałęzi docelowej → ✅ Efekt: zadanie zmergowane, koniec obiegu",
+                ("RUNNING", "FAILED"): f"🎯 Cel: dokończyć {task_id} → ✅ Efekt: próba nieudana ({note or 'błąd wykonania'}) — automat robi retry z backoffem",
+                ("FAILED", "READY"): "🎯 Cel: podnieść zadanie po błędzie przejściowym → ✅ Efekt: zadanie wraca do kolejki (pełny cykl od READY), retry +1",
+                ("FAILED", "AWAITING_OWNER"): "🎯 Cel: rozwiązać utknięcie, którego automat nie ogarnia → ✅ Efekt: pakiet A/B/C dla Opiekuna (max_retries wyczerpane)",
+                ("RUNNING", "AWAITING_OWNER"): "🎯 Cel: uzyskać decyzję Opiekuna na rozjeździe → ✅ Efekt: czekam na wybór A/B/odrzuć (pakiet w review_notes)",
+                ("READY", "AWAITING_OWNER"): "🎯 Cel: uzyskać decyzję Opiekuna na rozjeździe → ✅ Efekt: czekam na wybór A/B/odrzuć (pakiet w review_notes)",
+                ("AWAITING_OWNER", "READY"): "🎯 Cel: wdrożyć decyzję Opiekuna → ✅ Efekt: decyzja zapisana w kontekście, zadanie wraca do kolejki (pełny cykl)",
+                ("AWAITING_OWNER", "BLOCKED"): f"🎯 Cel: zamknąć zadanie odrzucone przez Opiekuna → ✅ Efekt: BLOCKED ({note})",
+                ("RUNNING", "BLOCKED"): f"🎯 Cel: zatrzymać pracę (blokada) → ✅ Efekt: BLOCKED ({note or 'zewnętrzna zależność'}) — odblokowanie tylko przez READY",
+                ("READY", "BLOCKED"): f"🎯 Cel: zatrzymać zadanie (blokada) → ✅ Efekt: BLOCKED ({note or 'zewnętrzna zależność'})",
+                ("BLOCKED", "READY"): "🎯 Cel: odblokować zadanie po usunięciu przyczyny → ✅ Efekt: wraca do kolejki READY (pełny cykl, nic nie omija testów/CR)",
+                ("IN_REVIEW", "READY"): "🎯 Cel: wrócić do poprawek po review → ✅ Efekt: uwagi recenzenta w review_notes",
+                ("READY_TO_MERGE", "READY"): "🎯 Cel: cofnąć z kolejki do merge'a → ✅ Efekt: konflikt/poprawka, wracam do READY",
+                ("RUNNING", "ESCALATED"): "🎯 Cel: uzyskać decyzję człowieka → ✅ Efekt: eskalacja (legacy → AWAITING_OWNER)",
+                ("READY", "ESCALATED"): "🎯 Cel: uzyskać decyzję człowieka → ✅ Efekt: eskalacja (legacy → AWAITING_OWNER)",
+            }.get(key)
+            if tmpl is None:
+                tmpl = f"🎯 Cel: przejść {current} → {new_status} w zadaniu {task_id} → ✅ Efekt: status = {new_status}"
             self.add_comment(task_id, by, tmpl)
         except Exception:
             pass
@@ -546,8 +564,17 @@ class State:
         )
 
     def add_comment(self, task_id: str | None, author: str, text: str) -> None:
-        """Komentarz agenta („zrobiłem X, proszę o sprawdzenie”) — feed w UI/menu (NIE push)."""
+        """Komentarz agenta — feed w UI/menu (NIE push).
+        ZASADA (Sponsor): każdy komentarz ma być krótkim zrozumiałym zdaniem dla człowieka
+        w formacie 🎯 Cel → ✅ Efekt (co ktoś robił i co uzyskał). Jeśli text nie ma tego formatu — opakowujemy automatycznie."""
+        text = str(text)
+        if "Cel:" not in text and "Efekt:" not in text:
+            text = f"🎯 Cel: praca nad zadaniem {task_id or '—'} → ✅ Efekt: {text}"
         self.record_metric("agent_comment", {"author": author, "text": text}, task_id)
+
+    def add_comment_report(self, task_id: str | None, author: str, cel: str, efekt: str) -> None:
+        """Komentarz raportowy: jawny Cel i Efekt — czytelny dla człowieka od razu."""
+        self.add_comment(task_id, author, f"🎯 Cel: {cel} → ✅ Efekt: {efekt}")
 
     def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
         q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"
