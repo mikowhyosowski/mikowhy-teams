@@ -387,3 +387,26 @@ def test_snapshot_has_queue_logs_notifications():
     assert d["queue"][0]["pos"] == 1
     assert isinstance(d["applogs"], list) and isinstance(d["notifications"], list)
     assert d["notif_unread"] >= 1
+
+
+def test_resume_uses_furthest_max_substep():
+    """v2.7.16: przy powrocie do READY wznawiamy od NAJDALEJ wypracowanego etapu (max_substep),
+    nawet gdy bieżący substep cofnął się do tyłu."""
+    from engine.state import resume_substep
+    s = _tmp_state()
+    s.add_task("T-MX", "FACTORY-OPS", 9, "max", "backend-dev", status="READY")
+    s.claim_task("T-MX", "w1")
+    s.transition("T-MX", "RUNNING", substep="1/5_PLAN")
+    s.transition("T-MX", "RUNNING", substep="4/5_QG")     # najdalej
+    assert s.get_task("T-MX")["max_substep"] == "4/5_QG"
+    s.transition("T-MX", "RUNNING", substep="2/5_IMPL")    # cofnięcie — max zostaje
+    assert s.get_task("T-MX")["max_substep"] == "4/5_QG"
+    s.transition("T-MX", "FAILED", review_notes="błąd")
+    s.transition("T-MX", "READY", retry_count=1)
+    t = s.get_task("T-MX")
+    assert t["status"] == "READY" and t["substep"] == "2/5_IMPL"   # bieżący został cofnięty
+    assert resume_substep(t) == "4/5_QG"                          # ale wznawiamy od najdalej
+    import json as _json
+    texts = [_json.loads(r[0])["text"] for r in s._conn().execute(
+        "SELECT payload FROM metrics WHERE kind='agent_comment' AND task_id='T-MX'").fetchall()]
+    assert any("kontynuacja od etapu 4/5_QG" in x for x in texts), texts

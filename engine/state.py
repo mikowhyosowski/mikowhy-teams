@@ -58,14 +58,19 @@ def substep_progress(substep: str | None) -> float:
 
 
 def resume_substep(task: dict | None) -> str:
-    """v2.7.9 — kontynuacja od wypracowanego sub-etapu przy powrocie do READY (zamiast resetu do 1/5_PLAN).
+    """v2.7.9 + v2.7.16 — kontynuacja od NAJDALEJ wypracowanego sub-etapu przy powrocie do READY.
+    Bierzemy max_substep (rekord postępu z całej historii), gdy jest dalej niż bieżący substep.
     Markery specjalne (ASK_OWNER/OWNER_PACKET/brak) -> 1/5_PLAN; 'done' (po IN_REVIEW) -> 2/5_IMPL (poprawki)."""
-    sub = str((task or {}).get("substep") or "")
-    if not sub or sub in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
+    t = task or {}
+    cur = str(t.get("substep") or "")
+    mx = str(t.get("max_substep") or "")
+    if mx and substep_progress(mx) > substep_progress(cur):
+        cur = mx  # wracamy do najdalej zapracowanego etapu, nie do bieżącego (cofnietego) 
+    if not cur or cur in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
         return "1/5_PLAN"
-    if sub == "done":
+    if cur == "done":
         return "2/5_IMPL"
-    return sub
+    return cur
 
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
@@ -251,6 +256,7 @@ class State:
                 ("tasks", "mode", "TEXT DEFAULT 'pipeline'"),  # 'pipeline' (domyślny) | 'llm' — wykonuje sam LLM (vibe z narzędziami)
                 ("tasks", "started_at", "REAL"),  # kiedy worker przejął zadanie (do liczenia czasu pracy)
                 ("tasks", "substep_since", "REAL NOT NULL DEFAULT 0"),  # v2.7.11: kiedy zaczął się bieżący sub-etap (live timer na kafelku)
+                ("tasks", "max_substep", "TEXT"),  # v2.7.16: NAJDALEJ wypracowany sub-etap w całej historii — przy powrocie do READY wznawiamy od niego
                 ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
                 ("tasks", "title_sponsor", "TEXT"),  # tytuł wyświetlany Sponsorowi — krótko, prostymi słowami
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
@@ -507,6 +513,12 @@ class State:
         # przejęcie do RUNNING też startuje timer (nawet gdy sub-etap się nie zmienił — kontynuacja)
         if ("substep" in fields and str(task.get("substep")) != str(fields["substep"])) or (new_status == RUNNING and current != RUNNING):
             self._conn().execute("UPDATE tasks SET substep_since=? WHERE id=?", (time.time(), task_id))
+        # v2.7.16: aktualizacja rekordu max_substep — najdalej wypracowany etap w historii zadania
+        if "substep" in fields:
+            new_sub = str(fields["substep"])
+            old_max = str(task.get("max_substep") or task.get("substep") or "")
+            if substep_progress(new_sub) > substep_progress(old_max):
+                self._conn().execute("UPDATE tasks SET max_substep=? WHERE id=?", (new_sub, task_id))
         # historia zmian / live feed: CO się zmieniło (pole: stare → nowe) + KTO (imię nazwisko rola)
         from engine import personas as _p
         changes: dict[str, str] = {}

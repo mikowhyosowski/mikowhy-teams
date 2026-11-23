@@ -1,5 +1,13 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.16] — 2026-11-23 — wznowienie od NAJDALEJ wypracowanego etapu (max_substep) przy każdym powrocie do READY
+- 🧭 `tasks.max_substep`: rekord postępu aktualizowany w `transition` przy każdym sub-etapie (gdy dalej niż dotychczasowy max);
+  backfill 77 istniejących zadań
+- ♻️ `resume_substep()` bierze `max_substep` gdy jest dalej niż bieżący `substep` — zadanie po FAILED/requeue/kontynuacji
+  wznawia od najdalej zapracowanego etapu (np. cofnięte do 2/5_IMPL, ale max=4/5_QG → wznawia 4/5_QG);
+  komentarze przejść „kontynuacja od etapu X” pokazują właśnie ten najdalszy etap
+- ✅ test `test_resume_uses_furthest_max_substep` — 74 passed
+
 ## [2.7.15] — 2026-11-23 — boks Opiekuna „Kolejka & Logi” + dzwonek powiadomień + czytelne opisy akcji
 - 🗂️ Nowa zakładka **🗂️ Kolejka & Logi**: pełna kolejka w kolejności pobierania przez agentów (#, prio, pasek postępu,
   substep, retry, wiek, osoba; klik = szczegóły) + **logi aplikacji** (ostatnie 150 eventów, ważne/błędy czerwone, klik task = szczegóły)
