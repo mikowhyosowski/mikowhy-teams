@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 
 
 def _version_info() -> dict:
@@ -267,7 +267,22 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    .feed{font-size:11px}
    #tasks{display:block;overflow-x:auto}
  }
- /* 🌊 FLOW — diagram przepływu pracy (config-based: engine/flow/default_flow.json + override) */
+ /* 🎯 Tematy (widok opiekuna) */
+#spDecisions{display:flex;gap:10px;flex-wrap:wrap}
+.dec-card{background:#3d3000;border:1px solid #b08800;border-radius:10px;padding:10px 14px;max-width:400px;cursor:pointer;animation:pulseIco 1.6s infinite}
+.dec-card.esc{border-color:#f85149;background:#3d1215}
+.dec-card:hover{filter:brightness(1.15)}
+.mscard{background:#161b22;border:1px solid #30363d;border-left:4px solid #1f6feb;border-radius:10px;padding:10px 14px;margin:8px 0;cursor:pointer}
+.mscard:hover{border-color:#58a6ff;filter:brightness(1.1)}
+.mscard.closed{opacity:.55}
+.mscard .goal{font-size:12px;color:#c9d1d9;margin:4px 0}
+.mscard .meta{font-size:11px;color:#8b949e}
+.pbar{height:8px;background:#21262d;border-radius:6px;overflow:hidden;margin:6px 0}
+.pbar i{display:block;height:100%;background:linear-gradient(90deg,#238636,#3fb950)}
+.blk{font-size:11px;color:#f85149;margin-top:2px}
+#spBacklog .brow{display:flex;gap:8px;align-items:center;border-bottom:1px solid #21262d;padding:4px 6px;font-size:12px;cursor:pointer;flex-wrap:wrap}
+#spBacklog .brow:hover{background:#161b22}
+/* 🌊 FLOW — diagram przepływu pracy (config-based: engine/flow/default_flow.json + override) */
 #flowWrap{width:100%;overflow:auto;border:1px solid #21262d;border-radius:10px;background:#0b0f14}
 #flowSvg{width:100%;min-width:960px;height:auto;display:block}
 #flowSvg .laneBg{fill:#0d1117;stroke:#21262d}
@@ -354,6 +369,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="stFilters" title="Filtry statusów — globalne (MERGED domyślnie ukryty; klik = pokaż/ukryj)"></div>
 <nav id="tabs">
   <button data-tab="overview" onclick="showTab('overview')">📊 Przegląd<span id="navAlert"></span></button>
+  <button data-tab="sponsor" onclick="showTab('sponsor')">🎯 Tematy<span id="navDec"></span></button>
   <button data-tab="tasks" onclick="showTab('tasks')">📋 Zadania</button>
   <button data-tab="flow" onclick="showTab('flow')">🌊 Flow</button>
   <button data-tab="team" onclick="showTab('team')">👥 Zespół</button>
@@ -369,6 +385,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <h2>🔀 Przepływ pracy <span class="muted">(kliknij kafelek = szczegóły zadania)</span></h2>
 <div id="flow"></div>
 <h2>Projekty</h2><div id="projects"></div>
+</section>
+<section class="tabpage" id="tab-sponsor">
+<h2>🚨 Wymaga Twojej decyzji <span class="muted">(klik kartę = szczegóły zadania · przyciski = akcje od razu przez flow)</span></h2>
+<div id="spDecisions"></div>
+<h2>⏳ Oczekujące zgody (approvals)</h2>
+<div id="spApprovals" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+<h2>🎯 Tematy (milestone'y) <span class="muted">(klik temat = szczegóły: cel, postęp, zadania, bloki)</span> <button class="tbtn" onclick="openNewMilestone()">➕ nowy temat</button></h2>
+<div id="spMilestones"></div>
+<h2>📥 Backlog — zadania READY do pociągnięcia przez zespół <span class="muted">(klik = szczegóły)</span></h2>
+<div id="spBacklog"></div>
 </section>
 <section class="tabpage" id="tab-tasks">
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację; filtry projektów są wyżej — globalne)</span></h2>
@@ -630,6 +656,7 @@ async function refreshInner(){
   if(curThread) openThread(curThread, true);
   if(document.getElementById('tab-firma').classList.contains('on')) renderFirma();
   if(document.getElementById('tab-flow').classList.contains('on')) renderFlow();
+  if(document.getElementById('tab-sponsor').classList.contains('on')) renderSponsor();
   document.getElementById('runtime').innerHTML = (d.runtime||[]).map(f =>
     `<div><a href="#" onclick="view('/api/raw/'+encodeURIComponent(f.name));return false" style="color:#58a6ff">${esc(f.name)}</a> <span class="muted">${f.size}B, ${f.age}s temu</span></div>`).join('');
   document.getElementById('logs').innerHTML = (d.logs||[]).map(f =>
@@ -771,7 +798,7 @@ async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
 // zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
-const TABS = ['overview','tasks','flow','team','chat','live','firma'];
+const TABS = ['overview','sponsor','tasks','flow','team','chat','live','firma'];
 function showTab(name, push){
   if(!TABS.includes(name)) name = 'overview';
   document.querySelectorAll('.tabpage').forEach(el => el.classList.toggle('on', el.id === 'tab-'+name));
@@ -779,6 +806,95 @@ function showTab(name, push){
   if(push !== false) history.replaceState(null, '', '#'+name);
   if(name === 'firma') renderFirma();
   if(name === 'flow') renderFlow();
+  if(name === 'sponsor') renderSponsor();
+}
+// ===== 🎯 TEMATY — widok opiekuna (milestone'y + decyzje + zgody + backlog) =====
+let lastSponsor = null;
+async function renderSponsor(){
+  let d;
+  try{ const r = await fetch('/api/sponsor'); d = await r.json(); }catch(e){ return; }
+  lastSponsor = d;
+  const acts = d.actions_def || {};
+  document.getElementById('spDecisions').innerHTML = (d.decisions||[]).map(t => {
+    const btns = (t.available_actions||[]).map(a => { const ad = acts[a]||{};
+      return `<button class="tbtn" onclick="event.stopPropagation();flowAction('${esc(t.id)}','${esc(a)}')">${ad.icon||''} ${esc(ad.label||a)}</button>`; }).join('');
+    return `<div class="dec-card ${t.status==='ESCALATED'?'esc':''}" onclick="openTask('${esc(t.id)}')">
+      <div><b>${esc(t.id)}</b> ${sbadge(t.status)} ${pbadge(t.project_id)} <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span></div>
+      <div style="font-size:12px;margin:3px 0">${esc((t.title_sponsor||t.title||'').slice(0,110))}</div>
+      ${t.substep?`<div class="muted" style="font-size:11px">substep: ${esc(t.substep)}</div>`:''}
+      ${t.review_notes?`<div class="muted" style="font-size:11px">📝 ${esc(t.review_notes.slice(0,140))}</div>`:''}
+      <div class="muted" style="font-size:11px">⏳ ${fmtDur(t.age)} · ${esc(t.persona||t.role||'')} · temat: ${esc(t.milestone||'')}${t.pr?(' · PR !'+t.pr):''}</div>
+      <div>${btns}</div>
+    </div>`;
+  }).join('') || '<span class="muted">nic nie czeka na decyzję ✅</span>';
+  document.getElementById('spApprovals').innerHTML = (d.approvals||[]).map(a =>
+    `<div class="dec-card esc" style="cursor:default;animation:none"><b>${esc(a.id)}</b> <span class="sbadge" style="background:#b08800">${esc(a.kind)}</span>
+     <div class="muted" style="font-size:11px">milestone: ${esc(a.milestone)} · ${a.created_at?new Date(a.created_at*1000).toLocaleString():''}</div>
+     <div style="font-size:11px">${esc(String(a.payload||'').slice(0,200))}</div></div>`).join('')
+    || '<span class="muted">brak oczekujących zgód</span>';
+  document.getElementById('spMilestones').innerHTML = (d.milestones||[]).map(m => {
+    const per = Object.entries(m.per_status||{}).sort((a,b)=>b[1]-a[1]).map(([st,n]) =>
+      `<span class="sbadge" style="background:${ST_COLOR[st]||'#6e7681'};font-size:9px;margin:0 3px 2px 0">${esc(st)} ${n}</span>`).join('');
+    const pct = Math.round((m.progress||0)*100);
+    return `<div class="mscard ${m.status==='CLOSED'?'closed':''}" style="border-left-color:${projColor(m.project_id||'mikowhy-teams')}" onclick="openMilestone('${esc(m.id)}')">
+      <div><b>🎯 ${esc(m.id)}</b> <span class="sbadge" style="background:${m.status==='OPEN'?'#1f6feb':(m.status==='CLOSED'?'#2ea043':'#b08800')}">${esc(m.status)}</span> ${pbadge(m.project_id)}
+        <span class="meta">· gałąź <code>${esc(m.branch||'')}</code> · zadań ${m.tasks_total} · zmergowanych ${m.merged}</span></div>
+      <div class="goal">${esc(((m.title||'') + ' — ' + (m.goal||''))).slice(0,180)}</div>
+      <div class="pbar"><i style="width:${pct}%"></i></div>
+      <div class="meta">${pct}% zamknięte · ${per}</div>
+      ${m.blockers && m.blockers.length ? `<div class="blk">⚠ bloki: ${m.blockers.map(b=>esc(b.id)+' ['+esc(b.status)+']').join(', ')}</div>` : ''}
+    </div>`;
+  }).join('') || '<span class="muted">brak tematów — dodaj pierwszy przyciskiem ➕ nowy temat</span>';
+  document.getElementById('spBacklog').innerHTML = (d.backlog||[]).map(t =>
+    `<div class="brow" onclick="openTask('${esc(t.id)}')"><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
+     <b>${esc(t.id)}</b> <span>${esc((t.title_sponsor||t.title||'').slice(0,90))}</span>
+     <span class="muted">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)} · temat ${esc(t.milestone||'')} · ${fmtDur(t.age)}</span></div>`).join('')
+    || '<span class="muted">pusty backlog</span>';
+  const nd = document.getElementById('navDec');
+  if(nd) nd.textContent = (d.decisions||[]).length ? ' 🚨' + (d.decisions||[]).length : '';
+}
+function openMilestone(mid){
+  const d = lastSponsor; if(!d) return;
+  const m = (d.milestones||[]).find(x => x.id === mid); if(!m) return;
+  curTask = null; curThread = null;
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'ms|' + mid + '|' + (m.tasks||[]).length;
+  document.getElementById('detailBody').innerHTML = `<h3>🎯 ${esc(m.id)} <span class="sbadge" style="background:${m.status==='OPEN'?'#1f6feb':(m.status==='CLOSED'?'#2ea043':'#b08800')}">${esc(m.status)}</span></h3>
+    <div class="kv"><b>tytuł:</b> ${esc(m.title||'')}</div>
+    <div class="kv"><b>cel (o co chodzi):</b> ${esc(m.goal||'')}</div>
+    <div class="kv"><b>gałąź:</b> <code>${esc(m.branch||'')}</code> · projekt: ${pbadge(m.project_id)} · utworzony: ${m.created_at?new Date(m.created_at*1000).toLocaleString():''}</div>
+    <div class="kv"><b>postęp:</b> ${m.merged}/${m.tasks_total} zmergowane (${Math.round((m.progress||0)*100)}%) · otwartych: ${m.open_tasks}</div>
+    <h2>Zadania tematu (${(m.tasks||[]).length})</h2>
+    <div class="histbox">${(m.tasks||[]).map(t=>`<div onclick="openTask('${esc(t.id)}')" style="cursor:pointer">
+      <b>${esc(t.id)}</b> ${sbadge(t.status)} <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span> ${esc((t.title_sponsor||t.title||'').slice(0,70))}<br>
+      <span class="muted">${esc(t.persona||t.role||'')} · ${esc(t.substep||'')}${t.review_notes?' · 📝 '+esc(t.review_notes.slice(0,80)):''} · ${fmtDur(t.age)}</span>
+      ${t.acceptance_criteria?`<div class="muted" style="font-size:10px">AC: ${esc(t.acceptance_criteria.slice(0,150))}</div>`:''}
+    </div>`).join('')||'<span class="muted">brak zadań</span>'}</div>
+    <button class="tbtn" onclick="showTab('flow')">🌊 zobacz w Flow</button>`;
+}
+function openNewMilestone(){
+  curTask = null; curThread = null;
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'newms';
+  document.getElementById('detailBody').innerHTML = `<h3>➕ Nowy temat (milestone)</h3>
+    <div class="kv muted" style="font-size:11px">Temat = kontener na zadania. Nazwij tak, żeby było wiadomo o co chodzi (np. FIRMA-011).</div>
+    <div class="kv"><b>ID:</b> <input id="msId" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px;width:180px" placeholder="FIRMA-011"></div>
+    <div class="kv"><b>tytuł:</b> <input id="msTitle" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px;width:100%" placeholder="krótko, po ludzku — o co chodzi"></div>
+    <div class="kv"><b>cel (goal):</b><textarea id="msGoal" style="width:100%;height:80px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit;border-radius:6px;padding:6px" placeholder="co ma być osiągnięte — jak poznamy, że temat jest domknięty"></textarea></div>
+    <div class="kv"><b>gałąź:</b> <input id="msBranch" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px;width:240px" placeholder="feat/firma-011 (puste = auto)"></div>
+    <button class="ok" onclick="saveMilestone()">➕ Utwórz temat</button>
+    <div id="msMsg"></div>`;
+}
+async function saveMilestone(){
+  const body = {id: document.getElementById('msId').value.trim(), title: document.getElementById('msTitle').value.trim(),
+                goal: document.getElementById('msGoal').value.trim(), branch: document.getElementById('msBranch').value.trim()};
+  const msg = document.getElementById('msMsg');
+  try{
+    const r = await fetch('/api/milestone', {method:'POST', body: JSON.stringify(body)});
+    const j = await r.json();
+    if(r.ok && j.ok){ msg.innerHTML = '<div class="flowOk">✅ temat utworzony: ' + esc(j.id) + ' (gałąź ' + esc(j.branch) + ')</div>'; renderSponsor(); refresh(); }
+    else { msg.innerHTML = '<div class="flowErr">❌ ' + esc(j.error||'błąd') + '</div>'; }
+  }catch(e){ msg.innerHTML = '<div class="flowErr">❌ ' + esc(String(e)) + '</div>'; }
 }
 // ===== 🌊 FLOW: diagram przepływu pracy budowany z configa (engine/flow) =====
 let lastFlow = null;
@@ -911,7 +1027,7 @@ function openStageInfo(sid){
       '</div>').join('') || '<span class="muted">pusto</span>') + '</div>';
 }
 async function flowAction(taskId, actionId){
-  const f = lastFlow; const ad = (f && f.actions && f.actions[actionId]) || {};
+  const ad = ((lastFlow && lastFlow.actions) || (lastSponsor && lastSponsor.actions_def) || {})[actionId] || {};
   const payload = {};
   if(ad.requires_reason){
     const txt = prompt(ad.text_label || (ad.label + ':'), '');
@@ -1568,6 +1684,68 @@ def _run_ask(qid: str, text: str) -> None:
         s.set_kv(f"ask_status:{qid}", "error")
 
 
+def _sponsor_view(s: State) -> dict:
+    """Widok opiekuna (Sponsor): tematy (milestone'y) z postępem per status + blokerami,
+    zadania wymagające decyzji (AWAITING_APPROVAL/ESCALATED) z dostępnymi akcjami z flow configa,
+    oczekujące zgody (approvals) i backlog READY. Czytelny podgląd „o co chodzi”."""
+    from engine.flow import flow as flowmod
+    from engine import github_bridge, personas
+    cfg = flowmod.load_config()
+    now = time.time()
+    tasks = s.list_tasks()
+    by_ms: dict[str, list[dict]] = {}
+    for t in tasks:
+        by_ms.setdefault(t.get("milestone") or "?", []).append(t)
+
+    def t_brief(t: dict) -> dict:
+        return {"id": t["id"], "title": t.get("title") or "", "title_sponsor": t.get("title_sponsor") or "",
+                "status": t["status"], "substep": t.get("substep") or "", "priority": t.get("priority") or "P2",
+                "role": t.get("role") or "", "persona": personas.persona_label(t.get("role") or ""),
+                "project_id": t.get("project_id"), "branch": t.get("branch"),
+                "pr": github_bridge.pr_for_task(t["id"]),
+                "review_notes": (t.get("review_notes") or "")[:300],
+                "acceptance_criteria": (t.get("acceptance_criteria") or "")[:400],
+                "scope_paths": t.get("scope_paths") or [], "parent_task": t.get("parent_task"),
+                "age": max(0, now - (t.get("updated_at") or t.get("created_at") or now)),
+                "started_at": t.get("started_at"), "milestone": t.get("milestone")}
+
+    milestones = []
+    for m in s.list_milestones():
+        ts = by_ms.get(m["id"], [])
+        per: dict[str, int] = {}
+        for t in ts:
+            per[t["status"]] = per.get(t["status"], 0) + 1
+        total = len(ts)
+        merged = per.get("MERGED", 0)
+        blockers = [t_brief(t) for t in ts if t["status"] in ("BLOCKED", "ESCALATED", "FAILED", "AWAITING_APPROVAL")]
+        blockers.sort(key=lambda b: -b["age"])
+        milestones.append({**m, "tasks_total": total, "per_status": per, "merged": merged,
+                           "progress": (merged / total) if total else 0.0, "open_tasks": total - merged,
+                           "blockers": blockers,
+                           "tasks": [t_brief(t) for t in sorted(ts, key=lambda t: -(t.get("updated_at") or 0))][:50]})
+    milestones.sort(key=lambda m: (m.get("status") != "OPEN", -(m.get("created_at") or 0)))
+
+    decisions = []
+    for t in tasks:
+        if t["status"] in ("AWAITING_APPROVAL", "ESCALATED"):
+            stage = flowmod.stage_of_status(cfg, t["status"])
+            acts: list[str] = []
+            for st in cfg.get("stages", []):
+                if st.get("id") == stage:
+                    acts = [a for a in (st.get("actions") or [])
+                            if not flowmod.validate_action(cfg, t["status"], a)]
+            decisions.append({**t_brief(t), "available_actions": acts})
+    decisions.sort(key=lambda d: -d["age"])
+
+    prio = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    backlog = sorted((t for t in tasks if t["status"] == "READY"),
+                     key=lambda t: (prio.get(t.get("priority") or "P2", 2), -(t.get("created_at") or 0)))
+    backlog = [t_brief(t) for t in backlog[:15]]
+
+    return {"milestones": milestones, "decisions": decisions, "approvals": s.pending_approvals(),
+            "backlog": backlog, "actions_def": cfg.get("actions", {}), "ts": now}
+
+
 def task_detail(task_id: str) -> dict:
     return _task_detail(State(), task_id)
 
@@ -1678,6 +1856,10 @@ class Handler(BaseHTTPRequestHandler):
                 "override_active": flowmod.OVERRIDE_CFG.exists(),
                 "errors": flowmod.validate_config(cfg),
             }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path == "/api/sponsor":
+            # widok opiekuna: tematy (milestone'y) + decyzje + zgody + backlog
+            self._send(200, json.dumps(_sponsor_view(State()), ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
         elif u.path == "/api/recurring":
             # obowiązki cykliczne per rola (zakładka „Obowiązki” na karcie pracownika)
             role = parse_qs(u.query).get("role", [None])[0]
@@ -1746,6 +1928,21 @@ class Handler(BaseHTTPRequestHandler):
             s.record_metric("direct_ask", {"qid": qid, "q": text[:500], "status": "running"}, None)
             threading.Thread(target=_run_ask, args=(qid, text), daemon=True).start()
             self._send(200, json.dumps({"ok": True, "qid": qid}).encode(), "application/json")
+            return
+        if u.path == "/api/milestone":
+            # opiekun zakłada nowy temat (milestone) — read-only dopiero po review, jak zadania AWAITING_APPROVAL
+            mid = str(body.get("id") or "").strip()
+            goal = str(body.get("goal") or "").strip()
+            branch = str(body.get("branch") or "").strip() or ("feat/" + (mid.lower().replace(" ", "-") if mid else " temat"))
+            title = str(body.get("title") or mid).strip()
+            pid = str(body.get("project_id") or "mikowhy-teams")
+            if not mid or not goal:
+                self._send(400, b'{"error":"id i goal wymagane"}', "application/json")
+                return
+            s = State()
+            s.add_milestone(mid, goal, branch, title=title, project_id=pid)
+            s.record_metric("milestone_add", {"id": mid, "goal": goal[:200], "by": "sponsor/dashboard"}, None)
+            self._send(200, json.dumps({"ok": True, "id": mid, "branch": branch}).encode(), "application/json")
             return
         if u.path == "/api/recurring":
             # dodaj obowiązek cykliczny (domyślnie priorytet P3 — niżej niż bieżące sprawy)

@@ -1,5 +1,14 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.5.0] — 2026-11-23
+- 🎯 Zakładka **Tematy** (widok opiekuna, badge 🚨N w nav gdy czekają decyzje): czytelny podgląd „o co chodzi” —
+  każdy temat (milestone) z celem, gałęzią, paskiem postępu (% zmergowanych), chipsami per status i listą blokerów;
+  klik temat = szczegóły (cel, AC, wszystkie zadania)
+- 🚨 Sekcja „Wymaga Twojej decyzji” (AWAITING_APPROVAL/ESCALATED) z przyciskami akcji prosto z flow configa
+  (✅ approve / 🛑 decline / 🔁 retry / 💬 / 🎚️) — POST /api/flow/action
+- ⏳ Oczekujące zgody (approvals DEPLOY_PROD) + 📥 backlog READY (priorytety) + ➕ nowy temat (POST /api/milestone)
+- API: GET /api/sponsor (milestones+progress+decisions+approvals+backlog+actions_def), POST /api/milestone
+
 ## [2.4.0] — 2026-11-23
 - 🏷️ Globalny filtr STATUSÓW nad zakładkami (kolorowe chipsy jak projekty, localStorage) — **MERGED domyślnie
   odznaczony (ukryty) na starcie**; działa na wszystkich zakładkach (Przegląd/Zadania/Flow) i na mapie Firma
