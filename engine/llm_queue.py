@@ -159,11 +159,22 @@ def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", s
             priority: str = "P2") -> str:
     """Dodaje job do kolejki.
     v2 dedup: job z tym samym payloadem już czeka/pracuje -> jego id (bez dublowania LLM).
-    v3 cache: job z tym samym payloadem zakończony DONE w ostatniej godzinie -> jego id
-    (wait_result od razu zwróci wynik z cache — zero nowych requestów LLM na powtórki)."""
+    v4 STEEL GUARD (v2.7.24): JEDNO aktywne żądanie na (task_id, kind, step) — zanim powstanie
+    nowy job, sprawdzamy, czy dla tego zadania i kroku już coś leci; jeśli tak — zwracamy jego id.
+    To blokuje pasowanie tego samego zadania kilka razy do kolejki (np. przy retry całej pętli)."""
     ensure_table(s)
     now = time.time()
     prio = priority if priority in PRIO_ORDER else "P2"
+    tid = _guess_task(s, payload, step)
+    # 🛡️ STEEL GUARD: tylko JEDEN aktywny job na (task, kind, step) — duplikat = zwrot istniejącego id
+    if tid:
+        active = s._conn().execute(
+            "SELECT id FROM llm_jobs WHERE task_id=? AND kind=? AND step=? AND status IN ('QUEUED','RUNNING') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (tid, kind, step)).fetchone()
+        if active:
+            s.record_metric("llm_enqueue_superseded", {"existing": active[0], "task": tid, "step": step}, None)
+            return active[0]
     dk = _dedup_key(kind, payload)
     row = s._conn().execute(
         "SELECT id FROM llm_jobs WHERE dedup_key=? AND status IN ('QUEUED','RUNNING') ORDER BY created_at LIMIT 1",
