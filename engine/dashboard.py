@@ -161,13 +161,22 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #detail h3{font-size:14px;margin:4px 0}
  #detail textarea{width:100%;height:70px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit}
 #projFilters{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px;padding:5px 8px;background:#111823;border:1px solid #21262d;border-radius:10px;position:sticky;top:0;z-index:6}
-.lchip.on{background:#1f6feb!important;color:#fff!important;font-weight:bold}
+.lchip{border-radius:12px;padding:2px 10px;font-size:11px;font-weight:bold;opacity:.55}
+.lchip.on{opacity:1;outline:2px solid #fff}
 #ver:hover{border-color:#58a6ff;color:#58a6ff}
 .pchip{border:1px solid var(--c,#30363d);background:#161b22;color:#c9d1d9;border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
 .pchip .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
 .pchip.off{opacity:.35;text-decoration:line-through}
 .pchip.reset{border-color:#30363d;color:#8b949e}
 .pchip:active{transform:scale(.96)}
+.sbadge,.pbadge{color:#fff!important;font-weight:bold;border-radius:6px;padding:1px 8px;font-size:10px;display:inline-block;letter-spacing:.3px;text-shadow:0 1px 1px #0008;white-space:nowrap}
+.pbadge{box-shadow:0 1px 3px #0006}
+.sbadge.esc{animation:pulseIco 1.2s infinite}
+.pchip{background:var(--c,#30363d);color:#fff!important;border-color:transparent}
+.pchip .muted{color:#ffffffcc!important}
+.pchip.off{background:#21262d!important;color:#8b949e!important;text-decoration:line-through}
+.pchip.off .muted{color:#8b949e!important}
+.pchip.reset{background:#21262d!important;color:#8b949e!important}
  #detail button{margin:4px 4px 0 0;padding:5px 10px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;cursor:pointer}
  #detail button.ok{background:#1f6feb} #detail button.no{background:#da3633}
  #askbox{width:100%;height:56px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit;border-radius:6px;padding:6px}
@@ -315,6 +324,9 @@ let lastEventTs = 0;
 // kolorowe filtry projektów — hiddenProjs przechowywane w localStorage
 const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
 function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
+const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','AWAITING_APPROVAL':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
+function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
+function pbadge(pid){ return `<span class="pbadge" style="background:${projColor(pid||'(brak)')}">${esc(pid||'(brak)')}</span>`; }
 function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs])); refresh(); if(firmaWorld) renderFirma(); }
 function resetProjs(){ hiddenProjs.clear(); localStorage.setItem('hiddenProjs','[]'); refresh(); if(firmaWorld) renderFirma(); }
 let lastVersion = null;
@@ -328,7 +340,7 @@ function renderProjFilters(d, visTasks){
   document.getElementById('projFilters').innerHTML = allProjs.map(pid => {
     const off = hiddenProjs.has(pid);
     const n = d.tasks.filter(t=>(t.project_id||'(brak)')===pid).length;
-    return `<button class="pchip ${off?'off':''}" style="--c:${projColor(pid)}" onclick="toggleProj('${esc(pid)}')"><span class="dot" style="background:${projColor(pid)}"></span>${esc(pid)} <span class="muted">${n}</span></button>`;
+    return `<button class="pchip ${off?'off':''}" style="--c:${projColor(pid)}" onclick="toggleProj('${esc(pid)}')">${esc(pid)} <span class="muted">${n}</span></button>`;
   }).join('') + `<button class="pchip reset" onclick="resetProjs()">✖ wszystkie</button>`;
 }
 function openMerges(){
@@ -386,7 +398,7 @@ async function refreshInner(){
     `<span class="stat-badge ${st.overdue?'bad':'ok'}">⚠️ spóźnione/stare (&gt;1h w kolejce): <b>${st.overdue||0}</b></span>`+
     `<span class="stat-badge ${st.running_long?'warn':''}">🐌 długo biegną (&gt;1h): <b>${st.running_long||0}</b></span>`+
     (d.sys?`<span class="stat-badge" title="load / CPU / RAM laptopa">🖥️ load <b>${d.sys.load1}</b>/${d.sys.cpus} · 🧠 RAM <b>${d.sys.mem_used_pct}%</b> (wolne ${d.sys.mem_avail_gb}GB)</span>`:'')+
-    `<span class="stat-badge ${mg.count_24h?'ok':''}" style="cursor:pointer" onclick="openMerges()" title="klik = lista ostatnich merge'ów">🔀 mergi 24h: <b>${mg.count_24h||0}</b>${mg.last_ago_s!=null?` · ostatni <b>${fmtDur(mg.last_ago_s)}</b> temu`:''}</span>`;
+    `<span class="sbadge" style="background:#238636;cursor:pointer;font-size:11px;padding:3px 10px" onclick="openMerges()" title="klik = lista ostatnich merge’ów">🔀 mergi 24h: <b>${mg.count_24h||0}</b>${mg.last_ago_s!=null?` · ostatni <b>${fmtDur(mg.last_ago_s)}</b> temu`:''}</span>`;
   // wersja dashboardu w nagłówku (klik = changelog)
   if(d.version){
     const v = d.version;
@@ -400,13 +412,13 @@ async function refreshInner(){
   const alerts = visTasks.filter(t=>t.status==='AWAITING_APPROVAL');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
-       <b>${t.substep==='ASK_SPONSOR'?'❓ ODPOWIEDZ':'🚨 TWÓJ RUCH'}</b> <b>${esc(t.id)}</b>
+       <b>${t.substep==='ASK_SPONSOR'?'❓ ODPOWIEDZ':'🚨 TWÓJ RUCH'}</b> <b>${esc(t.id)}</b> ${sbadge(t.status)} ${pbadge(t.project_id)}
        <div>${esc((t.title_sponsor||t.title||'').slice(0,80))}</div>
        <div class="muted">${esc((t.review_notes||'').slice(0,120))}</div>
        <div class="muted">czeka ${fmtDur(t.age||0)} · ${esc(t.persona||t.role||'')}</div>
      </div>`).join('') : '<span class="muted">nic nie czeka na Twoją decyzję ✅</span>';
   document.getElementById('projects').innerHTML = d.projects.map(p =>
-    `<span class="muted">🗂</span> <b>${esc(p.project_id)}</b> ${p.active===false?'🛑 <b style="color:#f85149">NIEAKTYWNY</b>':''} policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
+    `<span class="muted">🗂</span> ${pbadge(p.project_id)} ${p.active===false?'🛑 <b style="color:#f85149">NIEAKTYWNY</b>':''} policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
   const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
   // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
   const FLOW = ['AWAITING_APPROVAL','READY','RUNNING','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
@@ -418,7 +430,7 @@ async function refreshInner(){
       `<span class="chip st-${st}" onclick="openTask('${t.id}')">${PIC[t.priority||'P2']||''}<b>${esc(t.id)}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
        <span class="who">${esc(t.persona||t.role||'')}</span></span>`).join('') + (items.length>8?`<span class="chip muted">+${items.length-8} więcej…</span>`:'');
     const arrow = i < FLOW.length-1 ? '<span class="arrow">→</span>' : '';
-    return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${st} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
+    return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${sbadge(st)} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
   }).join('');
   const tb = document.querySelector('#tasks tbody'); tb.innerHTML = '';
   let awaiting = 0;
@@ -443,9 +455,9 @@ async function refreshInner(){
     const res = t.res ? ` <span class="muted" title="zużycie workera (pid ${t.res.pid})">⚙️${t.res.cpu}% 🧠${t.res.rss_mb}MB</span>` : '';
     const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>${res}` : '';
     tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
-      <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> ')+t.status:t.status}</td>
+      <td class="st">${t.status==='AWAITING_APPROVAL'?(t.substep==='ASK_SPONSOR'?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> '):''}${sbadge(t.status)}</td>
       <td class="muted">${esc(t.substep||'')}</td><td>${t.retry_count}</td>
-      <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted"><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${projColor(t.project_id||'')}"></span> ${esc(t.project_id||'')}</td>
+      <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted">${pbadge(t.project_id)}</td>
       <td class="muted">${clock}</td>
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
   }
@@ -467,7 +479,7 @@ async function refreshInner(){
   }).join('');
   document.getElementById('threads').innerHTML = (d.threads||[]).map(th =>
     `<div class="tcard" onclick="openThread('${esc(th.id)}')">
-       <b>${th.persona.avatar||'💬'} ${esc(th.persona.name||th.role)}</b> <span class="muted">${esc(th.role)}</span> — ${esc((th.title||'').slice(0,60))}
+       <b>${th.persona.avatar||'💬'} ${esc(th.persona.name||th.role)}</b> ${pbadge(th.role)} — ${esc((th.title||'').slice(0,60))}
        <span class="muted">· ${th.count} wiad.</span>
        ${th.last?`<div class="muted" style="font-size:11px">${new Date(th.last.ts*1000).toLocaleTimeString()} <b>${esc(th.last.author)}</b>: ${esc((th.last.text||'').slice(0,90))}</div>`:''}
      </div>`).join('') || '<span class="muted">brak wątków — kliknij 💬 przy osobie lub napisz na Telegramie</span>';
@@ -475,7 +487,7 @@ async function refreshInner(){
     `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
      ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
-     <span class="who">${esc(t.persona||t.role||'')} · ${esc(t.project_id||'')}</span></div>`).join('')
+     <span class="who">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
   document.getElementById('asks').innerHTML = (d.asks||[]).map(a =>
     `<div class="ask"><span class="muted">${new Date(a.ts*1000).toLocaleTimeString()}</span> <span class="q">❯ ${esc(a.q.slice(0,300))}</span>
@@ -528,8 +540,8 @@ async function openTask(id, keep){
   // blok podsumowania — ZAWSZE widoczny (tytuł, status, czas, rola, projekt, branch/PR)
   const summary = `<div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
     <div class="kv muted" style="font-size:10px">tech: ${esc(d.title||'')}</div>
-    <div class="kv"><b>status:</b> <span class="st st-${d.status}">${esc(d.status)}</span> | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
-    <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${esc(d.project_id||'')} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
+    <div class="kv"><b>status:</b> ${sbadge(d.status)} | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
+    <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${pbadge(d.project_id)} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
     <div class="kv"><b>przejął:</b> ${esc(d.claimed_by||'-')}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''} | <b>aktualizacja:</b> ${d.updated_at?new Date(d.updated_at*1000).toLocaleTimeString():'-'}</div>
     <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${esc(d.parent_task)}');return false" style="color:#58a6ff">${esc(d.parent_task)}</a>`:'— (zadanie główne)'} | <b>branch:</b> ${esc(d.branch||'-')} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>`;
   let body = '';
@@ -802,7 +814,7 @@ async function renderFirma(){
   }
   // ===== legenda (klik = podświetl status, dimStatus) =====
   document.getElementById('firmaLegend').innerHTML = Object.entries(cfg.statusStyle)
-    .map(([k,v]) => `<button class="stat-badge lchip ${dimStatus===k?'on':''}" style="border-color:${v.color};cursor:pointer" onclick="dimStatus=${dimStatus===k?'null':JSON.stringify(k)};renderFirma()">${v.icon} ${k}</button>`).join('')
+    .map(([k,v]) => `<button class="lchip ${dimStatus===k?'on':''}" style="background:${v.color};color:#fff;border:0;cursor:pointer" onclick="dimStatus=${dimStatus===k?'null':JSON.stringify(k)};renderFirma()">${v.icon} ${k}</button>`).join('')
     + `<span class="muted" style="font-size:11px;align-self:center">klik w legendę = pokaż tylko ten status · klik biurko = zadanie</span>`;
   // ===== warstwa biurek (persistent; BEZ animacji przejazdu — od razu na miejscu) =====
   let deskLayer = document.getElementById('deskLayer');
