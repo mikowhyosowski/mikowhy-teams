@@ -12,6 +12,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -231,6 +232,26 @@ CREATE TABLE IF NOT EXISTS notifications (
   read     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(ts);
+-- v2.7.23: rejestr operacji — WSZYSTKO co przechodzi przez kolejki/system (llm | git | qg | tg) ma tu jeden spójny cykl:
+-- QUEUED (⏳ czeka na wysłanie) -> RUNNING (📤 wysłano, w trakcie) -> DONE (✅) albo FAILED (❌ błąd, próba N; retry wraca do QUEUED)
+CREATE TABLE IF NOT EXISTS ops (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  op_id       TEXT UNIQUE,
+  kind        TEXT NOT NULL,              -- llm | git | qg | tg
+  ref         TEXT,                       -- zewnętrzny id (np. llmj-xxxxxxxxxxxx), unikalny w ramach kind
+  task_id     TEXT,
+  label       TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'QUEUED',
+  detail      TEXT NOT NULL DEFAULT '',
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  queued_at   REAL NOT NULL,
+  started_at  REAL,
+  finished_at REAL,
+  payload     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_ops_task ON ops(task_id, queued_at);
+CREATE INDEX IF NOT EXISTS idx_ops_ref ON ops(kind, ref);
+CREATE INDEX IF NOT EXISTS idx_ops_status ON ops(status, queued_at);
 """
 
 
@@ -286,6 +307,16 @@ class State:
             # (Opiekun jako ostatnia instancja; stare zadania nie wiszą w martwych statusach)
             conn.execute("UPDATE tasks SET status='AWAITING_OWNER', updated_at=? "
                          "WHERE status IN ('AWAITING_APPROVAL','ESCALATED')", (time.time(),))
+        # v2.7.23: podpięcie rejestru operacji (ops) pod wszystkie moduły wykonujące operacje zewnętrzne —
+        # każdy git/qg/tg/llm leci przez jeden spójny rejestr ze statusem kolejki (QUEUED->RUNNING->DONE/FAILED)
+        try:
+            from engine import git_guard, quality_gates, telegram_gate
+            rec = self.op_recorder()
+            git_guard.set_op_recorder(rec)
+            quality_gates.set_op_recorder(rec)
+            telegram_gate.set_op_recorder(rec)
+        except Exception:
+            pass
 
     def set_telegram(self, task_id: str, thread_id: int | None, summary_msg_id: int | None) -> None:
         self._conn().execute(
@@ -786,6 +817,139 @@ class State:
     def mark_notifications_read(self) -> int:
         cur = self._conn().execute("UPDATE notifications SET read=1 WHERE read=0")
         return cur.rowcount or 0
+
+    # --- v2.7.23: rejestr operacji (ops) — spójny status kolejki każdego działania ---
+    OP_QUEUED, OP_RUNNING, OP_DONE, OP_FAILED = "QUEUED", "RUNNING", "DONE", "FAILED"
+
+    def op_enqueue(self, kind: str, label: str, task_id: str | None = None, detail: str = "",
+                   ref: str | None = None, payload: dict | None = None) -> str:
+        """Rejestruje operację w kolejce (status QUEUED = „czeka na wysłanie”). Zwraca op_id ('' przy błędzie — ops nigdy nie psują głównego flow)."""
+        try:
+            now = time.time()
+            op_id = "op-" + uuid.uuid4().hex[:12]
+            self._conn().execute(
+                "INSERT INTO ops(op_id,kind,ref,task_id,label,status,detail,attempts,queued_at,payload) "
+                "VALUES(?,?,?,?,?,'QUEUED',?,0,?,?)",
+                (op_id, kind, ref, task_id, str(label)[:160], str(detail)[:300], now,
+                 json.dumps(payload or {}, ensure_ascii=False)[:500]))
+            # okazjonalny prune (co ~50. enqueue): starsze niż 7 dni; przy >6000 wierszy zostawiamy najnowsze 6000
+            if uuid.uuid4().int % 50 == 0:
+                self._conn().execute("DELETE FROM ops WHERE queued_at < ?", (now - 7 * 86400,))
+                n = self._conn().execute("SELECT COUNT(*) FROM ops").fetchone()[0]
+                if n > 6000:
+                    self._conn().execute("DELETE FROM ops WHERE id IN "
+                                         "(SELECT id FROM ops ORDER BY id DESC LIMIT -6000)")
+            return op_id
+        except Exception:
+            return ""
+
+    def _op_set(self, op_id: str, status: str, detail: str | None = None, start: bool = False,
+                finish: bool = False, bump_attempts: bool = False) -> None:
+        try:
+            now = time.time()
+            sets = ["status=?"]
+            params: list[Any] = [status]
+            if detail is not None:
+                sets.append("detail=?")
+                params.append(str(detail)[:300])
+            if start:
+                sets.append("started_at=COALESCE(started_at,?)")
+                params.append(now)
+            if finish:
+                sets.append("finished_at=?")
+                params.append(now)
+            if bump_attempts:
+                sets.append("attempts=attempts+1")
+            params.append(op_id)
+            self._conn().execute(f"UPDATE ops SET {', '.join(sets)} WHERE op_id=?", params)
+        except Exception:
+            pass
+
+    def op_start(self, op_id: str, detail: str | None = None) -> None:
+        """QUEUED -> RUNNING („wysłano, w trakcie”), attempts+1."""
+        if op_id:
+            self._op_set(op_id, self.OP_RUNNING, detail, start=True, bump_attempts=True)
+
+    def op_done(self, op_id: str, detail: str = "") -> None:
+        if op_id:
+            self._op_set(op_id, self.OP_DONE, detail or None, finish=True)
+
+    def op_fail(self, op_id: str, detail: str = "") -> None:
+        if op_id:
+            self._op_set(op_id, self.OP_FAILED, detail, finish=True)
+
+    def op_requeue(self, op_id: str, detail: str = "") -> None:
+        """FAILED/RUNNING -> QUEUED (retry z backoffem), attempts+1 — op wraca na koniec kolejki."""
+        if op_id:
+            self._op_set(op_id, self.OP_QUEUED, detail, bump_attempts=True)
+
+    # warianty po ref (zewnętrzny id, np. llmj-xxx) — używane przez llm_queue
+    def _op_id_by_ref(self, kind: str, ref: str) -> str:
+        try:
+            row = self._conn().execute("SELECT op_id FROM ops WHERE kind=? AND ref=? ORDER BY id DESC LIMIT 1",
+                                       (kind, ref)).fetchone()
+            return row[0] if row else ""
+        except Exception:
+            return ""
+
+    def op_start_ref(self, kind: str, ref: str, detail: str | None = None) -> None:
+        self.op_start(self._op_id_by_ref(kind, ref), detail)
+
+    def op_done_ref(self, kind: str, ref: str, detail: str = "") -> None:
+        self.op_done(self._op_id_by_ref(kind, ref), detail)
+
+    def op_fail_ref(self, kind: str, ref: str, detail: str = "") -> None:
+        self.op_fail(self._op_id_by_ref(kind, ref), detail)
+
+    def op_requeue_ref(self, kind: str, ref: str, detail: str = "") -> None:
+        self.op_requeue(self._op_id_by_ref(kind, ref), detail)
+
+    def list_ops(self, task_id: str | None = None, limit: int = 80, kind: str | None = None) -> list[dict]:
+        q = "SELECT op_id, kind, ref, task_id, label, status, detail, attempts, queued_at, started_at, finished_at FROM ops"
+        cond, params = [], []
+        if task_id:
+            cond.append("task_id=?")
+            params.append(task_id)
+        if kind:
+            cond.append("kind=?")
+            params.append(kind)
+        if cond:
+            q += " WHERE " + " AND ".join(cond)
+        q += " ORDER BY queued_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self._conn().execute(q, params).fetchall()]
+
+    def recent_ops(self, limit: int = 100) -> list[dict]:
+        return [dict(r) for r in self._conn().execute(
+            "SELECT op_id, kind, ref, task_id, label, status, detail, attempts, queued_at, started_at, finished_at "
+            "FROM ops ORDER BY queued_at DESC LIMIT ?", (limit,)).fetchall()]
+
+    def ops_stats(self) -> dict:
+        rows = self._conn().execute("SELECT status, COUNT(*) FROM ops GROUP BY status").fetchall()
+        d = {r[0]: r[1] for r in rows}
+        return {"queued": d.get("QUEUED", 0), "running": d.get("RUNNING", 0),
+                "done": d.get("DONE", 0), "failed": d.get("FAILED", 0)}
+
+    def op_recorder(self):
+        """v2.7.23: fabryka recorder'a podpinana pod moduły wykonujące operacje (git_guard, quality_gates, telegram).
+        Każda operacja przechodząca przez system kolejek ląduje w tabeli ops ze spójnym statusem."""
+        st = self
+
+        class _Rec:
+            def __call__(self, kind: str, label: str, task_id: str | None = None, detail: str = "",
+                         ref: str | None = None) -> str:
+                return st.op_enqueue(kind, label, task_id=task_id, detail=detail, ref=ref)
+
+            def start(self, op_id: str, detail: str | None = None) -> None:
+                st.op_start(op_id, detail)
+
+            def done(self, op_id: str, detail: str = "") -> None:
+                st.op_done(op_id, detail)
+
+            def fail(self, op_id: str, detail: str = "") -> None:
+                st.op_fail(op_id, detail)
+
+        return _Rec()
 
     def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
         q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"

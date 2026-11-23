@@ -207,6 +207,9 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .notif.read{opacity:.55}
  .notif.nstatus{border-left:3px solid #1f6feb;background:#0d1a2e}  /* v2.7.22: zmiana statusu wyraźnie zaznaczona */
  .nbadge{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:0 5px;font-size:9px;color:#a371f7}
+ /* v2.7.23: rejestr operacji — spójny status kolejki każdego działania (llm/git/qg/tg) */
+ .oprow{padding:4px 6px;border-bottom:1px solid #161b22;font-size:12px}
+ .opst{display:inline-block;padding:0 6px;border-radius:8px;font-size:11px;margin-left:4px;white-space:nowrap}
  .qbox{border:1px solid #21262d;border-radius:8px;padding:6px;background:#0d1117}
  .legend{display:flex;flex-wrap:wrap;gap:4px 14px;border:1px solid #30363d;border-radius:8px;padding:8px 10px;background:#0d1117;font-size:11px;margin-bottom:8px}
  .legend .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px}
@@ -493,6 +496,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
   <button data-sview="queue" class="on" onclick="showSysView('queue')">📥 Kolejka (<span id="qCount"></span>)</button>
   <button data-sview="logs" onclick="showSysView('logs')">📜 Logi</button>
   <button data-sview="notifs" onclick="showSysView('notifs')">🔔 Powiadomienia (<span id="nCount"></span>)</button>
+  <button data-sview="ops" onclick="showSysView('ops')">⚙️ Operacje (<span id="opCount"></span>)</button>
 </div>
 <div id="sysQueue">
 <h3>📥 Kolejka zadań <span class="muted">(kolejność pobierania przez agentów: priorytet → kara za 3+ retry → wyższy postęp → najstarsze · klik wiersz = szczegóły)</span> <span id="queueHead" class="muted" style="color:#d29922"></span></h3>
@@ -505,6 +509,10 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 <div id="sysNotifs" style="display:none">
 <h3>🔔 Powiadomienia systemowe <button class="tbtn" onclick="markNotifsRead()">✓ oznacz wszystkie przeczytane</button></h3>
 <div id="notifList"></div>
+</div>
+<div id="sysOps" style="display:none">
+<h3>⚙️ Rejestr operacji <span class="muted">— wszystko co przechodzi przez kolejki systemu: LLM 🤖 · git 🌿 · testy/bramki 🧪 · telegram ✈️ · status: ⏳ czeka na wysłanie → 📤 wysłano → ✅ zrobione / ❌ błąd (próba N)</span></h3>
+<div id="opsBox" class="feed"></div>
 </div>
 </section>
 <section class="tabpage" id="tab-tasks">
@@ -641,6 +649,18 @@ const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','C
 function ccls(text){ text = String(text||''); return text.startsWith('🔄') ? 'inprogress' : (text.includes('✅') ? 'done' : ''); }
 const SUBCEL = {'1/5_PLAN':'planowanie zadania','2/5_IMPL':'implementacja kodu','3/5_TEST':'testy i weryfikacja','4/5_QG':'bramki jakości (lint/typy)','4.5_SIMPLIFY':'upraszczanie rozwiązania','5/5_COMMIT':'commit + push','LLM_EXEC':'wywołanie LLM','done':'zakończone'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
+// v2.7.23: rejestr operacji (ops) — każde działanie systemu ma tu status kolejki: ⏳ czeka na wysłanie → 📤 wysłano → ✅/❌
+const OP_STYLE = {'QUEUED':['⏳ czeka na wysłanie','#d29922'],'RUNNING':['📤 wysłano · w trakcie','#1f6feb'],'DONE':['✅ zrobione','#3fb950'],'FAILED':['❌ błąd','#f85149']};
+const OP_KIND_ICON = {llm:'🤖', git:'🌿', qg:'🧪', tg:'✈️'};
+function opBadge(o){ const s = OP_STYLE[o.status]||['❔','#6e7681']; return `<span class="opst" style="color:${s[1]};border:1px solid ${s[1]}">${s[0]}${o.attempts>1?` (próba ${o.attempts})`:''}</span>`; }
+function renderOps(ops){
+  if(!ops || !ops.length) return '<span class="muted">brak operacji — wszystko co system „wysyła” (LLM 🤖, git 🌿, testy 🧪, telegram ✈️) pojawi się tutaj ze statusem kolejki</span>';
+  return ops.slice().sort((a,b)=>((b.queued_at||0)-(a.queued_at||0))).map(o=>{
+    const dur = o.finished_at && o.started_at ? ` · <span class="muted">${fmtDur(o.finished_at-o.started_at)}</span>`
+      : (o.status==='RUNNING' ? ` · <span class="muted">trwa ${fmtDur(Date.now()/1000-(o.started_at||o.queued_at||0))}</span>` : '');
+    return `<div class="oprow"><span class="muted">${new Date((o.queued_at||0)*1000).toLocaleTimeString()}</span> <span>${OP_KIND_ICON[o.kind]||'⚙️'}</span> <b>${esc(o.label)}</b> ${o.task_id?`<a href="#" onclick="openTask('${esc(o.task_id)}');return false" style="color:#58a6ff">${esc(o.task_id)}</a>`:''} ${opBadge(o)}${dur}${o.detail?`<div class="muted" style="font-size:11px">${esc(o.detail)}</div>`:''}</div>`;
+  }).join('');
+}
 function pbadge(pid){ return `<span class="pbadge" style="background:${projColor(pid||'(brak)')}">${esc(pid||'(brak)')}</span>`; }
 function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); persistFilters(); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna — bez dubli renderu */ }
 function resetProjs(){ hiddenProjs.clear(); persistFilters(); refresh(); }
@@ -892,7 +912,7 @@ async function openTask(id, keep){
   document.getElementById('detail').classList.add('open');
   const d = t.task;
   // guard (review): nie przepisuj panelu przy każdym odświeżeniu — nie kasuje wpisanego komentarza
-  const key = 'task|'+id+'|'+(d.status||'')+'|'+(d.substep||'')+'|'+(d.updated_at||0)+'|'+(t.comments||[]).length+'|'+(t.events||[]).length+'|'+(t.attachments||[]).length+'|'+detailTab;
+  const key = 'task|'+id+'|'+(d.status||'')+'|'+(d.substep||'')+'|'+(d.updated_at||0)+'|'+(t.comments||[]).length+'|'+(t.events||[]).length+'|'+(t.attachments||[]).length+'|'+(t.ops||[]).length+'|'+detailTab;
   if(keep && document.getElementById('detailBody').dataset.key === key) return;
   document.getElementById('detailBody').dataset.key = key;
   const tabs = `<div class="dtabs">
@@ -900,6 +920,7 @@ async function openTask(id, keep){
     <button class="${detailTab==='history'?'on':''}" onclick="detailTab='history';openTask(curTask,true)">🕘 Historia (${(t.events||[]).length})</button>
     <button class="${detailTab==='comments'?'on':''}" onclick="detailTab='comments';openTask(curTask,true)">💬 Komentarze (${(t.comments||[]).length})</button>
     <button class="${detailTab==='atts'?'on':''}" onclick="detailTab='atts';openTask(curTask,true)">📎 Załączniki (${(t.attachments||[]).length})</button>
+    <button class="${detailTab==='ops'?'on':''}" onclick="detailTab='ops';openTask(curTask,true)">⚙️ Operacje (${(t.ops||[]).length})</button>
   </div>`;
   // blok podsumowania — ZAWSZE widoczny (tytuł, status, czas, rola, projekt, branch/PR)
   const summary = `<div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
@@ -942,6 +963,10 @@ async function openTask(id, keep){
               :`<pre class="attprev" id="attprev-${a.id}" style="display:none;white-space:pre-wrap;font-size:11px;background:#0d1117;padding:6px;border-radius:6px;margin-top:4px;max-height:300px;overflow:auto"></pre>`}
       </div>`;
     }).join('')||'<span class="muted">brak załączników — pliki wypracowane przez agenta (np. plan w .agents/runtime/) pojawiają się tu automatycznie</span>') + '</div>';
+  } else if(detailTab === 'ops'){
+    // v2.7.23: rejestr operacji zadania — każde działanie systemu (LLM/git/testy/telegram) ze statusem kolejki
+    body = `<h2>⚙️ Operacje zadania <span class="muted">(⏳ czeka na wysłanie → 📤 wysłano · w trakcie → ✅ zrobione / ❌ błąd — próba N)</span></h2>
+      <div class="histbox">${renderOps(t.ops||[])}</div>`;
   } else {
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
@@ -1130,11 +1155,14 @@ function showSysView(v){
   document.getElementById('sysQueue').style.display = v==='queue' ? '' : 'none';
   document.getElementById('sysLogs').style.display = v==='logs' ? '' : 'none';
   document.getElementById('sysNotifs').style.display = v==='notifs' ? '' : 'none';
+  document.getElementById('sysOps').style.display = v==='ops' ? '' : 'none';
 }
 function renderSys(){
   const d = lastState; if(!d) return;
   document.getElementById('qCount').textContent = (d.queue||[]).length;
   document.getElementById('nCount').textContent = d.notif_unread||0;
+  document.getElementById('opCount').textContent = ((d.ops_stats&&(d.ops_stats.queued+d.ops_stats.running))||0);  // v2.7.23: ile operacji czeka/w trakcie
+  document.getElementById('opsBox').innerHTML = renderOps(d.ops||[]);  // v2.7.23: rejestr operacji
   // v2.7.19: raport „za ile będzie” nad kolejką
   const etaRun = d.stats && d.stats.eta_running_at ? `🔮 bieżące RUNNING skończą się ~<b>${new Date(d.stats.eta_running_at*1000).toLocaleTimeString()}</b>` : '';
   const etaQ = d.stats && d.stats.eta_queue_s ? ` · kolejka razem ~${fmtDur(d.stats.eta_queue_s)}` : '';
@@ -2343,6 +2371,7 @@ def _snapshot(s: State) -> dict:
                 "runtime": runtime, "logs": logs,
                 "queue": queue, "applogs": applogs,
                 "notifications": s.list_notifications(60), "notif_unread": s.unread_notifications(),
+                "ops": s.recent_ops(100), "ops_stats": s.ops_stats(),  # v2.7.23: rejestr operacji
                 "milestones": s.list_milestones(),
                 "threads": team_threads.list_threads(s, limit=15),
                 "version": _version_info(),
@@ -2454,6 +2483,7 @@ def _task_detail(s: State, task_id: str) -> dict:
     return {"icons": ICON, "task": t, "comments": s.recent_comments(20, task_id=task_id),
             "events": s.recent_events(50, task_id=task_id),
             "attachments": s.list_attachments(task_id),
+            "ops": s.list_ops(task_id, 80),  # v2.7.23: operacje zadania (llm/git/qg/tg) ze statusem kolejki
             "available_actions": favail, "actions_def": fcfg.get("actions", {}), "stage": fstage}
 
 

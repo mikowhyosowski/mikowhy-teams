@@ -1,5 +1,20 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.23] — 2026-11-23 — rejestr operacji (ops): wszystko co przechodzi przez kolejki ma spójny status
+- 🧾 `state.ops` — nowa tabela rejestru operacji + API `op_enqueue/op_start/op_done/op_fail/op_requeue` (+ warianty `*_ref`).
+  Cykl każdej operacji: `QUEUED` (⏳ czeka na wysłanie) → `RUNNING` (📤 wysłano · w trakcie, próba N) → `DONE` (✅) / `FAILED` (❌);
+  retry wraca do `QUEUED` na koniec kolejki. Prune: >7 dni / >6000 wierszy. `State.op_recorder()` podpina jeden recorder pod moduły.
+- 🌿 `git_guard.run_git`: każda MUTUJĄCA komenda git (worktree add/remove, add, commit, push, fetch, rebase, merge, checkout…)
+  rejestrowana jako op kind=`git`; tylko-do-odczytu (status/diff/log/rev-parse…) NIE. task_id wyciągane ze ścieżki worktree.
+- 🤖 `llm_queue`: enqueue → op kind=`llm` ref=job id (task z treści promptu przez `_guess_task`); claim → RUNNING „wysłano”;
+  finish → DONE; fail → retry=QUEUED / FAILED; reclaim expired lease → QUEUED.
+- 🧪 `quality_gates` (`_qg_run`) i ✈️ `telegram_gate._call` — op kind=`qg`/`tg` dla każdego wywołania.
+- 🖥️ dashboard: zakładka System → **⚙️ Operacje** (licznik = czekające+w-trakcie, ostatnie 100 operacji wszystkich rodzajów)
+  + zakładka **⚙️ Operacje (N)** w szczegółach zadania; badge statusu: ⏳ czeka na wysłanie / 📤 wysłano · w trakcie / ✅ zrobione / ❌ błąd (próba N),
+  ikona rodzaju (🤖🌿🧪✈️), czas trwania, szczegół błędu (rc/stderr). `/api/state` = `ops` + `ops_stats`, `/api/task/<id>` = `ops` zadania.
+- 🧪 testy: cykl życia op, warianty ref, git tylko-mutujące, llm job→op (4 nowe); fix prune (`LIMIT -N` kasował wszystko przy małej tabeli)
+- ✅ weryfikacja live: 0 milestone_error od 20:00 (fix `--detach` z v2.7.21 trzyma); ops lecą (git rc=0, llm QUEUED→RUNNING per task)
+
 ## [2.7.22] — 2026-11-23 — zmiany statusu/etapu wyraźnie „co → na co” w logach i powiadomieniach
 - 🔔 `state.transition`: przejście w ważny status (IN_REVIEW / READY_TO_MERGE / MERGED / FAILED / AWAITING_OWNER /
   BLOCKED) generuje powiadomienie kind=`status` „TASK: STARY → NOWY · etap X → Y” (dedup 600 s; READY/RUNNING bez notyfikacji)

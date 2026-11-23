@@ -39,7 +39,8 @@ def test_ops_tasks_in_live_state():
     assert t1 and t1["status"] in ("READY", "RUNNING", "IN_REVIEW", "BLOCKED") and t1["priority"] == "P0"
     assert t1["role"] == "principal-debugger"
     t2 = s.get_task("OPS-GUARDIAN-SETUP")
-    assert t2 and t2["status"] in ("READY", "RUNNING", "IN_REVIEW", "AWAITING_OWNER", "BLOCKED") and t2["priority"] == "P1"
+    # v2.7.18: po wyczerpaniu retry zadanie może też parkować w FAILED (audyt AUDIT-FAILED-ROOTCAUSE)
+    assert t2 and t2["status"] in ("READY", "RUNNING", "IN_REVIEW", "AWAITING_OWNER", "BLOCKED", "FAILED") and t2["priority"] == "P1"
     assert t2["role"] in ("workload-guardian", "principal-debugger")  # circuit breaker mógł podmienić rolę po retry>=3
 
 
@@ -490,3 +491,89 @@ def test_status_change_notification_arrow():
     assert ns and ns[0]["kind"] == "status" and "RUNNING → IN_REVIEW" in ns[0]["text"] and "etap" in ns[0]["text"]
     s.transition("T-N", "IN_REVIEW", substep="done")    # duplikat w oknie 600s -> skip
     assert len([n for n in s.list_notifications() if n["task_id"] == "T-N"]) == 1
+
+
+# --- v2.7.23: rejestr operacji (ops) — wszystko co przechodzi przez kolejki ma spójny status ---
+
+def test_ops_lifecycle_queued_running_done_failed():
+    """Cykl życia op: QUEUED (czeka na wysłanie) -> RUNNING (wysłano) -> DONE/FAILED, z próbami i czasami."""
+    s = _tmp_state()
+    oid = s.op_enqueue("git", "git commit -m x", task_id="T1", detail="cwd=/tmp")
+    assert oid
+    ops = s.list_ops("T1")
+    assert ops[0]["status"] == "QUEUED" and ops[0]["attempts"] == 0 and ops[0]["queued_at"]
+    s.op_start(oid)
+    assert s.list_ops("T1")[0]["status"] == "RUNNING" and s.list_ops("T1")[0]["attempts"] == 1
+    s.op_done(oid, "rc=0")
+    op = s.list_ops("T1")[0]
+    assert op["status"] == "DONE" and op["finished_at"] and op["detail"] == "rc=0"
+    oid2 = s.op_enqueue("llm", "🤖 LLM complete", ref="llmj-t1")
+    s.op_start(oid2); s.op_fail(oid2, "boom")
+    assert s.list_ops()[0]["status"] == "FAILED"
+    s.op_requeue(oid2, "retry 1")
+    assert s.list_ops()[0]["status"] == "QUEUED" and s.list_ops()[0]["attempts"] == 2
+
+
+def test_ops_ref_helpers_and_stats():
+    """Warianty po ref (llmj-xxx): start/done/fail/requeue zmieniają ten sam wiersz op."""
+    s = _tmp_state()
+    s.op_enqueue("llm", "🤖 LLM complete · 1/5_PLAN", ref="llmj-ref1", task_id="T2")
+    s.op_start_ref("llm", "llmj-ref1")
+    s.op_requeue_ref("llm", "llmj-ref1", "retry 1/3")
+    s.op_start_ref("llm", "llmj-ref1")
+    s.op_done_ref("llm", "llmj-ref1", "✅ odpowiedź 100 znaków")
+    op = s.list_ops("T2")[0]
+    assert op["status"] == "DONE" and op["attempts"] >= 2 and "odpowiedź" in op["detail"]
+    st = s.ops_stats()
+    assert st["done"] == 1 and st["queued"] == 0
+
+
+def test_git_guard_records_only_mutating_commands():
+    """run_git: komendy tylko-do-odczytu NIE są operacją; mutujące tak (DONE albo FAILED z rc)."""
+    from engine import git_guard
+    calls = []
+
+    class FakeRec:
+        def __call__(self, kind, label, task_id=None, detail="", ref=None):
+            calls.append(("enq", kind, label, task_id))
+            return "op-fake"
+        def start(self, o, d=None): calls.append(("start", o))
+        def done(self, o, d=""): calls.append(("done", o, d))
+        def fail(self, o, d=""): calls.append(("fail", o, d))
+
+    git_guard.set_op_recorder(FakeRec())
+    try:
+        git_guard.run_git(["status", "--porcelain"], cwd="/tmp", check=False)
+        git_guard.run_git(["worktree", "list"], cwd="/tmp", check=False)
+        git_guard.run_git(["log", "-1"], cwd="/tmp", check=False)
+        assert calls == []  # readonly -> brak rejestracji
+        git_guard.run_git(["commit", "-m", "x"], cwd="/tmp", check=False)  # /tmp nie jest repo -> rc!=0
+        assert calls[0][0] == "enq" and calls[0][1] == "git" and calls[0][2].startswith("git commit")
+        assert calls[-1][0] == "fail" and "rc=128" in calls[-1][2]
+    finally:
+        git_guard.set_op_recorder(None)
+
+
+def test_llm_queue_job_creates_op():
+    """enqueue LLM -> op kind=llm status QUEUED ref=job; finish -> DONE; fail -> requeue/FAILED."""
+    from engine import llm_queue
+    s = _tmp_state()
+    s.add_task("OPS-T", "FACTORY-OPS", 9, "test llm op", "backend-dev", status="READY")
+    jid = llm_queue.enqueue(s, "complete", {"system": "x", "user": "zadanie OPS-T zrób plan"},
+                            requester="gateway", step="1/5_PLAN", priority="P1")
+    ops = [o for o in s.list_ops() if o["ref"] == jid]
+    assert ops and ops[0]["kind"] == "llm" and ops[0]["status"] == "QUEUED"
+    assert ops[0]["task_id"] == "OPS-T"  # task wyciągnięty z treści promptu
+    job = llm_queue.claim_next(s)
+    assert job and job["id"] == jid
+    assert [o for o in s.list_ops() if o["ref"] == jid][0]["status"] == "RUNNING"
+    llm_queue.finish(s, jid, "wynik")
+    op = [o for o in s.list_ops() if o["ref"] == jid][0]
+    assert op["status"] == "DONE" and "odpowiedź" in op["detail"]
+    jid2 = llm_queue.enqueue(s, "complete", {"system": "y", "user": "inne"}, requester="gateway", step="2/5_IMPL")
+    job2 = llm_queue.claim_next(s)  # attempts -> 1
+    assert job2 and job2["id"] == jid2
+    llm_queue.fail(s, jid2, "timeout", max_attempts=3)  # attempts(1) < 3 -> retry
+    assert [o for o in s.list_ops() if o["ref"] == jid2][0]["status"] == "QUEUED"  # retry -> znów czeka na wysłanie
+    llm_queue.fail(s, jid2, "timeout", max_attempts=1)  # attempts(1) >= max(1) -> FAILED
+    assert [o for o in s.list_ops() if o["ref"] == jid2][0]["status"] == "FAILED"

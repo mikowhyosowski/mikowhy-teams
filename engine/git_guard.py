@@ -35,6 +35,38 @@ class MergeConflict(GitError):
     pass
 
 
+# --- v2.7.23: rejestr operacji (ops) — każda mutująca komenda git leci przez jeden rejestr ---
+_op_recorder = None  # set_op_recorder(State.op_recorder()) — podpinane przez State.__init__
+
+
+def set_op_recorder(rec) -> None:
+    global _op_recorder
+    _op_recorder = rec
+
+
+# komendy tylko-do-odczytu — NIE rejestrujemy jako operacje (nie są „wysyłane” nigdzie)
+_READONLY_GIT = {"status", "diff", "log", "rev-parse", "rev-list", "ls-files", "show-ref", "symbolic-ref",
+                 "branch", "remote", "grep", "describe", "blame", "cat-file", "for-each-ref", "config",
+                 "name-rev", "merge-base", "count-objects", "shortlog", "tag"}
+
+
+def _op_task(cwd: Path | str) -> str | None:
+    """Zadanie z katalogu worktree: .agents/worktrees/<ns>/<TASK-ID> (lub <TASK-ID>) -> TASK-ID; _integration/ROOT -> None."""
+    try:
+        rel = Path(cwd).resolve().relative_to(WORKTREES_ROOT.resolve())
+        parts = rel.parts
+        if not parts or parts[0] == "_integration":
+            return None
+        return parts[-1]
+    except (ValueError, OSError):
+        return None
+
+
+def _git_label(args: list[str]) -> str:
+    lab = "git " + " ".join(args[:3])
+    return lab[:90]
+
+
 def default_branch(repo: Path | str = ROOT) -> str:
     """Domyślna gałąź repo: master (jeśli istnieje) > origin/HEAD > bieżący HEAD.
     NIGDY nie bieżący HEAD jako pierwszy wybór — główny checkout mógł być na feature."""
@@ -54,7 +86,27 @@ def default_branch(repo: Path | str = ROOT) -> str:
 
 
 def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    # v2.7.23: każda MUTUJĄCA komenda (worktree add/remove, add, commit, push, fetch, rebase, merge, checkout...)
+    # jest rejestrowana w ops jako QUEUED -> RUNNING -> DONE/FAILED — Opiekun widzi status każdego działania git
+    rec = _op_recorder
+    record = (rec is not None and bool(args) and args[0] not in _READONLY_GIT
+              and not (args[0] == "worktree" and len(args) > 1 and args[1] == "list"))
+    op_id = ""
+    if record:
+        op_id = rec("git", _git_label(args), _op_task(cwd), f"cwd={cwd}")
+        if op_id:
+            rec.start(op_id)
+    try:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    except Exception as e:
+        if op_id:
+            rec.fail(op_id, repr(e)[:250])
+        raise
+    if op_id:
+        if proc.returncode == 0:
+            rec.done(op_id, "rc=0")
+        else:
+            rec.fail(op_id, f"rc={proc.returncode}: {proc.stderr.strip()[:300]}")
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} (cwd={cwd}) -> rc={proc.returncode}: {proc.stderr.strip()}")
     return proc

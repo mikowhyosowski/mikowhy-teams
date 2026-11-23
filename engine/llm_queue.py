@@ -141,6 +141,20 @@ def _dedup_key(kind: str, payload: dict[str, Any]) -> str:
     return "dd-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _guess_task(s: State, payload: dict[str, Any], step: str = "") -> str | None:
+    """v2.7.23: job LLM nie ma wprost task_id w payload — szukamy identyfikatora zadania (np. CHAT-0022,
+    OPS-LLM-ROOTCAUSE) w treści promptu/stepu, żeby op landował w dobrym zadaniu w rejestrze ops."""
+    try:
+        text = f"{step} {payload.get('user', '')} {payload.get('system', '')}"[:6000]
+        for row in s._conn().execute("SELECT id FROM tasks").fetchall():
+            tid = row[0]
+            if tid and tid in text:
+                return tid
+    except Exception:
+        pass
+    return payload.get("task_id")
+
+
 def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", step: str = "",
             priority: str = "P2") -> str:
     """Dodaje job do kolejki.
@@ -171,6 +185,10 @@ def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", s
         (jid, kind, json.dumps(payload, ensure_ascii=False), requester, step, prio, dk,
          str(payload.get("model", "")), now))
     s.record_metric("llm_job_enqueued", {"job": jid, "kind": kind, "step": step, "requester": requester, "priority": prio}, None)
+    # v2.7.23: rejestr operacji — job LLM jako op kind='llm' (QUEUED = „czeka na wysłanie”), ref=job id
+    s.op_enqueue("llm", f"🤖 LLM {kind}" + (f" · {step}" if step else "") + (f" · {requester}" if requester else ""),
+                 task_id=_guess_task(s, payload, step), ref=jid,
+                 payload={"kind": kind, "step": step, "priority": prio, "requester": requester})
     return jid
 
 
@@ -190,6 +208,8 @@ def claim_next(s: State, lease_s: int = LEASE_S) -> dict | None:
            RETURNING *""",
         (now + lease_s, now, now))
     row = cur.fetchone()
+    if row:
+        s.op_start_ref("llm", row["id"], "wysłano do modelu")  # v2.7.23: op -> RUNNING („wysłano”)
     return dict(row) if row else None
 
 
@@ -207,7 +227,10 @@ def claim_batch(s: State, model: str, n: int, lease_s: int = LEASE_S) -> list[di
                         LIMIT ?)
            RETURNING *""",
         (now + lease_s, model, now, n))
-    return [dict(r) for r in cur.fetchall()]
+    jobs = [dict(r) for r in cur.fetchall()]
+    for j in jobs:  # v2.7.23: op -> RUNNING („wysłano”)
+        s.op_start_ref("llm", j["id"], "wysłano do modelu (batch)" if len(jobs) > 1 else "wysłano do modelu")
+    return jobs
 
 
 BATCH_MAX_CHARS = 20000  # v4: batch tylko gdy suma promptów < 20k znaków (inaczej pojedynczo — parse safety)
@@ -292,6 +315,7 @@ def finish(s: State, job_id: str, result: str) -> None:
     s._conn().execute("UPDATE llm_jobs SET status='DONE', result=?, done_at=?, lease_until=0 WHERE id=?",
                       (result[:20000], time.time(), job_id))
     s.record_metric("llm_job_done", {"job": job_id}, None)
+    s.op_done_ref("llm", job_id, f"✅ odpowiedź {len(result)} znaków")  # v2.7.23: op -> DONE
 
 
 def fail(s: State, job_id: str, error: str, max_attempts: int = MAX_ATTEMPTS) -> None:
@@ -306,10 +330,12 @@ def fail(s: State, job_id: str, error: str, max_attempts: int = MAX_ATTEMPTS) ->
             "UPDATE llm_jobs SET status='QUEUED', error=?, delay_until=?, lease_until=0 WHERE id=?",
             (error[:1000], now + delay, job_id))
         s.record_metric("llm_job_retry", {"job": job_id, "attempts": attempts, "delay_s": round(delay)}, None)
+        s.op_requeue_ref("llm", job_id, f"retry {attempts}/{max_attempts} za {round(delay)}s: {error[:160]}")  # v2.7.23
     else:
         s._conn().execute("UPDATE llm_jobs SET status='FAILED', error=?, done_at=?, lease_until=0 WHERE id=?",
                           (error[:1000], now, job_id))
         s.record_metric("llm_job_failed", {"job": job_id, "attempts": attempts, "error": error[:200]}, None)
+        s.op_fail_ref("llm", job_id, f"❌ po {attempts} próbach: {error[:200]}")  # v2.7.23
 
 
 def wait_result(s: State, job_id: str, timeout: float = 900.0, poll_s: float = 0.25) -> str:
@@ -411,6 +437,7 @@ def _reclaim_expired(s: State) -> int:
                 "UPDATE llm_jobs SET status='QUEUED', lease_until=0, delay_until=?, error=? WHERE id=?",
                 (now + BACKOFF_BASE_S, "lease expired — reclaim", r["id"]))
             s.record_metric("llm_lease_reclaim", {"job": r["id"], "attempts": r["attempts"]}, None)
+            s.op_requeue_ref("llm", r["id"], "lease expired — reclaim (wraca na koniec kolejki)")  # v2.7.23
     return len(rows)
 
 

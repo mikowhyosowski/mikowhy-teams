@@ -21,6 +21,36 @@ ROOT = Path(__file__).resolve().parent.parent
 PRD_PATH = ROOT / "docs" / "PRD.md"
 CONTRACTS = ROOT / "contracts"
 
+# --- v2.7.23: rejestr operacji (ops) — bramki jakości też są „wysyłane” i mają status kolejki ---
+_op_recorder = None  # set_op_recorder(State.op_recorder()) — podpinane przez State.__init__
+
+
+def set_op_recorder(rec) -> None:
+    global _op_recorder
+    _op_recorder = rec
+
+
+def _qg_task(worktree: Path) -> str | None:
+    from engine.git_guard import _op_task
+    return _op_task(worktree)
+
+
+def _qg_run(op_label: str, worktree: Path, cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
+    """subprocess.run opakowany w rejestr ops: QUEUED -> RUNNING -> DONE/FAILED."""
+    rec = _op_recorder
+    op_id = ""
+    if rec is not None:
+        op_id = rec("qg", op_label, _qg_task(worktree))
+        if op_id:
+            rec.start(op_id)
+    proc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True, timeout=timeout)
+    if op_id:
+        if proc.returncode == 0:
+            rec.done(op_id, "rc=0")
+        else:
+            rec.fail(op_id, f"rc={proc.returncode}: {(proc.stdout + proc.stderr)[-300:]}")
+    return proc
+
 
 # --- QG-1: PRD ----------------------------------------------------------------
 GHERKIN_RE = re.compile(r"\b(Given|When|Then|And)\b", re.IGNORECASE)
@@ -99,18 +129,15 @@ def qg3_integration_e2e(milestone_branch: str, worktree: Path) -> dict:
             scenarios = gherkin_scenarios()
             e2e_dir = ROOT / "tests" / "e2e"
             if shutil.which("pytest") and e2e_dir.exists():
-                proc = subprocess.run(["pytest", str(e2e_dir), "-q", "--tb=short"],
-                                      cwd=worktree, capture_output=True, text=True, timeout=600)
+                proc = _qg_run("🧪 QG-3 e2e pytest", worktree, ["pytest", str(e2e_dir), "-q", "--tb=short"], 600)
                 if proc.returncode != 0:
                     problems.append(f"E2E pytest: {proc.stdout[-2000:]}")
             if shutil.which("schemathesis"):
-                proc = subprocess.run(
-                    ["schemathesis", "run", str(CONTRACTS / "openapi.yaml"), "--checks", "all"],
-                    cwd=worktree, capture_output=True, text=True, timeout=600)
+                proc = _qg_run("🧪 QG-3 schemathesis", worktree,
+                               ["schemathesis", "run", str(CONTRACTS / "openapi.yaml"), "--checks", "all"], 600)
                 if proc.returncode not in (0, 1):  # 1 = wykryte błędy schemathesis
                     problems.append(f"schemathesis: rc={proc.returncode} {proc.stdout[-1000:]}")
-            subprocess.run(["docker", "compose", "-f", str(compose), "down"],
-                           cwd=ROOT, capture_output=True, text=True)
+            _qg_run("🧪 QG-3 docker compose down", ROOT, ["docker", "compose", "-f", str(compose), "down"], 120)
     else:
         problems.append("Brak contracts/docker-compose.e2e.yml — QG-3 wymaga pełnego stosu")
     return {"gate": "QG-3", "ok": not problems, "scenarios": gherkin_scenarios(), "problems": problems}
@@ -127,7 +154,7 @@ def local_gates(worktree: Path) -> list[dict]:
     def run(name: str, cmd: list[str], timeout: int = 300) -> dict:
         if _tool(cmd[0]) is None:
             return {"name": name, "ok": True, "skipped": True, "tool": cmd[0]}
-        proc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True, timeout=timeout)
+        proc = _qg_run(f"🧪 QG {name}: {cmd[0]}", worktree, cmd, timeout)  # v2.7.23: op w rejestrze
         return {"name": name, "ok": proc.returncode == 0, "tool": cmd[0],
                 "output": (proc.stdout + proc.stderr)[-4000:]}
 
@@ -143,6 +170,5 @@ def regression(worktree: Path) -> dict:
     """Pełny zestaw testów regresyjnych na zrebasowanym branchu (Faza 6)."""
     if _tool("pytest") is None:
         return {"ok": True, "skipped": True}
-    proc = subprocess.run(["pytest", "-q", "--tb=short"], cwd=worktree,
-                          capture_output=True, text=True, timeout=900)
+    proc = _qg_run("🧪 QG regression pytest", worktree, ["pytest", "-q", "--tb=short"], 900)  # v2.7.23: op w rejestrze
     return {"ok": proc.returncode == 0, "output": (proc.stdout + proc.stderr)[-4000:]}

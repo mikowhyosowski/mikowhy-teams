@@ -38,12 +38,36 @@ def _enabled() -> bool:
     return bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
 
 
+# --- v2.7.23: rejestr operacji (ops) — wysłanie na Telegram też ma status kolejki ---
+_op_recorder = None  # set_op_recorder(State.op_recorder()) — podpinane przez State.__init__
+
+
+def set_op_recorder(rec) -> None:
+    global _op_recorder
+    _op_recorder = rec
+
+
 def _call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     url = f"{API}/bot{token}/{method}"
     data = urllib.parse.urlencode(payload).encode()
-    with urllib.request.urlopen(url, data=data, timeout=30) as resp:
-        return json.loads(resp.read().decode())
+    rec = _op_recorder  # v2.7.23: op kind='tg' QUEUED -> RUNNING -> DONE/FAILED
+    op_id = ""
+    if rec is not None:
+        text = str(payload.get("text", ""))[:80]
+        op_id = rec("tg", f"✈️ tg {method}" + (f" · {text}" if text else ""))
+        if op_id:
+            rec.start(op_id)
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=30) as resp:
+            out = json.loads(resp.read().decode())
+        if op_id:
+            rec.done(op_id, "ok" if out.get("ok") else str(out)[:200])
+        return out
+    except Exception as e:
+        if op_id:
+            rec.fail(op_id, repr(e)[:250])
+        raise
 
 
 def deploy_gate_enabled() -> bool:
