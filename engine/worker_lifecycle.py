@@ -40,6 +40,29 @@ def _log(task_id: str, msg: str) -> None:
     print(f"[{task_id}] {msg}", flush=True)
 
 
+def _stage_stop(state: State, task_id: str, stage: str) -> bool:
+    """v2.7.26 — pauza na granicy etapu (przycisk ⏹️ „Zakończ po etapie" Sponsora).
+
+    Zwraca True gdy Sponsor żądał stopu: worker kończy bieżący etap, czyści flagę,
+    przechodzi RUNNING → READY (bez epilogów kolejnych etapów) i zostawia czytelny
+    komentarz Cel/Efekt. Wznowienie = standardowa kolejka (claim), NIC nie ginie.
+    """
+    try:
+        if not state.stop_requested(task_id):
+            return False
+    except Exception:
+        return False  # brak tabeli/kv — gdyby feature nie było dostępne, nie blokuj pracy
+    state.clear_stop(task_id)
+    state.transition(task_id, READY,
+                     review_notes=f"pauza ⏹️ na granicy etapu {stage} (żądanie Sponsora: zakończ po etapie)")
+    state.add_comment(task_id, "orchestrator",
+                      f"⏹️ Cel: zakończyć pracę po etapie {stage} → ✅ Efekt: pauza na granicy etapu "
+                      f"(status READY, postęp i załączniki zachowane) — wznowienie ze standardowej kolejki")
+    state.record_metric("stage_stop", {"task": task_id, "stage": stage}, task_id)
+    _log(task_id, f"stage-stop: pauza po etapie {stage} → READY")
+    return True
+
+
 def step0_prepare(state: State, task: dict) -> Path:
     """Krok 0 (Python): izolowany worktree + gałąź feature/<task>.
     Repo worktree = target_repo_path projektu (lub katalog silnika gdy task['repo']=='factory')."""
@@ -576,14 +599,20 @@ def run(task_id: str) -> int:
         if task["status"] != "RUNNING":
             telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
             return 0
+        if _stage_stop(state, task_id, "1/5_PLAN"):
+            return 0
         _tg(state, task_id)
         step2_implement(state, task, worktree)
         task = state.get_task(task_id)
         if task["status"] != "RUNNING":  # np. AWAITING_OWNER — czekamy na decyzję Opiekuna
             _tg(state, task_id)
             return 0
+        if _stage_stop(state, task_id, "2/5_IMPL"):
+            return 0
         _tg(state, task_id)
         step3_tests(state, task, worktree)
+        if _stage_stop(state, task_id, "3/5_TEST"):
+            return 0
         _tg(state, task_id)
         step4_quality_gate(state, task, worktree, base)
         task = state.get_task(task_id)
@@ -591,9 +620,13 @@ def run(task_id: str) -> int:
             telegram_reporter.post_event(state, task, f"❌ lokalny QG nie przeszedł: {(task.get('review_notes') or '')[:300]}")
             _tg(state, task_id)
             return 0
+        if _stage_stop(state, task_id, "4/5_QG"):
+            return 0
         step45_simplify(state, task, worktree, base)
         task = state.get_task(task_id)
         if task["status"] == "RUNNING":
+            if _stage_stop(state, task_id, "4.5_SIMPLIFY"):
+                return 0
             step5_commit(state, task, worktree, base)
         task = state.get_task(task_id)
         if task and task["status"] == "IN_REVIEW":

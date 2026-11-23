@@ -1248,6 +1248,7 @@ const ACTION_HELP = {
   decline: 'Odrzucam zadanie → status BLOCKED, substep OWNER_PACKET — zamknięte; odblokowanie tylko ręcznie przez READY',
   retry: 'Wznawiam ręcznie → READY, retry=0 — na koniec kolejki wg sortowania (priorytet → postęp → wiek)',
   merge: 'Wdrażam teraz → orchestrator merguje gałąź (rebase + regression + push) → status MERGED',
+  finish_stage: 'Dokończ i pauzuj: worker kończy bieżący etap → status READY (postęp zachowany, wznowienie z kolejki)',
   comment: 'Tylko komentarz — bez zmiany statusu; leci do zadania i na PR na GitHubie',
   set_priority: 'Tylko priorytet P0–P3 — bez zmiany statusu; ustawia pozycję w kolejce'
 };

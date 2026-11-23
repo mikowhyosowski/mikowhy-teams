@@ -22,7 +22,7 @@ OVERRIDE_CFG = ROOT / ".agents" / "flow" / "flow.config.json"
 
 REQUIRED_KEYS = ("stages", "transitions", "actions", "layout", "theme")
 KNOWN_STATUSES = set(VALID_TRANSITIONS.keys()) | {"MERGED"}
-KNOWN_ACTION_TYPES = {"approve", "decline", "retry", "comment", "set_priority", "merge"}  # v2.7.10: + merge (🚀 Wdróż)
+KNOWN_ACTION_TYPES = {"approve", "decline", "retry", "comment", "set_priority", "merge", "stop"}  # v2.7.26: + stop (⏹️ Zakończ po etapie)
 PRIORITIES = ("P0", "P1", "P2", "P3")
 
 
@@ -329,6 +329,18 @@ def apply_action(task_id: str, action_id: str, payload: dict | None = None,
                       "🚀 Cel: wdrożyć zadanie (merge do gałęzi docelowej) → ✅ Efekt: zlecone — "
                       "orchestrator zmerguje w najbliższym ticku (rebase + regression gates + push)")
         s.record_metric("sponsor_merge", {"task": task_id, "via": "flow"}, task_id)
+        to = status
+    elif atype == "stop":
+        # v2.7.26: „⏹️ Zakończ po etapie" — NIE zmieniamy statusu (zadanie zostaje RUNNING,
+        # worker dokończy bieżący etap, a na granicy etapu sam zrobi RUNNING → READY).
+        # status musi pozostać RUNNING, bo VALID_TRANSITIONS nie ma prosta ścieżki z przerywania —
+        # pauzy pilnuje work_lifecycle._stage_stop().
+        import time as _t
+        s.request_stop(task_id)
+        s.add_comment(task_id, "sponsor/flow",
+                      "⏹️ Cel: zakończyć pracę po bieżącym etapie → ✅ Efekt: worker dokończy aktualny krok i pauzuje "
+                      "(status READY, bez podejmowania kolejnego etapu); wznowienie = standardowa kolejka")
+        s.record_metric("sponsor_stage_stop", {"task": task_id, "at": _t.time(), "via": "flow"}, task_id)
         to = status
     elif atype == "set_priority":
         prio = str(payload.get("priority") or payload.get("value") or "").strip()

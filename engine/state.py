@@ -958,6 +958,16 @@ class State:
         params.append(limit)
         return [dict(r) for r in self._conn().execute(q, params).fetchall()]
 
+    def request_stop(self, task_id: str) -> None:
+        """v2.7.26: żądanie „⏹️ Zakończ po etapie" — worker kończy bieżący etap i pauzuje (READY)."""
+        self.set_kv(f"stop_req:{task_id}", 1)
+
+    def clear_stop(self, task_id: str) -> None:
+        self.set_kv(f"stop_req:{task_id}", 0)
+
+    def stop_requested(self, task_id: str) -> bool:
+        return bool(self.get_kv(f"stop_req:{task_id}", 0))
+
     def wake_cooling(self) -> int:
         """❄️→▶️ v2.7.23: budzi zamrożone zadania (status COOLING), których sleep bezpieczeństwa minął -> READY."""
         cur = self._conn().execute(
