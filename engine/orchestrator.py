@@ -540,11 +540,21 @@ class Orchestrator:
         except Exception as exc:
             self.state.record_metric("telegram_poll_error", {"error": repr(exc)})
 
+    # --- kolejka LLM: dispatcher (jeden proces = serialne wywołania vibe CLI) ---------
+    def _dispatch_llm_queue(self) -> None:
+        """Konsumuje llm_jobs — stąd keyring/vibe CLI dotyka tylko orchestrator (koniec rc=3)."""
+        try:
+            from engine import llm_queue
+            llm_queue.dispatch_once(self.state, max_jobs=2)
+        except Exception as e:
+            self.state.record_metric("llm_dispatch_error", {"error": repr(e)}, None)
+
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
         self._auto_approve()
         self._auto_retry_failed()
+        self._dispatch_llm_queue()
         self._launch_workers()
         self._launch_reviews()
         self._circuit_breakers()

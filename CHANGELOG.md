@@ -1,5 +1,18 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.6.0] — 2026-11-23
+- 🤖 **Kolejka LLM** (`engine/llm_queue.py`, tabela `llm_jobs`): wszystkie wywołania `complete` idą przez kolejkę
+  (QUEUED→RUNNING→DONE/FAILED, **lease** z auto-requeue po crashu, **retry z backoff** 8s·2^n do 5 prób,
+  **rate limit** 0.8s między startami). Dispatcher w ticku orchestratora wykonuje SERYJNIE — keyring/vibe CLI
+  dotyka tylko jeden proces → **koniec rc=3 „Reading API keys from the system keyring”** (przyczyna ESCALATED CHAT-0021/0012b)
+- 🔒 `llm_gateway`: cross-process file-lock `.agents/llm.lock` wokół każdego wywołania `vibe` (także agent-mode);
+  queue-mode włączany kv `llm_queue` / env `LLM_QUEUE=0` wyłącza
+- 📊 Zakładka Live: sekcja „🤖 Kolejka LLM” (API /api/llm/jobs — stats per status + ostatnie joby z błędami)
+- 🐛 FIX worktree: `create_worktree` usuwa stary worktree trzymający ten sam branch („already checked out” → GitError ESCALATED)
+- 🧹 QG odblokowane: martwe testy (create_app, sre_deployer, task_worker, staging) przeniesione do tests/legacy + conftest
+- 💤 Miganie: karty decyzji/alertów pulsują tylko ~10s (pulseIco zamiast infinite) — „odczekaj chwilę i przestań migać”
+- 📋 Zadanie SELF-011 (P1, tech-lead-planner): szczegółowy plan pełnej migracji procesów na kolejki z ponawianiem
+
 ## [2.5.2] — 2026-11-23
 - 🐛 FIX widok Firma: biuro „czasami całkowicie znikało” po kliku — przyczyna: wyścig współbieżnych renderFirma
   (klik biuro = toggleProj wołał refresh() + renderFirma(), a refreshInner też wołał renderFirma przy aktywnej zakładce)

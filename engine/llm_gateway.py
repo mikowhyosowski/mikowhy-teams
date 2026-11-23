@@ -26,6 +26,38 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME = ROOT / ".agents" / "runtime"
+LLM_LOCK = ROOT / ".agents" / "llm.lock"
+
+
+@__import__("contextlib").contextmanager
+def _llm_process_lock(timeout_s: float = 900.0):
+    """Cross-process lock na wywołania `vibe` CLI.
+
+    Keyring/keys nie jest process-safe — współbieżne procesy vibe padają rc=3
+    ("Reading API keys from the system keyring"). Lock serializuje WSZYSTKIE
+    wywołania CLI (także agent-mode) na tej maszynie.
+    """
+    import contextlib, fcntl
+    LLM_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    f = open(LLM_LOCK, "w")
+    deadline = time.time() + timeout_s
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.time() > deadline:
+                f.close()
+                raise TimeoutError("llm lock timeout — za dużo równoległych wywołań LLM (kolejka powinna to serializować)")
+            time.sleep(0.5)
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        f.close()
 
 
 def _load_dotenv(path: Path = ROOT / ".env") -> None:
@@ -195,10 +227,30 @@ class VibeCliGateway(LLMGateway):
             # VIBE_ENABLED_TOOLS usuwamy z env subprocessu (vibe ostrzega o nieparsowalnym formacie);
             # narzędzia włączamy wyłącznie flagą --enabled-tools powyżej
             clean_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_ENABLED_TOOLS")}
-            return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                                  timeout=self.timeout + 60, env=clean_env)
+            with _llm_process_lock():
+                return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                                      timeout=self.timeout + 60, env=clean_env)
 
     def complete(self, *, system: str, user: str, step: str, model: str) -> str:
+        # KOLEJKA LLM: krótkie wywołania (complete) idą przez llm_jobs — wykonuje je
+        # seryjnie dispatcher w ticku orchestratora (rate limit + retry/backoff + lease).
+        # Dzięki temu keyring/vibe CLI dotyka tylko jeden proces (koniec rc=3 keyring).
+        s = None
+        queue_on = False
+        try:
+            from engine.state import State
+            from engine import llm_queue
+            s = State()
+            queue_on = llm_queue.enabled(s)
+        except Exception:
+            queue_on = False
+        if queue_on and s is not None:
+            from engine import llm_queue
+            jid = llm_queue.enqueue(s, "complete",
+                                    {"system": system, "user": user, "step": step, "model": model},
+                                    requester="gateway", step=step)
+            # wynik/timeout/FAILED lecą dalej (nie łapiemy) — fallback tylko gdy kolejka niedostępna
+            return llm_queue.wait_result(s, jid, timeout=self.timeout + 300)
         alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
         enabled = os.environ.get("VIBE_ENABLED_TOOLS", "__none__")
         attempts = 3 if enabled == "__none__" else 2  # bez tooli: model czasem mimo zakazu próbuje tooli — retry z mocniejszym przypomnieniem
@@ -255,8 +307,9 @@ class VibeCliGateway(LLMGateway):
                 if t:
                     cmd += ["--enabled-tools", t]
             clean_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_ENABLED_TOOLS")}
-            proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                                  timeout=time_limit + 120, env=clean_env)
+            with _llm_process_lock(timeout_s=time_limit + 180):
+                proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                                      timeout=time_limit + 120, env=clean_env)
         try:
             (RUNTIME / f"raw-{safe_step}-{int(time.time())}.txt").write_text(
                 f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}",

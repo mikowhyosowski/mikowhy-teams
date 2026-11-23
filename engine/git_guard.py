@@ -87,6 +87,19 @@ def create_worktree(task_id: str, base_branch: str, branch: str,
             shutil.rmtree(path, ignore_errors=True)
     exists = run_git(["rev-parse", "--verify", "--quiet", branch], cwd=repo, check=False).returncode == 0
     if exists:
+        # branch może być już wyciągnięty w STARYM worktree („already checked out at …”) — usuń go stamtąd
+        lst = run_git(["worktree", "list", "--porcelain"], cwd=repo, check=False).stdout
+        for block in lst.split("\n\n"):
+            p = b = None
+            for ln in block.splitlines():
+                if ln.startswith("worktree "):
+                    p = ln[len("worktree "):]
+                elif ln.startswith("branch "):
+                    b = ln[len("branch "):]
+            if b == f"refs/heads/{branch}" and p and Path(p) != path:
+                run_git(["worktree", "remove", "--force", p], cwd=repo, check=False)
+                if Path(p).exists():
+                    shutil.rmtree(p, ignore_errors=True)
         run_git(["worktree", "add", str(path), branch], cwd=repo)
     else:
         run_git(["worktree", "add", "-b", branch, str(path), base_branch], cwd=repo)

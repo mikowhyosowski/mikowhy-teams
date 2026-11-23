@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.5.2"
+VERSION = "2.6.0"
 
 
 def _version_info() -> dict:
@@ -234,10 +234,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .stat-badge{background:#21262d;border:1px solid #30363d;border-radius:14px;padding:3px 12px;font-size:12px}
  .stat-badge b{font-size:14px}
  .stat-badge.warn{border-color:#b08800;color:#d29922}
- .stat-badge.bad{border-color:#f85149;color:#f85149;animation:pulseIco 1s infinite}
+ .stat-badge.bad{border-color:#f85149;color:#f85149;animation:pulseIco 1s 8} /* ograniczone miganie */
  .stat-badge.ok{border-color:#3fb950;color:#3fb950}
  #alerts{display:flex;gap:8px;flex-wrap:wrap}
- .alert-card{background:#3d1215;border:1px solid #f85149;border-radius:8px;padding:8px 12px;max-width:340px;cursor:pointer;animation:pulseIco 1.4s infinite}
+ .alert-card{background:#3d1215;border:1px solid #f85149;border-radius:8px;padding:8px 12px;max-width:340px;cursor:pointer;animation:pulseIco 1.4s 7} /* miga tylko ~10s, potem spokojna ramka */
  .alert-card.ask{border-color:#b08800;background:#3d3000}
  .alert-card b{color:#f85149}
  .alert-card.ask b{color:#d29922}
@@ -269,7 +269,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  }
  /* 🎯 Tematy (widok opiekuna) */
 #spDecisions{display:flex;gap:10px;flex-wrap:wrap}
-.dec-card{background:#3d3000;border:1px solid #b08800;border-radius:10px;padding:10px 14px;max-width:400px;cursor:pointer;animation:pulseIco 1.6s infinite}
+.dec-card{background:#3d3000;border:1px solid #b08800;border-radius:10px;padding:10px 14px;max-width:400px;cursor:pointer;animation:pulseIco 1.6s 6} /* „odczekaj chwilę”: miga ~10s i przestaje */
 .dec-card.esc{border-color:#f85149;background:#3d1215}
 .dec-card:hover{filter:brightness(1.15)}
 .mscard{background:#161b22;border:1px solid #30363d;border-left:4px solid #1f6feb;border-radius:10px;padding:10px 14px;margin:8px 0;cursor:pointer}
@@ -426,6 +426,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <section class="tabpage" id="tab-live">
 <h2>⚡ Live — ostatnie wydarzenia (kto przejął / zmiana statusu, auto-refresh 2s)</h2><div class="feed" id="events"></div>
 <h2>📈 Ostatnie eventy</h2><div class="feed" id="metrics"></div>
+<h2>🤖 Kolejka LLM <span id="llmStats" class="muted" style="font-size:11px"></span> <span class="muted">(complete idą seryjnie przez kolejkę — dispatcher w orchestratorze, retry z backoff; koniec rc=3 keyring)</span></h2>
+<div class="feed" id="llmJobs"></div>
 <h2>🔴 Live — .agents/runtime (surowe odpowiedzi LLM) <button onclick="toggleLive()">▶/⏸</button></h2>
 <div class="feed" id="runtime"></div>
 <h2>📜 Logi procesów (.agents/logs) — klik = tail</h2>
@@ -652,6 +654,14 @@ async function refreshInner(){
     `<div><span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span> <b>${esc(c.author)}</b> ${c.task_id?('['+esc(c.task_id)+']'):''} ${esc(c.text.slice(0,200))}</div>`).join('');
   document.getElementById('metrics').innerHTML = d.metrics.map(m =>
     `<div><span class="muted">${new Date(m.ts*1000).toLocaleTimeString()}</span> ${esc(m.kind)} ${esc(m.task_id||'')} <span class="muted">${esc((m.payload||'').slice(0,100))}</span></div>`).join('');
+  // kolejka LLM
+  try{
+    const lr = await fetch('/api/llm/jobs'); const lj = await lr.json();
+    const stEl = document.getElementById('llmStats');
+    if(stEl) stEl.textContent = Object.entries(lj.stats||{}).map(([k,v]) => k + ': ' + v.count + ' (prób ' + v.attempts + ')').join(' · ') || 'pusta';
+    document.getElementById('llmJobs').innerHTML = (lj.jobs||[]).map(j =>
+      `<div><span class="muted">${new Date(j.created_at*1000).toLocaleTimeString()}</span> <b style="color:${j.status==='DONE'?'#3fb950':(j.status==='FAILED'?'#f85149':(j.status==='RUNNING'?'#58a6ff':'#d29922'))}">${esc(j.status)}</b> ${esc(j.kind)} ${esc(j.step||'')} <span class="muted">${esc(j.requester||'')} · prób ${j.attempts} · ${esc(j.id)}</span>${j.error?`<span style="color:#f85149"> ${esc((j.error||'').slice(0,120))}</span>`:''}</div>`).join('') || '<span class="muted">pusta kolejka</span>';
+  }catch(e){}
   if(curTask) openTask(curTask, true);
   if(curThread) openThread(curThread, true);
   if(document.getElementById('tab-firma').classList.contains('on')) renderFirma();
@@ -1903,6 +1913,12 @@ class Handler(BaseHTTPRequestHandler):
                 "override_active": flowmod.OVERRIDE_CFG.exists(),
                 "errors": flowmod.validate_config(cfg),
             }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path == "/api/llm/jobs":
+            # kolejka wywołań LLM (engine/llm_queue) — stats + ostatnie joby
+            from engine import llm_queue
+            s = State()
+            self._send(200, json.dumps({"stats": llm_queue.stats(s), "jobs": llm_queue.recent_jobs(s, 30)},
+                                       ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
         elif u.path == "/api/sponsor":
             # widok opiekuna: tematy (milestone'y) + decyzje + zgody + backlog
             self._send(200, json.dumps(_sponsor_view(State()), ensure_ascii=False, default=str).encode(),

@@ -128,6 +128,23 @@ CREATE TABLE IF NOT EXISTS recurring_tasks (
   active      INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_recurring_role ON recurring_tasks(role, active);
+-- kolejka wywołań LLM (engine/llm_queue.py) — serializuje dostęp do vibe CLI / keyring
+CREATE TABLE IF NOT EXISTS llm_jobs (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL DEFAULT 'complete',
+  payload     TEXT NOT NULL DEFAULT '{}',
+  status      TEXT NOT NULL DEFAULT 'QUEUED',
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  delay_until REAL NOT NULL DEFAULT 0,
+  lease_until REAL NOT NULL DEFAULT 0,
+  result      TEXT,
+  error       TEXT,
+  requester   TEXT,
+  step        TEXT,
+  created_at  REAL NOT NULL,
+  done_at     REAL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_jobs_status ON llm_jobs(status, created_at);
 """
 
 
