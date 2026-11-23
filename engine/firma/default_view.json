@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "meta": { "name": "Osiedle Dark Factory", "lang": "pl" },
+  "colors": {
+    "bg": "#0b0f14", "plot": "#111823", "road": "#1c2128", "office": "#161b22",
+    "officeStroke": "#30363d", "room": "#0d1117", "roomStroke": "#21262d",
+    "roof": "#21262d", "text": "#c9d1d9", "muted": "#8b949e", "gate": "#1f6feb",
+    "tape": "#d29922", "alarm": "#f85149"
+  },
+  "estate": {
+    "grid": { "cols": 2, "gap": 70, "margin": 50 },
+    "road": 26,
+    "gate": { "w": 260, "h": 64, "label": "Recepcja" },
+    "weather": { "x": 30, "y": 26, "label": "Pogoda nad osiedlem" }
+  },
+  "office": { "w": 400, "h": 330, "roofH": 36, "zonesY": 236, "zonesH": 84 },
+  "zones": {
+    "tray":    { "label": "📥 Taca wejściowa",  "rect": [8,   236, 78, 84] },
+    "sign":    { "label": "✍️ Do podpisu",      "rect": [92,  236, 70, 84] },
+    "review":  { "label": "🔍 Review",          "rect": [168, 236, 70, 84] },
+    "outbox":  { "label": "📤 Do wysyłki",      "rect": [244, 236, 70, 84] },
+    "archive": { "label": "🗄️ Archiwum",       "rect": [320, 236, 72, 84] },
+    "alarm":   { "label": "🚨 Alarm",           "rect": [8,   150, 90, 76] },
+    "locked":  { "label": "🔒 Zablokowane",     "rect": [104, 150, 90, 76] },
+    "manager": { "label": "🏆 Gabinet kierownika", "rect": [306, 44, 86, 92] }
+  },
+  "rooms": { "w": 138, "h": 108, "gap": 10, "x0": 10, "y0": 46, "perRow": 2, "headerH": 24 },
+  "desks": { "w": 30, "h": 22, "gap": 5, "perRow": 4 },
+  "trophy": { "w": 24, "h": 28, "gap": 6 },
+  "statusStyle": {
+    "READY":             { "zone": "tray",    "color": "#8b949e", "icon": "📥" },
+    "RUNNING":           { "zone": "desk",    "color": "#1f6feb", "icon": "🔨" },
+    "AWAITING_APPROVAL": { "zone": "sign",    "color": "#d29922", "icon": "✍️" },
+    "IN_REVIEW":         { "zone": "review",  "color": "#a371f7", "icon": "🔍" },
+    "READY_TO_MERGE":    { "zone": "outbox",  "color": "#3fb950", "icon": "📤" },
+    "MERGED":            { "zone": "archive", "color": "#2ea043", "icon": "🗄️" },
+    "FAILED":            { "zone": "alarm",   "color": "#f85149", "icon": "💥" },
+    "ESCALATED":         { "zone": "alarm",   "color": "#f85149", "icon": "🚨" },
+    "BLOCKED":           { "zone": "locked",  "color": "#6e7681", "icon": "🔒" }
+  },
+  "prioScale": { "P0": 1.6, "P1": 1.3, "P2": 1.0, "P3": 0.8 },
+  "anim": { "moveMs": 900, "fadeMs": 350, "pulseMs": 1200 },
+  "emojiFallback": true
+}

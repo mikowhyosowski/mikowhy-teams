@@ -168,6 +168,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    .feed{font-size:11px}
    #tasks{display:block;overflow-x:auto}
  }
+ /* widok FIRMA (osiedle z góry) */
+ #estateWrap{width:100%;overflow:hidden;border:1px solid #21262d;border-radius:10px}
+ #estate{width:100%;height:72vh;display:block;cursor:grab;background:#0b0f14;touch-action:none}
+ #estate:active{cursor:grabbing}
+ #estate .desk{will-change:transform}
+ #estate .desk rect{filter:drop-shadow(0 1px 2px #0009)}
+ #estate .room.busy{animation:pulseIco 2s infinite}
+ #estate .alarmzone{animation:pulseIco 1.2s infinite}
+ #firmaLegend{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+ @media (max-width:720px){ #estate{height:60vh} }
 </style></head><body>
 <h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span></h1>
 <div id="stats"></div>
@@ -177,6 +187,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <button data-tab="team" onclick="showTab('team')">👥 Zespół</button>
   <button data-tab="chat" onclick="showTab('chat')">💬 Czat Vibe</button>
   <button data-tab="live" onclick="showTab('live')">⚡ Live</button>
+  <button data-tab="firma" onclick="showTab('firma')">🏢 Firma</button>
 </nav>
 <section class="tabpage" id="tab-overview">
 <h2>🚨 Wymaga interwencji Sponsora</h2>
@@ -211,6 +222,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <h2>📜 Logi procesów (.agents/logs) — klik = tail</h2>
 <div class="feed" id="logs"></div>
 <pre id="viewer" style="background:#0d1117;border:1px solid #30363d;padding:8px;max-height:300px;overflow:auto;font-size:11px"></pre>
+</section>
+<section class="tabpage" id="tab-firma">
+<h2>🏢 Firma — osiedle biur <span class="muted">(z góry: biuro=projekt · pokój=agent · biurko=zadanie; kółko=zoom, drag=przesuwaj, klik biurko=szczegóły; klik biuro=filtr projektu)</span></h2>
+<div id="firmaLegend"></div>
+<div id="estateWrap"><svg id="estate" preserveAspectRatio="xMidYMid meet"></svg></div>
 </section>
 <div id="detail"><button onclick="closeDetail()" style="float:right">✖</button><div id="detailBody">wybierz zadanie…</div></div>
 <script>
@@ -353,6 +369,7 @@ async function refreshInner(){
   document.getElementById('metrics').innerHTML = d.metrics.map(m =>
     `<div><span class="muted">${new Date(m.ts*1000).toLocaleTimeString()}</span> ${esc(m.kind)} ${esc(m.task_id||'')} <span class="muted">${esc((m.payload||'').slice(0,100))}</span></div>`).join('');
   if(curTask) openTask(curTask, true);
+  if(document.getElementById('tab-firma').classList.contains('on')) renderFirma();
   document.getElementById('runtime').innerHTML = (d.runtime||[]).map(f =>
     `<div><a href="#" onclick="view('/api/raw/'+encodeURIComponent(f.name));return false" style="color:#58a6ff">${esc(f.name)}</a> <span class="muted">${f.size}B, ${f.age}s temu</span></div>`).join('');
   document.getElementById('logs').innerHTML = (d.logs||[]).map(f =>
@@ -413,13 +430,219 @@ async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
 // zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
-const TABS = ['overview','tasks','team','chat','live'];
+const TABS = ['overview','tasks','team','chat','live','firma'];
 function showTab(name, push){
   if(!TABS.includes(name)) name = 'overview';
   document.querySelectorAll('.tabpage').forEach(el => el.classList.toggle('on', el.id === 'tab-'+name));
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   if(push !== false) history.replaceState(null, '', '#'+name);
+  if(name === 'firma') renderFirma();
 }
+// ===== FIRMA: widok świata (osiedle biur, SVG top-down, animacje przepływu) =====
+const SVGNS = 'http://www.w3.org/2000/svg';
+let firmaWorld = null;       // ostatni /api/firma
+let firmaView = null;        // {x,y,w,h} viewBox (pan/zoom)
+let deskEls = {};            // taskId -> <g> (persistent — żeby CSS transition animował przejazd)
+function svgEl(name, attrs, parent){
+  const e = document.createElementNS(SVGNS, name);
+  for(const k in attrs) e.setAttribute(k, attrs[k]);
+  if(parent) parent.appendChild(e);
+  return e;
+}
+function escXml(s){ return esc(s); }
+async function renderFirma(){
+  try{
+    const r = await fetch('/api/firma'); firmaWorld = await r.json();
+  }catch(e){ return; }
+  const W = firmaWorld, cfg = W.config, C = cfg.colors;
+  const g = cfg.estate.grid, off = cfg.office, R = cfg.rooms, D = cfg.desks;
+  const cols = Math.max(1, g.cols|0), gap = g.gap, margin = g.margin;
+  const ow = off.w, oh = off.h;
+  const visOffices = W.offices.filter(o => !hiddenProjs.has(o.project_id));
+  const rows = Math.max(1, Math.ceil(visOffices.length / cols));
+  const Wsvg = margin*2 + cols*ow + (cols-1)*gap;
+  const Hsvg = margin*2 + rows*oh + (rows-1)*gap + 90;
+  if(!firmaView) firmaView = {x:0, y:0, w:Wsvg, h:Hsvg};
+  const svg = document.getElementById('estate');
+  svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
+  // warstwa statyczna (tło, działki, biura, pokoje, strefy, recepcja)
+  const stLayer = svgEl('g', {}, svg); stLayer.id = 'estateStatic';
+  svgEl('rect', {x:0, y:0, width:Wsvg, height:Hsvg, fill:C.bg}, stLayer);
+  for(let i=1;i<cols;i++){ const x = margin + i*ow + (i-0.5)*gap - cfg.estate.road/2;
+    svgEl('rect', {x, y:0, width:cfg.estate.road, height:Hsvg, fill:C.road}, stLayer); }
+  // recepcja (brama osiedla) = host/LAN
+  const gate = cfg.estate.gate, gx = Wsvg/2 - gate.w/2, gy = Hsvg - margin - gate.h + 16;
+  const gg = svgEl('g', {}, stLayer);
+  svgEl('rect', {x:gx, y:gy, width:gate.w, height:gate.h, rx:8, fill:C.gate, opacity:0.92}, gg);
+  const t1 = svgEl('text', {x:gx+gate.w/2, y:gy+17, 'text-anchor':'middle', fill:'#fff', 'font-size':12}, gg);
+  t1.textContent = '🚪 ' + gate.label;
+  const t2 = svgEl('text', {x:gx+gate.w/2, y:gy+36, 'text-anchor':'middle', fill:'#fff', 'font-size':11}, gg);
+  t2.textContent = (W.estate.host && W.estate.host.dashboard_url) || 'offline';
+  const t3 = svgEl('text', {x:gx+gate.w/2, y:gy+53, 'text-anchor':'middle', fill:'#cfe3ff', 'font-size':10}, gg);
+  t3.textContent = W.estate.sys ? `load ${W.estate.sys.load1}/${W.estate.sys.cpus} · 🧠 ${W.estate.sys.mem_used_pct}%` : '';
+  // pogoda nad osiedlem = sys
+  const wth = svgEl('text', {x:cfg.estate.weather.x, y:cfg.estate.weather.y, 'font-size':12, fill:C.muted}, stLayer);
+  wth.textContent = `🌥️ ${cfg.estate.weather.label}: load ${W.estate.sys?W.estate.sys.load1:'?'} · RAM ${W.estate.sys?W.estate.sys.mem_used_pct+'%':'?'}`;
+  // biura
+  visOffices.forEach((o, oi) => {
+    const col = oi % cols, row = Math.floor(oi / cols);
+    const ox = margin + col*(ow+gap), oy = margin + row*(oh+gap);
+    const og = svgEl('g', {cursor:'pointer'}, stLayer);
+    og.addEventListener('click', () => toggleProj(o.project_id));
+    svgEl('rect', {x:ox, y:oy, width:ow, height:oh, rx:10, fill:C.plot, stroke:o.color, 'stroke-width':2.5}, og);
+    svgEl('rect', {x:ox, y:oy, width:ow, height:off.roofH, rx:10, fill:C.roof, stroke:o.color}, og);
+    svgEl('rect', {x:ox, y:oy+off.roofH-6, width:ow, height:6, fill:o.color}, og);
+    const rt = svgEl('text', {x:ox+10, y:oy+23, 'font-size':13, 'font-weight':'bold', fill:C.text}, og);
+    rt.textContent = '🏢 ' + o.project_id;
+    const rt2 = svgEl('text', {x:ox+ow-10, y:oy+23, 'text-anchor':'end', 'font-size':10, fill:C.muted}, og);
+    rt2.textContent = o.read_only ? '🚧 read-only' : '🔓 ' + (o.policy||'');
+    if(o.read_only) for(let t=0;t<8;t++)
+      svgEl('line', {x1:ox+8+t*28, y1:oy+off.roofH, x2:ox+26+t*28, y2:oy+off.roofH+16, stroke:C.tape, 'stroke-width':3, opacity:0.7}, og);
+    // gabinet kierownika + trofea (milestony)
+    const mz = cfg.zones.manager, mx = ox+mz.rect[0], my = oy+mz.rect[1];
+    const mg = svgEl('g', {}, og);
+    svgEl('rect', {x:mx, y:my, width:mz.rect[2], height:mz.rect[3], rx:6, fill:C.room, stroke:C.roomStroke}, mg);
+    const mt = svgEl('text', {x:mx+mz.rect[2]/2, y:my+12, 'text-anchor':'middle', 'font-size':9, fill:C.muted}, mg);
+    mt.textContent = '🏆 kierownik';
+    o.milestones.slice(0,4).forEach((m, mi) => {
+      const tx = mx+6+mi*(cfg.trophy.w+cfg.trophy.gap), ty = my+20;
+      const tg = svgEl('g', {}, mg);
+      const tt = svgEl('title', {}, tg); tt.textContent = `${m.id} — ${m.status}`;
+      svgEl('rect', {x:tx, y:ty, width:cfg.trophy.w, height:cfg.trophy.h, rx:4,
+                     fill: m.status==='CLOSED' ? '#d29922' : '#21262d', stroke:C.roomStroke}, tg);
+      const ti = svgEl('text', {x:tx+cfg.trophy.w/2, y:ty+19, 'text-anchor':'middle', 'font-size':13}, tg);
+      ti.textContent = m.status==='CLOSED' ? '🏆' : '🔨';
+    });
+    // pokoje agentów
+    o.rooms.forEach((room, ri) => {
+      const rx = ox + R.x0 + (ri % R.perRow) * (R.w + R.gap);
+      const ry = oy + R.y0 + Math.floor(ri / R.perRow) * (R.h + R.gap);
+      if(ry + R.h > oy + cfg.zones.alarm.rect[1] - 8) return; // nie wchodzimy w strefy
+      const busy = !!room.current;
+      const rg = svgEl('g', {}, og);
+      svgEl('rect', {x:rx, y:ry, width:R.w, height:R.h, rx:8, fill:C.room,
+                     stroke: busy ? '#1f6feb' : C.roomStroke, 'stroke-width': busy?2:1}, rg);
+      const a = svgEl('text', {x:rx+8, y:ry+16, 'font-size':14}, rg); a.textContent = room.avatar;
+      const n = svgEl('text', {x:rx+26, y:ry+15, 'font-size':10, 'font-weight':'bold', fill:C.text}, rg); n.textContent = room.name;
+      const p = svgEl('text', {x:rx+8, y:ry+26, 'font-size':8, fill:C.muted}, rg); p.textContent = room.position;
+      if(room.res){ const rr = svgEl('text', {x:rx+R.w-8, y:ry+15, 'text-anchor':'end', 'font-size':8, fill:C.muted}, rg);
+        rr.textContent = `⚙️${room.res.cpu}% 🧠${room.res.rss_mb}MB`; }
+      const b = svgEl('text', {x:rx+8, y:ry+R.h-8, 'font-size':9, fill: busy ? '#58a6ff' : C.muted}, rg);
+      b.textContent = busy ? `🔨 ${room.current.id} ⏱` : `wolny/a · zadań: ${room.taskCount}`;
+      room._x = rx; room._y = ry;
+    });
+    // strefy biura
+    for(const [zk, z] of Object.entries(cfg.zones)){
+      if(zk === 'manager' || zk === 'desk') continue;
+      const zx = ox+z.rect[0], zy = oy+z.rect[1];
+      const zg = svgEl('g', {class: zk==='alarm' && o.desks.some(d=>d.zone==='alarm') ? 'alarmzone' : ''}, og);
+      svgEl('rect', {x:zx, y:zy, width:z.rect[2], height:z.rect[3], rx:6, fill:'none', stroke:C.roomStroke, 'stroke-dasharray':'4 3'}, zg);
+      const zt = svgEl('text', {x:zx+4, y:zy+11, 'font-size':8, fill:C.muted}, zg); zt.textContent = z.label;
+    }
+    o._ox = ox; o._oy = oy;
+  });
+  // legenda statusów
+  document.getElementById('firmaLegend').innerHTML = Object.entries(cfg.statusStyle)
+    .map(([k,v]) => `<span class="stat-badge" style="border-color:${v.color}">${v.icon} ${k}</span>`).join('');
+  // warstwa biurek (persistent — animacje przejazdu)
+  let deskLayer = document.getElementById('deskLayer');
+  if(!deskLayer){ deskLayer = svgEl('g', {id:'deskLayer'}, svg); }
+  const stCfg = cfg.statusStyle, ps = cfg.prioScale;
+  const seen = new Set();
+  for(const o of visOffices){
+    const ox = o._ox, oy = o._oy;
+    const byZone = {};
+    for(const d of o.desks){ (byZone[d.zone] = byZone[d.zone]||[]).push(d); }
+    for(const [zone, list] of Object.entries(byZone)){
+      list.forEach((d, i) => {
+        seen.add(d.id);
+        const sty = stCfg[d.status] || stCfg.READY;
+        const scale = ps[d.priority] || 1;
+        const dw = D.w*scale, dh = D.h*scale;
+        let x, y;
+        if(zone === 'desk'){
+          const room = o.rooms.find(r => r.role === d.role) || o.rooms[0];
+          if(room && room._x !== undefined){
+            const perRow = Math.max(1, Math.floor((R.w-12)/(D.w+D.gap)));
+            x = room._x + 6 + (i % perRow)*(D.w+D.gap);
+            y = room._y + R.headerH + 4 + Math.floor(i/perRow)*(D.h+D.gap);
+          } else { x = ox+20; y = oy+60; }
+        } else {
+          const z = cfg.zones[zone]; if(!z) return;
+          const zx = ox+z.rect[0], zy = oy+z.rect[1];
+          const perRow = Math.max(1, Math.floor((z.rect[2]-10)/(D.w+D.gap)));
+          x = zx + 5 + (i % perRow)*(D.w+D.gap);
+          y = zy + 16 + Math.floor(i/perRow)*(D.h+D.gap);
+        }
+        x += (D.w-dw)/2; y += (D.h-dh)/2;
+        let gEl = deskEls[d.id];
+        if(!gEl){
+          gEl = svgEl('g', {class:'desk', cursor:'pointer'}, deskLayer);
+          const title = svgEl('title', {}, gEl);
+          svgEl('rect', {width:dw, height:dh, rx:4, fill:sty.color, opacity:0.92, stroke:'#0d1117'}, gEl);
+          const ic = svgEl('text', {x:dw/2, y:dh/2+4, 'text-anchor':'middle', 'font-size':Math.round(10*scale)}, gEl);
+          ic.textContent = sty.icon;
+          const lb = svgEl('text', {x:dw/2, y:dh+9, 'text-anchor':'middle', 'font-size':8, fill:C.text}, gEl);
+          lb.textContent = d.id;
+          gEl.addEventListener('click', (ev) => { ev.stopPropagation(); openTask(d.id); });
+          deskEls[d.id] = gEl;
+          // fade-in: start bez transition, pozycja początkowa, potem włącz transition
+          gEl.style.transition = 'none';
+          gEl.style.transform = `translate(${x}px,${y}px)`;
+          gEl.style.opacity = '0';
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            gEl.style.transition = `transform ${cfg.anim.moveMs}ms ease, opacity ${cfg.anim.fadeMs}ms`;
+            gEl.style.opacity = '1';
+          }));
+        } else {
+          title.textContent = `${d.id} · ${d.status} · ${d.title_sponsor||d.title||''}`;
+          gEl.style.transition = `transform ${cfg.anim.moveMs}ms ease, opacity ${cfg.anim.fadeMs}ms`;
+          gEl.style.transform = `translate(${x}px,${y}px)`;  // zmiana strefy -> płynny przejazd
+        }
+      });
+    }
+  }
+  // usuń biurka znikniętych zadań (fade-out)
+  for(const id of Object.keys(deskEls)){
+    if(!seen.has(id)){
+      const gEl = deskEls[id];
+      gEl.style.transition = `opacity ${cfg.anim.fadeMs}ms`;
+      gEl.style.opacity = '0';
+      setTimeout(() => { gEl.remove(); }, cfg.anim.fadeMs + 50);
+      delete deskEls[id];
+    }
+  }
+}
+// pan/zoom mapy osiedla
+function initFirmaPanZoom(){
+  const svg = document.getElementById('estate');
+  if(svg.dataset.pz) return; svg.dataset.pz = '1';
+  let drag = null;
+  svg.addEventListener('wheel', (e) => {
+    if(!firmaView) return;
+    e.preventDefault();
+    const f = e.deltaY > 0 ? 1.15 : 1/1.15;
+    const r = svg.getBoundingClientRect();
+    const mx = firmaView.x + (e.clientX - r.left) / r.width * firmaView.w;
+    const my = firmaView.y + (e.clientY - r.top) / r.height * firmaView.h;
+    firmaView.w = Math.min(4000, Math.max(200, firmaView.w * f));
+    firmaView.h = firmaView.w * (r.height / r.width) * (firmaView.h/firmaView.w) * (firmaView.w/(firmaView.w*f)); // zachowaj proporcje
+    firmaView.h = firmaView.w * (r.height / r.width);
+    firmaView.x = mx - (e.clientX - r.left) / r.width * firmaView.w;
+    firmaView.y = my - (e.clientY - r.top) / r.height * firmaView.h;
+    svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
+  }, {passive:false});
+  svg.addEventListener('mousedown', (e) => { drag = {x:e.clientX, y:e.clientY, vx:firmaView.x, vy:firmaView.y}; });
+  window.addEventListener('mousemove', (e) => {
+    if(!drag || !firmaView) return;
+    const r = svg.getBoundingClientRect();
+    firmaView.x = drag.vx - (e.clientX - drag.x) / r.width * firmaView.w;
+    firmaView.y = drag.vy - (e.clientY - drag.y) / r.height * firmaView.h;
+    svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
+  });
+  window.addEventListener('mouseup', () => { drag = null; });
+}
+initFirmaPanZoom();
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1)||'overview', false));
 showTab(location.hash.slice(1)||'overview', false);
 refresh(); setInterval(() => { if(!refreshPaused) refresh(); }, 2000);
@@ -601,7 +824,8 @@ def _snapshot(s: State) -> dict:
         return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team, "asks": asks,
                 "stats": stats,
                 "comments": s.recent_comments(40), "metrics": metrics,
-                "runtime": runtime, "logs": logs}
+                "runtime": runtime, "logs": logs,
+                "milestones": s.list_milestones()}
 
 
 def _run_ask(qid: str, text: str) -> None:
@@ -680,6 +904,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, PAGE.encode(), "text/html; charset=utf-8")
         elif u.path == "/api/state":
             self._send(200, json.dumps(snapshot(), ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
+        elif u.path == "/api/firma":
+            # FIRMA-002: świat „firma” (osiedle→biura→pokoje→biurka) + config widoku
+            from engine.firma.view import build_world
+            self._send(200, json.dumps(build_world(snapshot(), State()), ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
         elif u.path.startswith("/api/raw/"):
             name = u.path.rsplit("/", 1)[-1]
