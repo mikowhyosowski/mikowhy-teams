@@ -1,5 +1,18 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.17] — 2026-11-23 — FAILED parkowane na audyt zespołu + panel prezesa w sub-tabach z analogią fabryki
+- 🅿️ Po max_retries (3) zadanie zostaje **ZAPARKOWANE w FAILED** (nie do READY/Opiekuna) — czeka na członka zespołu;
+  powiadomienie `failed` + notatka w review_notes. Próby 1..2 nadal auto-retry → READY (koniec kolejki)
+- 🔁 Nowy obowiązek cykliczny **AUDIT-FAILED-ROOTCAUSE** (systems-auditor, daily, P1, seedowany idempotentnie
+  w `_ensure_ops_recurring` + w live DB): root-cause każdego FAILED + zadania prewencyjne/naprawcze na przyszłość
+- 🗂️ Zakładka „Kolejka & Logi” jako **sub-taby**: 📥 Kolejka | 📜 Logi | 🔔 Powiadomienia; logi grupowane
+  (ten sam event raz z ×N i czasem pierwszym/ostatnim) + filtr „tylko błędy i ważne” — koniec spamu throttled/milestone_error
+- 🗺️ **Analogia świata rzeczywistego** (legenda na górze panelu prezesa): sortownia paczek = kolejka READY,
+  taśma produkcyjna = RUNNING, kontrola jakości = IN_REVIEW, pakowanie na wysyłkę = READY_TO_MERGE (🚀 Wdróż),
+  magazyn = MERGED, remontownia = FAILED (audyt), gabinet prezesa = AWAITING_OWNER, kwarantanna = BLOCKED,
+  poczta wewnętrzna = powiadomienia — kolory statusów spójne z flow
+- ✅ test `test_failed_parked_after_max_retries_for_team_audit` — 75 passed
+
 ## [2.7.16] — 2026-11-23 — wznowienie od NAJDALEJ wypracowanego etapu (max_substep) przy każdym powrocie do READY
 - 🧭 `tasks.max_substep`: rekord postępu aktualizowany w `transition` przy każdym sub-etapie (gdy dalej niż dotychczasowy max);
   backfill 77 istniejących zadań

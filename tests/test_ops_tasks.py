@@ -410,3 +410,26 @@ def test_resume_uses_furthest_max_substep():
     texts = [_json.loads(r[0])["text"] for r in s._conn().execute(
         "SELECT payload FROM metrics WHERE kind='agent_comment' AND task_id='T-MX'").fetchall()]
     assert any("kontynuacja od etapu 4/5_QG" in x for x in texts), texts
+
+
+def test_failed_parked_after_max_retries_for_team_audit():
+    """v2.7.17: FAILED po max_retries zostaje ZAPARKOWANE w FAILED (czeka na audyt AUDIT-FAILED-ROOTCAUSE),
+    nie wraca samo do READY ani do Opiekuna; próby 1..2 idą do READY (koniec kolejki)."""
+    from engine.orchestrator import Orchestrator, CIRCUIT_BREAKER_RETRIES
+    from engine.state import FAILED, READY
+    s = _tmp_state()
+    s.add_task("T-F1", "FACTORY-OPS", 9, "jedna próba", "backend-dev", status="FAILED")
+    s._conn().execute("UPDATE tasks SET retry_count=1 WHERE id='T-F1'")
+    s.add_task("T-F3", "FACTORY-OPS", 9, "po 3 próbach", "backend-dev", status="FAILED")
+    s._conn().execute("UPDATE tasks SET retry_count=? WHERE id='T-F3'", (CIRCUIT_BREAKER_RETRIES,))
+    o = Orchestrator.__new__(Orchestrator)
+    o.state = s
+    o._auto_retry_failed()
+    assert s.get_task("T-F1")["status"] == READY and s.get_task("T-F1")["retry_count"] == 2  # auto-retry dalej
+    t3 = s.get_task("T-F3")
+    assert t3["status"] == FAILED, t3["status"]                                          # zaparkowane
+    assert "ZAPARKOWANE" in (t3["review_notes"] or "")
+    # obowiązek cykliczny audytu FAILED — seedowany przez _ensure_ops_recurring dla systems-auditor
+    o._ensure_ops_recurring()
+    rec = [r for r in s.list_recurring(active_only=False) if r["id"] == "AUDIT-FAILED-ROOTCAUSE"]
+    assert rec and rec[0]["role"] == "systems-auditor" and rec[0]["schedule"] == "daily"

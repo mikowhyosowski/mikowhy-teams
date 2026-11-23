@@ -207,6 +207,10 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .notif.read{opacity:.55}
  .nbadge{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:0 5px;font-size:9px;color:#a371f7}
  .qbox{border:1px solid #21262d;border-radius:8px;padding:6px;background:#0d1117}
+ .legend{display:flex;flex-wrap:wrap;gap:4px 14px;border:1px solid #30363d;border-radius:8px;padding:8px 10px;background:#0d1117;font-size:11px;margin-bottom:8px}
+ .legend .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px}
+ #sysTabs{margin-bottom:8px}
+ #notifList .notif{padding:5px 8px;border-bottom:1px solid #161b22;font-size:12px}
  .qrow{padding:4px 6px;border-bottom:1px solid #161b22;cursor:pointer;font-size:12px}
  .qrow:hover{background:#12233a}
  .qpos{color:#8b949e;font-size:10px;display:inline-block;width:34px}
@@ -470,10 +474,37 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 <div id="spBacklog"></div>
 </section>
 <section class="tabpage" id="tab-sys">
-<h2>📥 Kolejka zadań <span class="muted">(kolejność pobierania przez agentów: priorytet → kara za 3+ retry → wyższy postęp → najstarsze · klik wiersz = szczegóły)</span></h2>
+<h2>🗂️ Kolejka &amp; Logi <span class="muted">— panel kontrolny prezesa</span></h2>
+<div class="legend" id="legendBox">
+  <b>🗺️ Jak czytać fabrykę (analogia świata rzeczywistego):</b>
+  <span><i class="dot" style="background:#6e7681"></i>📥 <b>Kolejka (READY)</b> = sortownia paczek — bierzemy w kolejności: priorytet → postęp → wiek</span>
+  <span><i class="dot" style="background:#1f6feb"></i>⚙️ <b>RUNNING</b> = stanowisko przy taśmie — agent pracuje, zegar tyka na żywo</span>
+  <span><i class="dot" style="background:#d29922"></i>🛠️ <b>CHANGES_REQUESTED</b> = poprawki po kontroli jakości (pętla na taśmie)</span>
+  <span><i class="dot" style="background:#a371f7"></i>🔍 <b>IN_REVIEW</b> = kontrola jakości — niezależny recenzent</span>
+  <span><i class="dot" style="background:#238636"></i>📦 <b>READY_TO_MERGE</b> = pakowanie na wysyłkę (🚀 Wdróż = natychmiastowa wysyłka)</span>
+  <span><i class="dot" style="background:#2ea043"></i>✅ <b>MERGED</b> = wysłane do magazynu (gotowe)</span>
+  <span><i class="dot" style="background:#da3633"></i>🅿️ <b>FAILED</b> = remontownia — zadanie czeka na brygadę (cykliczny audyt FAILED, systems-auditor)</span>
+  <span><i class="dot" style="background:#b08800"></i>🧑‍💼 <b>AWAITING_OWNER</b> = gabinet prezesa — tylko graniczne decyzje, nie rutyna</span>
+  <span><i class="dot" style="background:#57606a"></i>⛔ <b>BLOCKED</b> = kwarantanna — odblokowanie wyłącznie przez READY</span>
+  <span>🔔 <b>Powiadomienia</b> = poczta wewnętrzna prezesa — tylko to, co musisz wiedzieć (z czasem)</span>
+</div>
+<div class="ftabs" id="sysTabs">
+  <button data-sview="queue" class="on" onclick="showSysView('queue')">📥 Kolejka (<span id="qCount"></span>)</button>
+  <button data-sview="logs" onclick="showSysView('logs')">📜 Logi</button>
+  <button data-sview="notifs" onclick="showSysView('notifs')">🔔 Powiadomienia (<span id="nCount"></span>)</button>
+</div>
+<div id="sysQueue">
+<h3>📥 Kolejka zadań <span class="muted">(kolejność pobierania przez agentów: priorytet → kara za 3+ retry → wyższy postęp → najstarsze · klik wiersz = szczegóły)</span></h3>
 <div id="queueBox" class="qbox"></div>
-<h2>📜 Logi aplikacji <span class="muted">(ostatnie 150 eventów systemowych, najnowsze na górze, ważne/błędy podświetlone)</span></h2>
+</div>
+<div id="sysLogs" style="display:none">
+<h3>📜 Logi aplikacji <label class="muted" style="font-size:11px"><input type="checkbox" id="onlyErr" onchange="renderSys()"> tylko błędy i ważne</label> <span class="muted">(grupowane — ten sam event pokazany raz z liczbą ×N i czasem ostatniego)</span></h3>
 <div id="logsBox" class="feed"></div>
+</div>
+<div id="sysNotifs" style="display:none">
+<h3>🔔 Powiadomienia systemowe <button class="tbtn" onclick="markNotifsRead()">✓ oznacz wszystkie przeczytane</button></h3>
+<div id="notifList"></div>
+</div>
 </section>
 <section class="tabpage" id="tab-tasks">
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację; filtry projektów są wyżej — globalne)</span></h2>
@@ -1057,9 +1088,19 @@ function showTab(name, push){
   if(name === 'sponsor') renderSponsor();
   if(name === 'sys') renderSys();
 }
-// ===== 🗂️ Kolejka & Logi + 🔔 powiadomienia (v2.7.15 — boks dla Opiekuna) =====
+// ===== 🗂️ Kolejka & Logi + 🔔 powiadomienia (v2.7.15/17 — panel prezesa w sub-tabach) =====
+let sysView = 'queue';
+function showSysView(v){
+  sysView = v;
+  document.querySelectorAll('#sysTabs button').forEach(b => b.classList.toggle('on', b.dataset.sview === v));
+  document.getElementById('sysQueue').style.display = v==='queue' ? '' : 'none';
+  document.getElementById('sysLogs').style.display = v==='logs' ? '' : 'none';
+  document.getElementById('sysNotifs').style.display = v==='notifs' ? '' : 'none';
+}
 function renderSys(){
   const d = lastState; if(!d) return;
+  document.getElementById('qCount').textContent = (d.queue||[]).length;
+  document.getElementById('nCount').textContent = d.notif_unread||0;
   document.getElementById('queueBox').innerHTML = (d.queue||[]).length ? (d.queue||[]).map(q =>
     `<div class="qrow" onclick="openTask('${esc(q.id)}')">
        <span class="qpos">#${q.pos}</span> <span class="prio prio-${q.priority}">${q.priority}</span>
@@ -1067,10 +1108,25 @@ function renderSys(){
        <span class="pbar sm" title="postęp ${Math.round((q.progress||0)*100)}%"><i style="width:${Math.round((q.progress||0)*100)}%"></i></span>
        <span class="muted">${esc(q.substep||'—')} · retry ${q.retry_count}${q.retry_count>=3?' 🔚':''} · ${fmtDur(q.age)} temu · ${esc(q.persona||q.role)}${q.review_notes?` · 📝 ${esc(q.review_notes.slice(0,60))}`:''}</span>
      </div>`).join('') : '<span class="muted">kolejka pusta ✅ (wszystko w pracy lub zmergowane)</span>';
-  const BAD = {'auto_retry':1,'stuck_requeued':1,'merge':1,'owner_packet':1,'ask_owner':1,'llm_job_failed':1,'llm_batch_fail':1,'orchestrator_error':1,'merge_error':1,'circuit_breaker_escalation':1,'watchdog_escalation':1,'sponsor_decline':1};
-  document.getElementById('logsBox').innerHTML = (d.applogs||[]).map(l =>
-    `<div class="${BAD[l.kind]?'logbad':''}"><span class="muted">${new Date(l.ts*1000).toLocaleTimeString()}</span> <b>${esc(l.kind)}</b> ${l.task_id?`<a href="#" onclick="openTask('${esc(l.task_id)}');return false" style="color:#58a6ff">${esc(l.task_id)}</a>`:''} <span class="muted">${esc(l.payload)}</span></div>`).join('')
-    || '<span class="muted">brak logów</span>';
+  // logi grupowane: (kind|task|payload) -> {count, last, first} — czytelne mimo spamu
+  const BAD = {'auto_retry':1,'stuck_requeued':1,'merge':1,'owner_packet':1,'ask_owner':1,'llm_job_failed':1,'llm_batch_fail':1,'orchestrator_error':1,'merge_error':1,'circuit_breaker_escalation':1,'watchdog_escalation':1,'sponsor_decline':1,'failed_parked':1,'milestone_error':1,'health_check':1,'throttled':1};
+  const onlyErr = document.getElementById('onlyErr') && document.getElementById('onlyErr').checked;
+  const groups = {};
+  for(const l of (d.applogs||[])){
+    const k = l.kind+'|'+ (l.task_id||'') + '|' + l.payload;
+    if(!groups[k]) groups[k] = {kind:l.kind, task_id:l.task_id, payload:l.payload, n:0, last:l.ts, first:l.ts, bad:!!BAD[l.kind]};
+    const g = groups[k]; g.n++; if(l.ts>g.last) g.last=l.ts; if(l.ts<g.first) g.first=l.ts;
+  }
+  let rows = Object.values(groups).sort((a,b)=>b.last-a.last);
+  if(onlyErr) rows = rows.filter(r=>r.bad);
+  document.getElementById('logsBox').innerHTML = rows.length ? rows.map(g =>
+    `<div class="${g.bad?'logbad':''}"><span class="muted">${new Date(g.last*1000).toLocaleTimeString()}</span>${g.n>1?` <b style="color:#d29922">×${g.n}</b> <span class="muted">(od ${new Date(g.first*1000).toLocaleTimeString()})</span>`:''} <b>${esc(g.kind)}</b> ${g.task_id?`<a href="#" onclick="openTask('${esc(g.task_id)}');return false" style="color:#58a6ff">${esc(g.task_id)}</a>`:''} <span class="muted">${esc(g.payload)}</span></div>`).join('')
+    : '<span class="muted">brak logów</span>';
+  // powiadomienia (pełna lista w sub-tabie)
+  document.getElementById('notifList').innerHTML = `<div class="histbox">` + ((d.notifications||[]).map(x =>
+    `<div class="notif ${x.read?'read':''}" ${x.task_id?`onclick="openTask('${esc(x.task_id)}')" style="cursor:pointer"`:''}>
+       <span class="muted">${new Date(x.ts*1000).toLocaleString()}</span> <span class="nbadge">${esc(x.kind)}</span> ${esc(x.text)}${x.task_id?` <b>${esc(x.task_id)}</b>`:''}
+     </div>`).join('') || '<span class="muted">brak powiadomień</span>') + '</div>';
 }
 function renderBell(d){
   const n = d.notif_unread||0;

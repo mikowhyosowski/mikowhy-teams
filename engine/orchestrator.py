@@ -167,6 +167,17 @@ class Orchestrator:
                 break
         return "\n".join(out) if out else "(brak zarejestrowanych błędów w metrykach)"
 
+    def _ensure_ops_recurring(self) -> None:
+        """v2.7.17: idempotentny seed obowiązków cyklicznych OPS (świeża baza i nowe obowiązki)."""
+        try:
+            self.state.add_recurring(
+                "AUDIT-FAILED-ROOTCAUSE", "systems-auditor",
+                "Dzienny audyt FAILED: root-cause każdego zaparkowanego zadania FAILED + zadania prewencyjne/naprawcze "
+                "na przyszłość (bez eskalacji do Opiekuna); w razie potrzeby requeue przez flow (retry)",
+                schedule="daily", priority="P1")
+        except Exception as e:
+            print(f"[orchestrator] seed recurring błąd: {e!r}", flush=True)
+
     def _notify(self, kind: str, text: str, task_id: str | None = None) -> None:
         """v2.7.15: powiadomienie systemowe dla Opiekuna (dzwonek w dashboardzie, z czasem)."""
         try:
@@ -181,7 +192,7 @@ class Orchestrator:
         rozjeździe (ASK_OWNER od workera / ręczna decyzja), nigdy automatem za retry.
         BLOCKED/MERGED/AWAITING_OWNER/RUNNING nie ruszamy (RUNNING może jeszcze samo dokończyć)."""
         for task in self.state.list_tasks():
-            if task["status"] not in (READY, FAILED):
+            if task["status"] != READY:  # v2.7.17: FAILED jest parkowane w _auto_retry_failed (czeka na audyt), tu tylko READY
                 continue
             if (task.get("retry_count") or 0) < STUCK_RETRY:
                 continue
@@ -189,11 +200,7 @@ class Orchestrator:
             if "koniec kolejki" in (task.get("review_notes") or ""):
                 continue  # komentarz już dopisany — nie spamujemy co tick
             try:
-                if task["status"] == FAILED:
-                    self.state.transition(task["id"], READY, retry_count=task["retry_count"] + 1,
-                                          review_notes=(task.get("review_notes") or "") + note)
-                else:
-                    self.state.transition(task["id"], READY, review_notes=(task.get("review_notes") or "") + note)
+                self.state.transition(task["id"], READY, review_notes=(task.get("review_notes") or "") + note)
                 self.state.add_comment(task["id"], "orchestrator",
                                        f"🔚 {task['id']}: utknęło po {task.get('retry_count')} próbach → koniec kolejki "
                                        "(sort: priorytet → postęp → wiek), Opiekun nie jest angażowany automatem")
@@ -207,22 +214,29 @@ class Orchestrator:
     def _auto_retry_failed(self) -> None:
         """FAILED -> READY automatycznie (fabryka sama się podnosi po przejściowych
         błędach LLM/infra — timeouty, sieć/API, niepełny przelot testów: nikt nie widzi alertu).
-        v2.7.14: po wyczerpaniu limitu prób (retry >= CIRCUIT_BREAKER_RETRIES) zadanie NIE idzie
-        do AWAITING_OWNER — wraca do READY i ląduje na KONCU kolejki (sortowanie claimable_tasks),
-        bo ma najwyższy retry_count w swoim paśmie priorytetu."""
+        v2.7.14: próby 1..2 wracają do READY na koniec kolejki (sortowanie claimable_tasks).
+        v2.7.17: po wyczerpaniu max_retries (retry >= 3) zadanie zostaje ZAPARKOWANE w FAILED —
+        NIE do Opiekuna; czeka tam na członka zespołu z cyklicznego obowiązku AUDIT-FAILED-ROOTCAUSE
+        (systems-auditor analizuje root-cause i tworzy zadania prewencyjne/naprawcze)."""
         for task in self.state.list_tasks(status=FAILED):
-            note = "auto-retry po FAILED (próba %d, backoff)" % (task["retry_count"] + 2)
             if task["retry_count"] >= CIRCUIT_BREAKER_RETRIES:
-                note += (f" | max_retries ({task['retry_count']}) — koniec kolejki, NIE do Opiekuna; "
-                         f"ostatnie błędy: {self._recent_errors(task['id'])[:300]}")
+                # parkowanie w FAILED — czeka na audyt zespołu, nie wraca samo do kolejki
+                note = (task.get("review_notes") or "") + (
+                    f" | ZAPARKOWANE w FAILED po {task['retry_count']} próbach (max_retries) — czeka na audyt "
+                    f"AUDIT-FAILED-ROOTCAUSE (systems-auditor); ostatnie błędy: {self._recent_errors(task['id'])[:300]}")
+                if "ZAPARKOWANE" not in (task.get("review_notes") or ""):
+                    self.state.transition(task["id"], FAILED, review_notes=note)
+                    self.state.add_comment(task["id"], "orchestrator",
+                                           f"🅿️ {task['id']}: max_retries ({task['retry_count']}) → zostaje w FAILED; "
+                                           "analizą zajmie się cykliczny audyt FAILED (systems-auditor), nie Opiekun")
+                    self._notify("failed", f"🅿️ {task['id']} zaparkowane w FAILED po {task['retry_count']} próbach — czeka na audyt zespołu (AUDIT-FAILED-ROOTCAUSE)", task["id"])
+                    self.state.record_metric("failed_parked", {"task": task["id"], "retry": task["retry_count"]}, task["id"])
+                continue
+            note = "auto-retry po FAILED (próba %d, backoff) — koniec kolejki" % (task["retry_count"] + 2)
             self.state.transition(task["id"], READY,
                                   retry_count=task["retry_count"] + 1,
                                   review_notes=note)
-            self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1,
-                                                    "to_back_of_queue": task["retry_count"] >= CIRCUIT_BREAKER_RETRIES},
-                                    task["id"])
-            if task["retry_count"] >= CIRCUIT_BREAKER_RETRIES:
-                self._notify("queue", f"🔚 {task['id']} po {task['retry_count']} FAILED → koniec kolejki (auto-retry wyczerpany)", task["id"])
+            self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
 
     # --- obowiązki cykliczne (recurring_tasks) -> zadania READY dla roli -----------
     def _launch_recurring(self) -> None:
@@ -709,6 +723,7 @@ class Orchestrator:
                   f"Kanoniczny runner to usługa: systemctl --user status mikowhy-teams. Wychodzę.", flush=True)
             sys.exit(0)
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
+        self._ensure_ops_recurring()  # v2.7.17: seed obowiązków OPS (idempotentny)
         # v2 kolejki LLM: dispatcher w OSOBNYM WĄTKU — tick nie blokuje się na czas wywołania LLM
         # (joby wykonują się seryjnie, keyring dotyka tylko ten proces; flock serializuje z workerami)
         import threading
