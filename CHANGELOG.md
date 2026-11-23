@@ -1,5 +1,12 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.8] — 2026-11-23 — podsumowanie „W TRAKCIE” już podczas pracy + aktywne vs zakończone komentarze
+- 🔄 `transition()` przy każdym starcie etapu (też READY→RUNNING z podetapem) emituje `🔄 W TRAKCIE — etap X (N%): 🎯 Cel: … — nad tym teraz pracuję`;
+  `add_comment` opakowuje w Cel/Efekt tylko gdy brak `Cel:` (komunikat w trakcie może nie mieć jeszcze Efektu)
+- 🎨 Dashboard: komentarze „🔄 W TRAKCIE” = niebieskie z pulsującą ramką (`inprogress`), zakończone „✅” = zielone (`done`)
+  — w feedzie komentarzy, w szczegółach zadania i w wątkach; na kafelku „Teraz pracują” linia `🎯 teraz: <cel etapu>`
+- ✅ Test `test_comments_have_cel_efekt_format` rozróżnia w-trakcie vs zakończone — 62 passed
+
 ## [2.7.7] — 2026-11-23 — komentarze zadań w formacie 🎯 Cel → ✅ Efekt (czytelne dla człowieka)
 - 💬 `State.add_comment` automatycznie opakowuje każdy komentarz bez formatu jako `🎯 Cel: … → ✅ Efekt: …`;
   nowa metoda `State.add_comment_report(task_id, author, cel, efekt)`; reguła w sponsor-notes.md

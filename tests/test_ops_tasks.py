@@ -169,5 +169,10 @@ def test_comments_have_cel_efekt_format():
     texts = [_json.loads(r[0])["text"] for r in rows]
     assert len(texts) == 3
     for t in texts:
-        assert "Cel:" in t and "Efekt:" in t, f"brak formatu Cel/Efekt w: {t[:80]}"
+        assert "Cel:" in t, f"brak Cel w: {t[:80]}"
+        # „🔄 W TRAKCIE” = komunikat w trakcie (Cel bez Efektu — efekt dopiero będzie);
+        # zakończone komunikaty muszą mieć oba pola
+        if not t.startswith("🔄"):
+            assert "Efekt:" in t, f"brak formatu Cel/Efekt w: {t[:80]}"
     assert "napisałem testy" in texts[0]  # oryginalny tekst zachowany w Efekt
+    assert texts[2].startswith("🔄 W TRAKCIE"), texts[2]  # start etapu = w trakcie, z celem etapu

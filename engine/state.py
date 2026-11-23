@@ -485,8 +485,8 @@ class State:
             }
             tmpl = {
                 ("READY", "RUNNING"): f"🎯 Cel: rozpocząć realizację {task_id} → ✅ Efekt: worker przejął zadanie, praca wystartowała",
-                ("RUNNING", "RUNNING"): (f"🎯 Cel: {SUBSTEP_CEL.get(sub, 'kontynuować pracę')} (etap {sub or '—'}) → ✅ Efekt: etap wykonany, przechodzę dalej"
-                                          if sub else f"🎯 Cel: kontynuować {task_id} → ✅ Efekt: status bez zmiany ({new_status})"),
+                ("RUNNING", "RUNNING"): (f"🔄 W TRAKCIE — etap {sub} ({int(substep_progress(sub)*100)}%): 🎯 Cel: {SUBSTEP_CEL.get(sub, 'kontynuować pracę')} — nad tym teraz pracuję"
+                                          if sub else f"🔄 W TRAKCIE: 🎯 Cel: kontynuować {task_id} ({new_status})"),
                 ("RUNNING", "IN_REVIEW"): "🎯 Cel: oddać kod do niezależnego review → ✅ Efekt: paczka zmian czeka na code review",
                 ("IN_REVIEW", "READY_TO_MERGE"): "🎯 Cel: uzyskać akceptację review → ✅ Efekt: CR OK, zadanie gotowe do merge'a",
                 ("IN_REVIEW", "CHANGES_REQUESTED"): "🎯 Cel: poprawić kod wg uwag z review → ✅ Efekt: lista poprawek zapisana, wracam do implementacji",
@@ -509,6 +509,9 @@ class State:
             }.get(key)
             if tmpl is None:
                 tmpl = f"🎯 Cel: przejść {current} → {new_status} w zadaniu {task_id} → ✅ Efekt: status = {new_status}"
+            if key == ("READY", "RUNNING") and sub:
+                # start pracy od razu z podetapem (np. 1/5_PLAN) = też „w trakcie”, nie „zrobione”
+                tmpl = f"🔄 W TRAKCIE — etap {sub} ({int(substep_progress(sub)*100)}%): 🎯 Cel: {SUBSTEP_CEL.get(sub, 'rozpocząć pracę')} — nad tym teraz pracuję"
             self.add_comment(task_id, by, tmpl)
         except Exception:
             pass
@@ -568,8 +571,10 @@ class State:
         ZASADA (Sponsor): każdy komentarz ma być krótkim zrozumiałym zdaniem dla człowieka
         w formacie 🎯 Cel → ✅ Efekt (co ktoś robił i co uzyskał). Jeśli text nie ma tego formatu — opakowujemy automatycznie."""
         text = str(text)
-        if "Cel:" not in text and "Efekt:" not in text:
-            text = f"🎯 Cel: praca nad zadaniem {task_id or '—'} → ✅ Efekt: {text}"
+        if "Cel:" not in text:
+            # brak formatu Cel/Efekt -> opakuj; samo „Cel:” (bez Efektu) = komunikat W TRAKCIE — zostawiamy
+            if "Efekt:" not in text:
+                text = f"🎯 Cel: praca nad zadaniem {task_id or '—'} → ✅ Efekt: {text}"
         self.record_metric("agent_comment", {"author": author, "text": text}, task_id)
 
     def add_comment_report(self, task_id: str | None, author: str, cel: str, efekt: str) -> None:

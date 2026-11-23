@@ -191,6 +191,12 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .pcard .stats{font-size:10px;color:#484f58}
  .badge{background:#b08800;color:#000;border-radius:4px;padding:0 6px;font-size:11px;font-weight:bold}
  .st{font-weight:bold} .muted{color:#8b949e} .feed{font-size:12px} .feed div{border-bottom:1px solid #21262d;padding:3px 0}
+ .feed div.inprogress{border-left:3px solid #1f6feb;background:#12233a}
+ .feed div.done{border-left:3px solid #3fb950;background:#0e2a1a}
+ .threadbox .tmsg.inprogress .tt{background:#12233a;border:1px solid #1f6feb;animation:pulseB 1.6s infinite}
+ .threadbox .tmsg.done .tt{background:#0e2a1a;border-left:3px solid #3fb950}
+ @keyframes pulseB{0%,100%{box-shadow:0 0 0 0 rgba(31,111,235,.35)}50%{box-shadow:0 0 10px 2px rgba(31,111,235,.35)}}
+ .nowcard .teraz{font-size:11px;color:#58a6ff;margin-top:2px}
  #ts{color:#8b949e;font-size:11px}
  #detail{position:fixed;top:0;right:-460px;width:440px;height:100%;background:#161b22;border-left:1px solid #30363d;
    padding:14px;overflow-y:auto;transition:right .2s;z-index:10}
@@ -573,6 +579,8 @@ function renderStFilters(d){
 }
 function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
 const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','CHANGES_REQUESTED':'#d29922','AWAITING_OWNER':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
+function ccls(text){ text = String(text||''); return text.startsWith('🔄') ? 'inprogress' : (text.includes('✅') ? 'done' : ''); }
+const SUBCEL = {'1/5_PLAN':'planowanie zadania','2/5_IMPL':'implementacja kodu','3/5_TEST':'testy i weryfikacja','4/5_QG':'bramki jakości (lint/typy)','4.5_SIMPLIFY':'upraszczanie rozwiązania','5/5_COMMIT':'commit + push','LLM_EXEC':'wywołanie LLM','done':'zakończone'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
 function pbadge(pid){ return `<span class="pbadge" style="background:${projColor(pid||'(brak)')}">${esc(pid||'(brak)')}</span>`; }
 function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); persistFilters(); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna — bez dubli renderu */ }
@@ -767,6 +775,7 @@ async function refreshInner(){
     `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
      <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
+     <div class="teraz">🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}</div>
      ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
      <span class="who">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
@@ -784,7 +793,7 @@ async function refreshInner(){
   }).join('');
   if((d.events||[]).length) lastEventTs = Math.max(lastEventTs, ...d.events.map(e=>e.ts));
   document.getElementById('comments').innerHTML = d.comments.map(c =>
-    `<div><span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span> <b>${esc(c.author)}</b> ${c.task_id?('['+esc(c.task_id)+']'):''} ${esc(c.text.slice(0,200))}</div>`).join('');
+    `<div class="${ccls(c.text)}"><span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span> <b>${esc(c.author)}</b> ${c.task_id?('['+esc(c.task_id)+']'):''} ${esc(c.text.slice(0,200))}</div>`).join('');
   document.getElementById('metrics').innerHTML = d.metrics.map(m =>
     `<div><span class="muted">${new Date(m.ts*1000).toLocaleTimeString()}</span> ${esc(m.kind)} ${esc(m.task_id||'')} <span class="muted">${esc((m.payload||'').slice(0,100))}</span></div>`).join('');
   // kolejka LLM
@@ -846,7 +855,7 @@ async function openTask(id, keep){
         return `<div class="${cls}"><span class="muted">${new Date((e.ts||0)*1000).toLocaleTimeString()}</span> ${esc(e.event||((e.from||'?')+' → '+(e.to||'?')))}${ch}${(e.by)?(' <span class="muted">— '+esc(String(e.by).slice(0,60))+'</span>'):''}</div>`;
       }).join('')||'<span class="muted">brak historii</span>'}</div>`;
   } else if(detailTab === 'comments'){
-    body = `<h2>💬 Komentarze</h2><div class="threadbox">${(t.comments||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(c=>`<div class="tmsg ${c.author==='sponsor'||c.author==='sponsor/dashboard'?'me':'agent'}"><div class="ta"><b>${esc(c.author)}</b> <span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(c.text.slice(0,400))}</div></div>`).join('')||'<span class="muted">brak komentarzy</span>'}</div>
+    body = `<h2>💬 Komentarze</h2><div class="threadbox">${(t.comments||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(c=>`<div class="tmsg ${c.author==='sponsor'||c.author==='sponsor/dashboard'?'me':'agent'} ${ccls(c.text)}"><div class="ta"><b>${esc(c.author)}</b> <span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(c.text.slice(0,400))}</div></div>`).join('')||'<span class="muted">brak komentarzy</span>'}</div>
       <h2>✍️ Twój komentarz</h2>
       <textarea id="cbox" placeholder="uwaga do zadania (też leci na PR na GitHubie)…"></textarea>
       <button onclick="sendComment()">Dodaj komentarz</button>
@@ -875,7 +884,7 @@ async function openThread(tid, keep){
   const msgs = (t.messages||[]).map(m=>{
     const me = m.author==='sponsor';
     const who = me ? '🧑‍💼 Sponsor' : (m.author==='system' ? '⚙️ system' : `${p.avatar||'🧑‍💻'} ${esc(p.name||m.author)} (${esc(t.role)})`);
-    return `<div class="tmsg ${me?'me':'agent'}"><div class="ta">${who} <span class="muted">${new Date(m.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(m.text)}</div></div>`;
+    return `<div class="tmsg ${me?'me':'agent'} ${ccls(m.text)}"><div class="ta">${who} <span class="muted">${new Date(m.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(m.text)}</div></div>`;
   }).join('');
   const lastSponsor = (t.messages||[]).length && t.messages[t.messages.length-1].author==='sponsor'
     && (Date.now()/1000 - t.messages[t.messages.length-1].ts) < 120;
