@@ -829,13 +829,14 @@ async function openTask(id, keep){
   document.getElementById('detail').classList.add('open');
   const d = t.task;
   // guard (review): nie przepisuj panelu przy każdym odświeżeniu — nie kasuje wpisanego komentarza
-  const key = 'task|'+id+'|'+(d.status||'')+'|'+(d.substep||'')+'|'+(d.updated_at||0)+'|'+(t.comments||[]).length+'|'+(t.events||[]).length+'|'+detailTab;
+  const key = 'task|'+id+'|'+(d.status||'')+'|'+(d.substep||'')+'|'+(d.updated_at||0)+'|'+(t.comments||[]).length+'|'+(t.events||[]).length+'|'+(t.attachments||[]).length+'|'+detailTab;
   if(keep && document.getElementById('detailBody').dataset.key === key) return;
   document.getElementById('detailBody').dataset.key = key;
   const tabs = `<div class="dtabs">
     <button class="${detailTab==='overview'?'on':''}" onclick="detailTab='overview';openTask(curTask,true)">📋 Szczegóły</button>
     <button class="${detailTab==='history'?'on':''}" onclick="detailTab='history';openTask(curTask,true)">🕘 Historia (${(t.events||[]).length})</button>
     <button class="${detailTab==='comments'?'on':''}" onclick="detailTab='comments';openTask(curTask,true)">💬 Komentarze (${(t.comments||[]).length})</button>
+    <button class="${detailTab==='atts'?'on':''}" onclick="detailTab='atts';openTask(curTask,true)">📎 Załączniki (${(t.attachments||[]).length})</button>
   </div>`;
   // blok podsumowania — ZAWSZE widoczny (tytuł, status, czas, rola, projekt, branch/PR)
   const summary = `<div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
@@ -860,6 +861,22 @@ async function openTask(id, keep){
       <textarea id="cbox" placeholder="uwaga do zadania (też leci na PR na GitHubie)…"></textarea>
       <button onclick="sendComment()">Dodaj komentarz</button>
       ${d.substep==='ASK_SPONSOR'?`<button style="background:#238636;border-color:#2ea043;color:#fff" onclick="sendQuickTaskYes()" title="Wyślij automatycznie: „${esc(quickYesText())}”">⚡ TAK — realizuj, bez pytań</button>`:''}`;
+  } else if(detailTab === 'atts'){
+    // v2.7.10 — rezultaty/załączniki zadania w jednym miejscu, klikalne + podgląd inline
+    const TEXT_K = ['md','txt','json','log','csv','py','html','patch','diff'];
+    body = `<h2>📎 Załączniki / rezultaty zadania</h2><div class="histbox">` + ((t.attachments||[]).map(a=>{
+      const url = '/api/attachment/'+a.id+'/raw';
+      const isImg = ['png','jpg','jpeg','gif','svg'].includes(a.kind);
+      const isTxt = TEXT_K.includes(a.kind);
+      return `<div class="att" data-att="${a.id}">
+        <span>📎 <a href="${url}" target="_blank" style="color:#58a6ff"><b>${esc(a.label||a.path)}</b></a></span>
+        <span class="muted">${esc(a.path)} · ${(a.size/1024).toFixed(1)} KB · ${new Date(a.ts*1000).toLocaleString()}</span>
+        ${isTxt?`<button class="tbtn" onclick="toggleAtt(${a.id})">👁 podgląd</button>`:''}
+        <a class="tbtn" style="text-decoration:none" href="${url}" target="_blank">↗ otwórz</a>
+        ${isImg?`<div class="attprev" id="attprev-${a.id}" style="display:none"><img src="${url}" style="max-width:100%;border-radius:6px;margin-top:4px"></div>`
+              :`<pre class="attprev" id="attprev-${a.id}" style="display:none;white-space:pre-wrap;font-size:11px;background:#0d1117;padding:6px;border-radius:6px;margin-top:4px;max-height:300px;overflow:auto"></pre>`}
+      </div>`;
+    }).join('')||'<span class="muted">brak załączników — pliki wypracowane przez agenta (np. plan w .agents/runtime/) pojawiają się tu automatycznie</span>') + '</div>';
   } else {
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
@@ -971,6 +988,25 @@ async function sendAsk(){
 async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'POST', body:'{}'}); refresh(); }
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
+// v2.7.10 — podgląd załącznika inline (tekst) / obrazek
+async function toggleAtt(id){
+  const el = document.getElementById('attprev-'+id);
+  if(!el) return;
+  if(el.style.display !== 'none'){ el.style.display = 'none'; return; }
+  if(!el.dataset.loaded){
+    const r = await fetch('/api/attachment/'+id+'/raw');
+    el.textContent = (await r.text()).slice(0, 20000);
+    el.dataset.loaded = '1';
+  }
+  el.style.display = 'block';
+}
+// v2.7.10 — zgoda na DEPLOY_PROD z poziomu dashboardu (przycisk 🚀 Deploy → PROD)
+async function approvalAction(id, action){
+  const reason = action==='decline' ? (prompt('Powód odrzucenia deployu:')||'') : '';
+  if(action==='decline' && !reason) return;
+  await fetch('/api/approval/'+encodeURIComponent(id)+'/'+action, {method:'POST', body: JSON.stringify({reason})});
+  refresh();
+}
 // zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
 const TABS = ['overview','sponsor','tasks','flow','team','chat','live','firma'];
 function showTab(name, push){
@@ -1004,7 +1040,11 @@ async function renderSponsor(){
   document.getElementById('spApprovals').innerHTML = (d.approvals||[]).map(a =>
     `<div class="dec-card esc" style="cursor:default;animation:none"><b>${esc(a.id)}</b> <span class="sbadge" style="background:#b08800">${esc(a.kind)}</span>
      <div class="muted" style="font-size:11px">milestone: ${esc(a.milestone)} · ${a.created_at?new Date(a.created_at*1000).toLocaleString():''}</div>
-     <div style="font-size:11px">${esc(String(a.payload||'').slice(0,200))}</div></div>`).join('')
+     <div style="font-size:11px">${esc(String(a.payload||'').slice(0,200))}</div>
+     <div style="margin-top:4px">
+       <button class="tbtn" style="background:#238636;border-color:#2ea043;color:#fff" onclick="approvalAction('${esc(a.id)}','approve')">🚀 Deploy → PROD</button>
+       <button class="tbtn" style="background:#da3633;border-color:#f85149;color:#fff" onclick="approvalAction('${esc(a.id)}','decline')">🛑 Odrzuć</button>
+     </div></div>`).join('')
     || '<span class="muted">brak oczekujących zgód</span>';
   document.getElementById('spMilestones').innerHTML = (d.milestones||[]).map(m => {
     const per = Object.entries(m.per_status||{}).sort((a,b)=>b[1]-a[1]).map(([st,n]) =>
@@ -2153,7 +2193,8 @@ def _task_detail(s: State, task_id: str) -> dict:
     if t.get("status") == "RUNNING" and t.get("started_at"):
         t["elapsed"] = max(0, time.time() - t["started_at"])
     return {"icons": ICON, "task": t, "comments": s.recent_comments(20, task_id=task_id),
-            "events": s.recent_events(50, task_id=task_id)}
+            "events": s.recent_events(50, task_id=task_id),
+            "attachments": s.list_attachments(task_id)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2294,6 +2335,35 @@ class Handler(BaseHTTPRequestHandler):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
+        elif u.path.startswith("/api/attachment/") and u.path.endswith("/raw"):
+            # v2.7.10: serwowanie załącznika zadania (bezpiecznie: tylko pliki wewnątrz ROOT repo)
+            from engine.state import ROOT as _ROOT
+            try:
+                att_id = int(u.path.split("/")[3])
+                att = State().get_attachment(att_id)
+                if not att:
+                    self._send(404, '{"error":"nieznany zalacznik"}'.encode(), "application/json")
+                    return
+                full = (_ROOT / att["path"]).resolve()
+                if not str(full).startswith(str(_ROOT.resolve())) or not full.is_file():
+                    self._send(404, '{"error":"plik niedostepny"}'.encode(), "application/json")
+                    return
+                ext = (att.get("kind") or full.suffix.lstrip(".")).lower()
+                ctype = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
+                         "svg": "image/svg+xml", "json": "application/json", "md": "text/markdown; charset=utf-8",
+                         "html": "text/html; charset=utf-8"}.get(ext, "text/plain; charset=utf-8")
+                data = full.read_bytes()
+                if len(data) > 2_000_000:
+                    self._send(413, '{"error":"plik za duzy do podgladu (>2MB)"}'.encode(), "application/json")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                self._send(500, json.dumps({"error": repr(e)}).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -2431,6 +2501,23 @@ class Handler(BaseHTTPRequestHandler):
             from engine.flow import org as orgmod
             removed = orgmod.reset_override()
             self._send(200, json.dumps({"ok": True, "removed": removed}).encode(), "application/json")
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "approval"]:
+            # v2.7.10: zgoda/odrzucenie DEPLOY_PROD (i innych approvals) z dashboardu
+            aid, act = parts[2], parts[3]
+            s = State()
+            if act == "approve":
+                s.resolve_approval(aid, "APPROVED")
+                s.record_metric("deploy_approved", {"approval": aid, "via": "dashboard"}, None)
+                s.add_comment(None, "sponsor/dashboard", f"🚀 Cel: wdrożyć na produkcję → ✅ Efekt: zgoda na `{aid}` z dashboardu (APPROVED)")
+            elif act == "decline":
+                s.resolve_approval(aid, "DECLINED")
+                s.record_metric("deploy_declined", {"approval": aid, "reason": str(body.get("reason") or "")[:200], "via": "dashboard"}, None)
+                s.add_comment(None, "sponsor/dashboard", f"🛑 Cel: odrzucić deploy → ✅ Efekt: `{aid}` odrzucone: {str(body.get('reason') or '')[:120]}")
+            else:
+                self._send(404, b'{"error":"unknown approval action"}', "application/json")
+                return
+            self._send(200, json.dumps({"ok": True, "id": aid, "action": act}).encode(), "application/json")
             return
         if len(parts) == 4 and parts[:2] == ["api", "task"]:
             _, _, tid, action = parts

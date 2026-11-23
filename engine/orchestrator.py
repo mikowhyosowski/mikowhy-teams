@@ -357,7 +357,11 @@ class Orchestrator:
 
     # --- faza 6: merge do gałęzi milestonu --------------------------------------
     def _handle_merges(self) -> None:
-        for task in self.state.list_tasks(status=READY_TO_MERGE):
+        rtm = self.state.list_tasks(status=READY_TO_MERGE)
+        # v2.7.10: zadania z flagą sponsor_merge (przycisk 🚀 Wdróż w flow) idą pierwsze
+        rtm.sort(key=lambda t: (0 if self.state.get_kv(f"sponsor_merge:{t['id']}") else 1,
+                                -(t.get("updated_at") or 0)))
+        for task in rtm:
             ns = task.get("project_id") or "mikowhy-teams"
             repo = projects.repo_for_task(task, self.state)  # multi-project: fizyczne repo projektu
             # AUTO-MERGE DO MAIN: projekt z approval_policy=auto nad samym silnikiem (fabryka)

@@ -185,6 +185,17 @@ CREATE TABLE IF NOT EXISTS llm_jobs (
   done_at     REAL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_jobs_status ON llm_jobs(status, created_at);
+-- załączniki/rezultaty zadania (v2.7.10): pliki wypracowane przez agenta, klikalne w dashboardzie
+CREATE TABLE IF NOT EXISTS task_attachments (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id  TEXT,
+  path     TEXT NOT NULL,          -- ścieżka względem ROOT repo
+  label    TEXT NOT NULL DEFAULT '',
+  kind     TEXT NOT NULL DEFAULT '',  -- rozszerzenie: md/png/json/...
+  size     INTEGER NOT NULL DEFAULT 0,
+  ts       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_att_task ON task_attachments(task_id);
 """
 
 
@@ -605,10 +616,57 @@ class State:
         except Exception:
             pass
         self.record_metric("agent_comment", {"author": author, "text": text}, task_id)
+        # v2.7.10 — zasada Sponsora: pliki/rezultaty wymienione w komentarzu lądują jako ZAŁĄCZNIKI zadania
+        # (klikalny link w dashboardzie), żeby wszystko było w jednym miejscu
+        if task_id:
+            try:
+                _added = 0
+                for _m in re.finditer(r'(?<![\w./])((?:[\w.\-]+/)*[\w.\-]+\.(?:md|png|jpe?g|gif|txt|json|csv|log|patch|diff|html))',
+                                       text, re.IGNORECASE):
+                    if self.add_attachment(task_id, _m.group(1), label="auto: z komentarza") is not None:
+                        _added += 1
+                    if _added >= 5:
+                        break
+            except Exception:
+                pass
 
     def add_comment_report(self, task_id: str | None, author: str, cel: str, efekt: str) -> None:
         """Komentarz raportowy: jawny Cel i Efekt — czytelny dla człowieka od razu."""
         self.add_comment(task_id, author, f"🎯 Cel: {cel} → ✅ Efekt: {efekt}")
+
+    # --- załączniki / rezultaty zadania (v2.7.10) ------------------------------
+    def add_attachment(self, task_id: str | None, path: str, label: str = "", kind: str = "") -> dict | None:
+        """Dodaje załącznik (rezultat) do zadania — plik musi istnieć wewnątrz ROOT repo.
+        Dedup po (task_id, path). Zwraca wiersz lub None gdy plik niedostępny."""
+        try:
+            rel = str(path).strip()
+            full = (ROOT / rel).resolve()
+            if not str(full).startswith(str(ROOT.resolve())) or not full.is_file():
+                return None
+            ext = full.suffix.lstrip(".").lower()
+            row = self._conn().execute(
+                "SELECT id FROM task_attachments WHERE task_id IS ? AND path=?", (task_id, rel)).fetchone()
+            if row:
+                return {"id": row[0], "task_id": task_id, "path": rel, "label": label, "kind": ext,
+                        "size": full.stat().st_size, "ts": 0}
+            cur = self._conn().execute(
+                "INSERT INTO task_attachments(task_id, path, label, kind, size, ts) VALUES(?,?,?,?,?,?)",
+                (task_id, rel, label or full.name, ext, full.stat().st_size, time.time()))
+            return {"id": cur.lastrowid, "task_id": task_id, "path": rel, "label": label or full.name,
+                    "kind": ext, "size": full.stat().st_size, "ts": time.time()}
+        except Exception:
+            return None
+
+    def list_attachments(self, task_id: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT id, task_id, path, label, kind, size, ts FROM task_attachments WHERE task_id=? ORDER BY ts DESC",
+            (task_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_attachment(self, att_id: int) -> dict | None:
+        r = self._conn().execute(
+            "SELECT id, task_id, path, label, kind, size, ts FROM task_attachments WHERE id=?", (att_id,)).fetchone()
+        return dict(r) if r else None
 
     def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
         q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"

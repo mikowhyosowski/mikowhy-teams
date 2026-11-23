@@ -215,3 +215,57 @@ def test_comment_dedup_no_duplicates():
     texts = [_json.loads(r[0])["text"] for r in rows]
     assert texts.count("🔄 W TRAKCIE — etap 1/5_PLAN: 🎯 Cel: plan — nad tym pracuję") == 1, texts
     assert len(texts) == 2
+
+
+def test_attachments_add_autodetect_and_dedup():
+    """v2.7.10: załączniki zadania — add_attachment + auto-wykrywanie ścieżek w komentarzu + dedup."""
+    from engine.state import ROOT
+    s = _tmp_state()
+    s.add_task("T-A", "FACTORY-OPS", 9, "atts", "backend-dev", status="READY")
+    p = ROOT / ".agents" / "runtime" / "test-att-xyz.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# rezultat testowy\n", encoding="utf-8")
+    try:
+        rel = ".agents/runtime/test-att-xyz.md"
+        a1 = s.add_attachment("T-A", rel, "📋 testowy rezultat", "md")
+        assert a1 and a1["path"] == rel
+        a2 = s.add_attachment("T-A", rel, "inny label")  # dedup po (task, path)
+        assert a2["id"] == a1["id"]
+        assert len(s.list_attachments("T-A")) == 1
+        # auto-wykrywanie ścieżki w komentarzu
+        s.add_comment("T-A", "worker(x)", "🎯 Cel: zapisać plan → ✅ Efekt: plan w .agents/runtime/test-att-xyz.md gotowy")
+        atts = s.list_attachments("T-A")
+        assert len(atts) == 1 and atts[0]["path"] == rel
+        # ścieżka spoza ROOT odrzucona
+        assert s.add_attachment("T-A", "../../etc/passwd") is None
+        assert s.get_attachment(a1["id"])["path"] == rel
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_flow_merge_action():
+    """v2.7.10: akcja flow 'merge' (🚀 Wdróż) — flaga sponsor_merge + komentarz, bez bezpośredniego przejścia."""
+    from engine.flow import flow as flowmod
+    s = _tmp_state()
+    s.add_task("T-M", "FACTORY-OPS", 9, "merge", "backend-dev", status="READY")
+    s.claim_task("T-M", "w1")
+    s.transition("T-M", "RUNNING")
+    s.transition("T-M", "IN_REVIEW", substep="done")
+    s.transition("T-M", "READY_TO_MERGE")
+    cfg = flowmod.load_config()
+    assert not flowmod.validate_config(cfg), flowmod.validate_config(cfg)
+    assert "merge" in [a for st in cfg["stages"] if st["id"] == "merge" for a in st.get("actions", [])]
+    res = flowmod.apply_action("T-M", "merge", {}, state=s)
+    assert res["ok"] and res["to"] == "READY_TO_MERGE"  # orchestrator zrobi realny merge
+    assert s.get_kv("sponsor_merge:T-M")
+    import json as _json
+    texts = [_json.loads(r[0])["text"] for r in s._conn().execute(
+        "SELECT payload FROM metrics WHERE kind='agent_comment' AND task_id='T-M'").fetchall()]
+    assert any(t.startswith("🚀") for t in texts)
+    # merge niedozwolony z RUNNING
+    s.transition("T-M", "READY")
+    try:
+        flowmod.apply_action("T-M", "merge", {}, state=s)
+        assert False, "merge z READY powinien rzucić"
+    except ValueError:
+        pass

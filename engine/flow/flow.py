@@ -22,7 +22,7 @@ OVERRIDE_CFG = ROOT / ".agents" / "flow" / "flow.config.json"
 
 REQUIRED_KEYS = ("stages", "transitions", "actions", "layout", "theme")
 KNOWN_STATUSES = set(VALID_TRANSITIONS.keys()) | {"MERGED"}
-KNOWN_ACTION_TYPES = {"approve", "decline", "retry", "comment", "set_priority"}
+KNOWN_ACTION_TYPES = {"approve", "decline", "retry", "comment", "set_priority", "merge"}  # v2.7.10: + merge (🚀 Wdróż)
 PRIORITIES = ("P0", "P1", "P2", "P3")
 
 
@@ -318,6 +318,17 @@ def apply_action(task_id: str, action_id: str, payload: dict | None = None,
         s._conn().execute("UPDATE tasks SET review_notes=COALESCE(review_notes,'')||? , updated_at=? WHERE id=?",
                           ("\n[flow] " + text[:500], time.time(), task_id))
         s.record_metric("task_event", {"event": "comment", "via": "flow", "changes": {"comment": text[:120]}}, task_id)
+        to = status
+    elif atype == "merge":
+        # v2.7.10: „🚀 Wdróż” — NIE mergujemy tu sami (git merge robi orchestrator z regression gates);
+        # tylko flaga + komentarz, żeby _handle_merges wziął to w pierwszej kolejności
+        if status != "READY_TO_MERGE":
+            raise ValueError(f"merge tylko z READY_TO_MERGE (jest {status})")
+        s.set_kv(f"sponsor_merge:{task_id}", time.time())
+        s.add_comment(task_id, "sponsor/flow",
+                      "🚀 Cel: wdrożyć zadanie (merge do gałęzi docelowej) → ✅ Efekt: zlecone — "
+                      "orchestrator zmerguje w najbliższym ticku (rebase + regression gates + push)")
+        s.record_metric("sponsor_merge", {"task": task_id, "via": "flow"}, task_id)
         to = status
     elif atype == "set_priority":
         prio = str(payload.get("priority") or payload.get("value") or "").strip()

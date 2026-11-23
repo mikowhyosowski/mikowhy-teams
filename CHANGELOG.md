@@ -1,5 +1,14 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.10] — 2026-11-23 — załączniki/rezultaty zadania (klikalne) + przycisk 🚀 Wdróż (merge) i Deploy → PROD
+- 📎 `task_attachments` + `State.add_attachment/list_attachments/get_attachment`: każdy rezultat (plan, plik, screenshot, JSON)
+  dopina się do zadania; `add_comment` AUTO-wykrywa ścieżki plików w komentarzu (`.md/.png/.json/...`) i sam je dopina (dedup po task+path, tylko pliki wewnątrz ROOT)
+- 🖱️ Dashboard: zakładka **📎 Załączniki** w szczegółach zadania — klikalny link (`/api/attachment/<id>/raw`, bezpieczne serwowanie tylko z ROOT, typy: md→text/markdown, png→image/...) + inline podgląd 👁 (tekst do 20k znaków, obrazki `<img>`)
+- 👷 worker zapisuje plan jako załącznik zadania (`📋 plan zadania`); reguła w sponsor-notes.md: „załączniki zawsze do zadania”
+- 🚀 Flow: nowa akcja `merge` („Wdróż”) na etapie READY_TO_MERGE — flaga `sponsor_merge:<id>` + komentarz; orchestrator `_handle_merges` bierze takie zadania pierwsze (realny merge z rebase + regression gates + push)
+- 🏭 Sponsor view: przyciski na aprobatach **🚀 Deploy → PROD** / 🛑 Odrzuć → `POST /api/approval/<id>/{approve,decline}` (`resolve_approval`)
+- ✅ testy: attachments (add/autodetect/dedup/safety), flow merge action — 66 passed
+
 ## [2.7.9] — 2026-11-23 — kontynuacja od sub-etapu przy READY + anty-duplikaty komentarzy + jedno zadanie na raz na rolę
 - ♻️ `state.resume_substep()`: powrót do READY (FAILED/BLOCKED/AWAITING_OWNER/requeue) NIE resetuje już sub-etapu do 1/5_PLAN —
   zadanie kontynuuje od wypracowanego etapu (`done`→`2/5_IMPL`, markery ASK/OWNER→`1/5_PLAN`); komentarze przejść piszą „kontynuacja od etapu X”

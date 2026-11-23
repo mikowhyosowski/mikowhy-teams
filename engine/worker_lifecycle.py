@@ -161,10 +161,12 @@ def step1_plan(state: State, task: dict) -> None:
                                      f"rozbić {task['id']} na części",
                                      f"podział odrzucony ({exc}) — realizuję jako całość, żeby nie mnożyć podzadań")
     plan = result.get("plan", "")
-    Path(ROOT / ".agents" / "runtime" / f"{task['id']}.plan.md").write_text(plan, encoding="utf-8")
+    plan_rel = f".agents/runtime/{task['id']}.plan.md"
+    Path(ROOT / plan_rel).write_text(plan, encoding="utf-8")
+    state.add_attachment(task["id"], plan_rel, "📋 plan zadania (1/5_PLAN)", "md")  # v2.7.10: rezultat = załącznik zadania
     state.add_comment_report(task["id"], f"worker({task['role']})",
                              f"zaplanować realizację: {(task.get('title') or '')[:80]}",
-                             f"plan gotowy ({len(plan)} znaków, zapisany w .agents/runtime/{task['id']}.plan.md) — przechodzę do implementacji")
+                             f"plan gotowy ({len(plan)} znaków, zapisany jako załącznik 📎 {plan_rel}) — przechodzę do implementacji")
     state.transition(task["id"], "RUNNING", substep="2/5_IMPL")
 
 
