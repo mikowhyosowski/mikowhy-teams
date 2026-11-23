@@ -55,7 +55,7 @@ def step0_prepare(state: State, task: dict) -> Path:
     git_guard.assert_writable(repo)                      # STRICT READ-ONLY guard
     ns = task.get("project_id") or "mikowhy-teams"
     worktree = git_guard.create_worktree(task["id"], base, branch, repo=repo, ns=ns)
-    state.transition(task["id"], "RUNNING", substep=resume_substep(task), branch=branch, worktree=str(worktree))  # v2.7.9: kontynuacja od wypracowanego etapu
+    _safe_transition(state, task["id"], "RUNNING", substep=resume_substep(task), branch=branch, worktree=str(worktree))  # v2.7.9: kontynuacja od wypracowanego etapu
     _log(task["id"], f"worktree={worktree} repo={repo} base={base} branch={branch}")
     return worktree
 
@@ -115,17 +115,37 @@ def _ask_sponsor(state: State, task: dict, question: str, options: list | None =
                                      + "\nOdpisz w wątku zadania, potem zatwierdź (decyzja → READY, pełny cykl).")
     except Exception:
         pass
-    state.transition(task["id"], AWAITING_OWNER, substep="ASK_OWNER",
+    _safe_transition(state, task["id"], AWAITING_OWNER, substep="ASK_OWNER",
                      review_notes=f"Pakiet dla Opiekuna — co utknęło: {q} | Opcje: {opts_txt}")
     state.record_metric("ask_owner", {"question": q[:300], "options": opts}, task["id"])
     state.add_notification("owner", f"🧑‍💼 {task['id']} czeka na Twoją decyzję: {q[:140]}", task["id"])  # v2.7.15: dzwonek
     _log(task["id"], f"ASK_OWNER: {q[:200]}")
 
 
+def _safe_transition(state: "State", task_id: str, new_status: str, **fields):
+    """v2.7.20: odporne przejście — przy wyścigu (zombie-recovery/orchestrator zmienił status między
+    krokami) InvalidTransition nie crashuje workera: jeśli zadanie jest znów claimowalne, przejmujemy
+    je ponownie; jeśli ktoś inny zamknął/przejął — wychodzimy cicho (SystemExit 0)."""
+    from engine.state import InvalidTransition, READY as _READY, CHANGES_REQUESTED as _CR
+    try:
+        return state.transition(task_id, new_status, **fields)
+    except InvalidTransition:
+        t = state.get_task(task_id)
+        if t is None:
+            _log(task_id, "zadanie zniknęło — wychodzę")
+            raise SystemExit(0)
+        cur = t["status"]
+        if cur in (_READY, _CR) and new_status == "RUNNING":
+            state.claim_task(task_id, t.get("claimed_by") or "worker-reclaim")
+            return state.transition(task_id, "RUNNING", **fields)
+        _log(task_id, f"status {cur} (inny proces przejął/zmienił) — wychodzę cicho")
+        raise SystemExit(0)
+
+
 def step1_plan(state: State, task: dict) -> None:
     """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK lub ASK_OWNER (graniczna decyzja Opiekuna)."""
     t0 = time.time()
-    state.transition(task["id"], "RUNNING", substep=resume_substep(task))  # v2.7.9: kontynuacja od wypracowanego etapu
+    _safe_transition(state, task["id"], "RUNNING", substep=resume_substep(task))  # v2.7.9: kontynuacja od wypracowanego etapu
     sponsor_notes = state.recent_comments(5, task_id=task["id"])
     notes_txt = "\n".join(f"- {c.get('author')}: {str(c.get('text'))[:200]}" for c in sponsor_notes)
     result = _llm_step(
@@ -176,7 +196,7 @@ def step1_plan(state: State, task: dict) -> None:
     state.add_comment_report(task["id"], f"worker({task['role']})",
                              f"zaplanować realizację: {(task.get('title') or '')[:80]}",
                              f"plan gotowy ({len(plan)} znaków, zapisany jako załącznik 📎 {plan_rel}) — przechodzę do implementacji")
-    state.transition(task["id"], "RUNNING", substep="2/5_IMPL")
+    _safe_transition(state, task["id"], "RUNNING", substep="2/5_IMPL")
 
 
 def step2_implement(state: State, task: dict, worktree: Path) -> None:
@@ -222,7 +242,7 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
     state.add_comment_report(task["id"], f"worker({task['role']})",
                              f"zaimplementować zmiany w zakresie {', '.join(task.get('scope_paths') or [])[:80]}",
                              f"zapisano {len(files)} plików — przechodzę do testów")
-    state.transition(task["id"], "RUNNING", substep="3/5_TEST")
+    _safe_transition(state, task["id"], "RUNNING", substep="3/5_TEST")
 
 
 def step3_tests(state: State, task: dict, worktree: Path) -> None:
@@ -241,7 +261,7 @@ def step3_tests(state: State, task: dict, worktree: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     state.record_metric("step_time", {"step": "3/5_TEST", "seconds": round(time.time() - t0, 2)}, task["id"])
-    state.transition(task["id"], "RUNNING", substep="4/5_QG")
+    _safe_transition(state, task["id"], "RUNNING", substep="4/5_QG")
 
 
 def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> None:
@@ -253,10 +273,10 @@ def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> N
         state.record_metric("local_qg", {"attempt": attempt, "failed": [r["name"] for r in failed]}, task["id"])
         if not failed:
             state.record_metric("step_time", {"step": "4/5_QG", "seconds": round(time.time() - t0, 2)}, task["id"])
-            state.transition(task["id"], "RUNNING", substep="5/5_COMMIT")
+            _safe_transition(state, task["id"], "RUNNING", substep="5/5_COMMIT")
             return
         if attempt > MAX_LOCAL_FIXES:
-            state.transition(task["id"], FAILED, review_notes=json.dumps(
+            _safe_transition(state, task["id"], FAILED, review_notes=json.dumps(
                 {"stage": "QG", "failures": failed}, ensure_ascii=False))
             return
         # Krok 4b: LLM dostaje WYŁĄCZNIE traceback i konkretny plik
@@ -271,9 +291,9 @@ def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> N
                     continue
                 (worktree / rel).write_text(content, encoding="utf-8")
         except RuntimeError:
-            state.transition(task["id"], FAILED, review_notes="LLM niedostępny w kroku 4b")
+            _safe_transition(state, task["id"], FAILED, review_notes="LLM niedostępny w kroku 4b")
             return
-    state.transition(task["id"], FAILED, review_notes="QG nieprzechodzony po lokalnych poprawkach")
+    _safe_transition(state, task["id"], FAILED, review_notes="QG nieprzechodzony po lokalnych poprawkach")
 
 
 def step45_simplify(state: State, task: dict, worktree: Path, base: str) -> None:
@@ -290,7 +310,7 @@ def step45_simplify(state: State, task: dict, worktree: Path, base: str) -> None
             for p in task["scope_paths"] if (worktree / p).exists()}
     if not code:
         return
-    state.transition(task["id"], "RUNNING", substep="4.5_SIMPLIFY")
+    _safe_transition(state, task["id"], "RUNNING", substep="4.5_SIMPLIFY")
     payload = {"code": code, "diff_lines": lines,
                "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"files": {"<path ze scope_paths>": "<uproszczona treść>"}}. '
                          'TA SAMA logika i testy, idiomatycznie, ok. 30% mniej linii. Żadnego innego klucza.'}
@@ -316,7 +336,7 @@ def step45_simplify(state: State, task: dict, worktree: Path, base: str) -> None
     after = git_guard.diff_line_count(worktree, base)
     state.record_metric("simplify_applied", {"before": lines, "after": after}, task["id"])
     _log(task["id"], f"simplify: {lines} -> {after} linii diffu")
-    state.transition(task["id"], "RUNNING", substep="5/5_COMMIT")
+    _safe_transition(state, task["id"], "RUNNING", substep="5/5_COMMIT")
 
 
 def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
@@ -328,13 +348,13 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         lines = git_guard.assert_diff_limit(worktree, base)  # zmiana #7
     except git_guard.DiffTooLarge as exc:
         git_guard.run_git(["checkout", "--", "."], cwd=worktree, check=False)
-        state.transition(task["id"], READY, substep="1/5_PLAN",
+        _safe_transition(state, task["id"], READY,
                          review_notes=f"Odrzucono przed CR: {exc}")
         return
     if lines == 0:
         # pusty diff = brak realnej zmiany — NIE commitujemy pustego commita (koniec z '0 linii diffu')
         git_guard.run_git(["checkout", "--", "."], cwd=worktree, check=False)
-        state.transition(task["id"], READY, substep="1/5_PLAN",
+        _safe_transition(state, task["id"], READY,
                          review_notes="Pusty diff względem bazy — worker nie wprowadził realnej zmiany (odrzucono przed commitem)")
         state.record_metric("empty_diff_rejected", {}, task["id"])
         _log(task["id"], "pusty diff (0 linii) — odrzucono przed commitem")
@@ -345,7 +365,7 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
     try:
         git_guard.sync_with_origin(worktree, base)  # twarda reguła: wyrównaj z origin przed pushem
     except git_guard.MergeConflict as exc:
-        state.transition(task["id"], READY, substep="1/5_PLAN",
+        _safe_transition(state, task["id"], READY,
                          review_notes=f"Konflikt z origin/{base} przed pushem: {exc} — wyrównaj i spróbuj ponownie")
         state.record_metric("origin_conflict", {"base": base, "error": str(exc)[:200]}, task["id"])
         _log(task["id"], f"konflikt z origin/{base}: {exc}")
@@ -364,7 +384,7 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
                                      f"PR !{pr} otwarty na GitHubie ({task['branch']} → {base})")
     except Exception as exc:
         _log(task["id"], f"github bridge: {exc!r}")
-    state.transition(task["id"], IN_REVIEW, substep="done")
+    _safe_transition(state, task["id"], IN_REVIEW, substep="done")
     state.record_metric("diff_lines", {"lines": lines}, task["id"])
     _log(task["id"], f"commit OK ({lines} linii diffu) -> IN_REVIEW")
 
@@ -504,7 +524,7 @@ def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
     (patrz _llm_agent_loop). LLM na końcu zostawia raport docs/llm-reports/<id>.md;
     worker dopisuje go do feeda (komentarz) i commituje wszystko przez step5."""
     tid = task["id"]
-    state.transition(tid, "RUNNING", substep="LLM_EXEC")
+    _safe_transition(state, tid, "RUNNING", substep="LLM_EXEC")
     model = skill_compiler.model_for_role(task["role"], kind="strong")
     _log(tid, f"LLM_EXEC start (model={model}, worktree={worktree})")
     report_rel = _llm_agent_loop(state, task, worktree, base)
@@ -526,7 +546,7 @@ def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
     if not staged and ahead:
         git_guard.push(task["branch"], worktree)
         state.add_comment(tid, f"llm({model})", f"✅ LLM sam zacommitował ({task['branch']}) → IN_REVIEW")
-        state.transition(tid, IN_REVIEW, substep="done")
+        _safe_transition(state, tid, IN_REVIEW, substep="done")
         return
     step5_commit(state, task, worktree, base)
 

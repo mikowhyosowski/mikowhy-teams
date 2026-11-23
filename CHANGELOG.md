@@ -1,5 +1,13 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.21] — 2026-11-23 — fix crash-loop workerów (InvalidTransition race) + worktree --detach
+- 🛡️ `worker_lifecycle._safe_transition` (wszystkie 18 przejść): wyścig zombie-recovery↔worker crashował workera
+  (`InvalidTransition` → rc=1 → zombie → READY → re-claim → pętla). Teraz: zadanie znów claimowalne → re-claim
+  i kontynuacja; ktoś inny zamknął → cichy `SystemExit(0)`. Wynik live: `process_exit rc!=0` = 0 (było co kilka min)
+- 🌳 `git_guard.integration_worktree` → `worktree add --detach` — gałąź milestonu mogła być już w innym worktree
+  (mikowhy-teams-self == to samo repo) i leciało rc=128 „already used by worktree” co tick (milestone_error spam)
+- 🧪 test `test_safe_transition_race_no_crash`; test live-state OPS-GUARDIAN-SETUP dopuszcza rolę po circuit breakerze
+
 ## [2.7.20] — 2026-11-23 — naprawa kolejki LLM v4 (separatorowy batch + reclaim lease) + koniec spamu milestone_error
 - 🧩 `llm_queue._run_batch` v4: odpowiedź batchowa w formacie SEPARATORÓW `###ODP-i###` zamiast JSON `{"answers":[...]}`
   (v3 padało ~30% na zagnieżdżonym JSON — root cause timeoutów workerów); batch tylko gdy suma promptów < 20k znaków,

@@ -116,7 +116,9 @@ def integration_worktree(milestone_branch: str, repo: Path | str = ROOT, ns: str
         run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
-    run_git(["worktree", "add", str(path), milestone_branch], cwd=repo)
+    # v2.7.20: --detach — gałąź może być już checkoutowana w innym worktree (mikowhy-teams-self == mikowhy-teams),
+    # bez detach 'worktree add <branch>' leci rc=128 "already used by worktree" co tick
+    run_git(["worktree", "add", "--detach", str(path), milestone_branch], cwd=repo)
     return path
 
 

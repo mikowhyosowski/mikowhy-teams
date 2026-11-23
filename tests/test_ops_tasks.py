@@ -40,7 +40,7 @@ def test_ops_tasks_in_live_state():
     assert t1["role"] == "principal-debugger"
     t2 = s.get_task("OPS-GUARDIAN-SETUP")
     assert t2 and t2["status"] in ("READY", "RUNNING", "IN_REVIEW", "AWAITING_OWNER", "BLOCKED") and t2["priority"] == "P1"
-    assert t2["role"] == "workload-guardian"
+    assert t2["role"] in ("workload-guardian", "principal-debugger")  # circuit breaker mógł podmienić rolę po retry>=3
 
 
 def test_recurring_registered():
@@ -453,3 +453,26 @@ def test_eta_estimate_and_snapshot():
     assert t["eta_s"] == 1234 and t.get("eta_left_s") is not None and t.get("eta_at")
     assert d["stats"]["eta_queue_s"] >= 0
     assert any(q["id"] == "T-E2" and "eta_s" in q for q in d["queue"])
+
+
+def test_safe_transition_race_no_crash():
+    """v2.7.20: _safe_transition — wyścig (zadanie wróciło do READY między krokami) nie crashuje workera:
+    ponowne przejęcie i kontynuacja; gdy ktoś inny zamknął — cichy exit."""
+    from engine.worker_lifecycle import _safe_transition
+    from engine.state import READY, BLOCKED
+    s = _tmp_state()
+    s.add_task("T-RACE", "FACTORY-OPS", 9, "wyścig", "backend-dev", status="READY")
+    s.claim_task("T-RACE", "w1")
+    s.transition("T-RACE", "RUNNING")
+    # wyścig: orchestrator zrobił zombie-recovery -> READY, worker próbuje RUNNING
+    s.transition("T-RACE", "READY")
+    _safe_transition(s, "T-RACE", "RUNNING", substep="2/5_IMPL")  # powinno się udać przez re-claim
+    assert s.get_task("T-RACE")["status"] == "RUNNING"
+    # ktoś zamknął zadanie -> cichy SystemExit(0), bez InvalidTransition na zewnątrz
+    s.transition("T-RACE", "READY")
+    s.transition("T-RACE", "BLOCKED")
+    try:
+        _safe_transition(s, "T-RACE", "RUNNING", substep="3/5_TEST")
+        assert False, "powinien być SystemExit"
+    except SystemExit as e:
+        assert e.code == 0
