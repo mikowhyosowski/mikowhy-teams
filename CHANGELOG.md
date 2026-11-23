@@ -1,5 +1,12 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.4.0] — 2026-11-23
+- 🏷️ Globalny filtr STATUSÓW nad zakładkami (kolorowe chipsy jak projekty, localStorage) — **MERGED domyślnie
+  odznaczony (ukryty) na starcie**; działa na wszystkich zakładkach (Przegląd/Zadania/Flow) i na mapie Firma
+- 🌊 Zakładka Flow: filtr etapów (chipsy z kolorami z configa) — klik = ukryj/pokaż etap, dwuklik = SOLO
+  (tylko ten etap); defaultowo ukryte etapy w pełni pokryte ukrytymi statusami (czyli „Zmergowane” przy MERGED off);
+  strzałki do ukrytych etapów znikają
+
 ## [2.3.0] — 2026-11-23
 - 🎨 Każdy pracownik ma własny kolor + ikonę „charakteru” (deterministycznie z roli, personas.color/icon) — na kartach
   zespołu, pokojach na mapie Firma i dymkach rozmów; zespół sortowany wg STAŻU (najstarsi pierwsi)

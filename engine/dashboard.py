@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 
 
 def _version_info() -> dict:
@@ -195,6 +195,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #detail h3{font-size:14px;margin:4px 0}
  #detail textarea{width:100%;height:70px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit}
 #projFilters{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px;padding:5px 8px;background:#111823;border:1px solid #21262d;border-radius:10px;position:sticky;top:0;z-index:6}
+#stFilters{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px;padding:5px 8px;background:#161b22;border:1px solid #21262d;border-radius:10px}
+#flowStageFilters{display:flex;flex-wrap:wrap;gap:6px;width:100%;margin-top:4px}
 .lchip{border-radius:12px;padding:2px 10px;font-size:11px;font-weight:bold;opacity:.55}
 .lchip.on{opacity:1;outline:2px solid #fff}
 #ver:hover{border-color:#58a6ff;color:#58a6ff}
@@ -349,6 +351,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <h1>🏭 Dark Factory <button id="liveTg" onclick="toggleAutoRefresh()" title="włącz/wyłącz auto-odświeżanie (LIVE)" style="background:#0d1117;border:1px solid #3fb950;color:#3fb950;border-radius:10px;padding:1px 10px;font-size:12px;cursor:pointer">● LIVE</button> <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span> <span id="ver" class="muted" style="font-size:11px;cursor:pointer;border:1px solid #30363d;border-radius:10px;padding:1px 8px" onclick="openChangelog()" title="wersja dashboardu — klik = changelog"></span></h1>
 <div id="stats"></div>
 <div id="projFilters" title="Filtry projektów — globalne (działają na wszystkich zakładkach i mapie Firma)"></div>
+<div id="stFilters" title="Filtry statusów — globalne (MERGED domyślnie ukryty; klik = pokaż/ukryj)"></div>
 <nav id="tabs">
   <button data-tab="overview" onclick="showTab('overview')">📊 Przegląd<span id="navAlert"></span></button>
   <button data-tab="tasks" onclick="showTab('tasks')">📋 Zadania</button>
@@ -377,6 +380,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <button onclick="renderFlow()">🔄 odśwież diagram</button>
   <button class="cfg" onclick="openFlowCfg()">⚙️ zarządzaj flow (config JSON)</button>
   <span id="flowMeta" class="muted"></span>
+  <div id="flowStageFilters" title="Filtry etapów flow — klik = ukryj/pokaż etap · dwuklik = SOLO (tylko ten etap)"></div>
 </div>
 <div id="flowWrap"><svg id="flowSvg" preserveAspectRatio="xMidYMin meet"></svg></div>
 </section>
@@ -416,6 +420,23 @@ let curTask = null;
 let lastEventTs = 0;
 // kolorowe filtry projektów — hiddenProjs przechowywane w localStorage
 const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
+// filtry STATUSÓW — globalne; MERGED domyślnie UKRYTY (odznaczony na starcie)
+const hiddenSts = new Set(JSON.parse(localStorage.getItem('hiddenSts')||'["MERGED"]'));
+function toggleSt(st){ if(hiddenSts.has(st)) hiddenSts.delete(st); else hiddenSts.add(st); localStorage.setItem('hiddenSts', JSON.stringify([...hiddenSts])); refresh(); if(firmaWorld) renderFirma(); }
+function resetSts(){ hiddenSts.clear(); localStorage.setItem('hiddenSts','[]'); refresh(); if(firmaWorld) renderFirma(); }
+let _stFilterKey = '';
+function renderStFilters(d){
+  // cache: renderuj tylko gdy zmieni się zestaw statusów / liczby / stan ukrycia
+  const allSt = [...new Set(d.tasks.map(t => t.status))];
+  const key = JSON.stringify(allSt) + '|' + JSON.stringify(allSt.map(st => d.tasks.filter(t => t.status === st).length)) + '|' + JSON.stringify([...hiddenSts]);
+  if(key === _stFilterKey) return;
+  _stFilterKey = key;
+  document.getElementById('stFilters').innerHTML = allSt.map(st => {
+    const off = hiddenSts.has(st);
+    const n = d.tasks.filter(t => t.status === st).length;
+    return `<button class="pchip ${off?'off':''}" style="--c:${ST_COLOR[st]||'#6e7681'}" onclick="toggleSt('${st}')">${d.icons[st]||''} ${st} <span class="muted">${n}</span></button>`;
+  }).join('') + `<button class="pchip reset" onclick="resetSts()">✖ wszystkie</button>`;
+}
 function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
 const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','AWAITING_APPROVAL':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
@@ -500,8 +521,9 @@ async function refreshInner(){
     lastVersion = v;
   }
   // kolorowe filtry projektów — GLOBALNE (nad zakładkami), render tylko gdy zmieni się lista projektów (cache)
-  const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)'));
+  const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)') && !hiddenSts.has(t.status));
   renderProjFilters(d, visTasks);
+  renderStFilters(d);
   const alerts = visTasks.filter(t=>t.status==='AWAITING_APPROVAL');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
@@ -760,6 +782,18 @@ function showTab(name, push){
 }
 // ===== 🌊 FLOW: diagram przepływu pracy budowany z configa (engine/flow) =====
 let lastFlow = null;
+// filtr etapów flow (localStorage); defaultowo ukryte = etapy w pełni pokryte ukrytymi statusami (np. done przy MERGED off)
+let flowHiddenStages = null;
+function getFlowHiddenStages(){
+  if(flowHiddenStages === null){
+    const raw = localStorage.getItem('flowHiddenStages');
+    flowHiddenStages = new Set(raw !== null ? JSON.parse(raw) : []);
+  }
+  return flowHiddenStages;
+}
+function toggleFlowStage(sid){ const h = getFlowHiddenStages(); if(h.has(sid)) h.delete(sid); else h.add(sid); localStorage.setItem('flowHiddenStages', JSON.stringify([...h])); renderFlow(); }
+function soloFlowStage(sid){ const all = (lastFlow ? lastFlow.stages.map(s => s.id) : []); flowHiddenStages = new Set(all.filter(x => x !== sid)); localStorage.setItem('flowHiddenStages', JSON.stringify([...flowHiddenStages])); renderFlow(); }
+function resetFlowStages(){ flowHiddenStages = new Set(); localStorage.setItem('flowHiddenStages', '[]'); renderFlow(); }
 async function renderFlow(){
   const svg = document.getElementById('flowSvg');
   let f;
@@ -771,8 +805,23 @@ async function renderFlow(){
   const nodeW = L.nodeW||210, gap = L.arrowGap||34, laneH = L.laneHeight||250, laneGap = L.laneGap||74;
   const maxChips = L.maxChips||7, chipH = L.chipH||30;
   const stages = f.stages || [];
+  // filtr etapów: chipsy nad diagramem; przy pierwszym użyciu ukryj etapy w pełni pokryte ukrytymi statusami
+  if(localStorage.getItem('flowHiddenStages') === null && stages.length){
+    const h0 = getFlowHiddenStages();
+    for(const st of stages){ if((st.statuses||[]).length && st.statuses.every(s => hiddenSts.has(s))) h0.add(st.id); }
+    localStorage.setItem('flowHiddenStages', JSON.stringify([...h0]));
+  }
+  const fh = getFlowHiddenStages();
+  const stageBar = document.getElementById('flowStageFilters');
+  if(stageBar){
+    stageBar.innerHTML = stages.map(st => {
+      const off = fh.has(st.id);
+      return `<button class="pchip ${off?'off':''}" style="--c:${st.color}" title="klik = ukryj/pokaż etap · dwuklik = SOLO (tylko ten etap)" ondblclick="soloFlowStage('${esc(st.id)}')" onclick="toggleFlowStage('${esc(st.id)}')">${st.icon} ${esc(st.label)} <span class="muted">${st.count}</span></button>`;
+    }).join('') + `<button class="pchip reset" onclick="resetFlowStages()">✖ wszystkie etapy</button>`;
+  }
+  const visStages = stages.filter(s => !fh.has(s.id));
   const byLane = {};
-  for(const st of stages){ (byLane[st.lane] = byLane[st.lane]||[]).push(st); }
+  for(const st of visStages){ (byLane[st.lane] = byLane[st.lane]||[]).push(st); }
   for(const k in byLane) byLane[k].sort((a,b)=>a.order-b.order);
   const maxN = Math.max(1, ...laneKeys.map(k=>(byLane[k]||[]).length));
   const W = 16 + maxN*(nodeW+gap) + 8;
@@ -838,7 +887,7 @@ async function renderFlow(){
   svg.innerHTML = s;
   const hot = (f.stats && f.stats.hot) || 0, over = (f.stats && f.stats.overdue) || 0;
   document.getElementById('flowMeta').innerHTML =
-    'etapy: <b>' + f.stages.length + '</b> · zadania: <b>' + f.stats.total + '</b> · hot: <b style="color:' + (hot?'#d29922':'#3fb950') + '">' + hot + '</b> · po SLA: <b style="color:' + (over?'#f85149':'#3fb950') + '">' + over + '</b>' +
+    'etapy: <b>' + f.stages.length + '</b>' + (fh.size ? ' (ukryte: <b style="color:#f85149">' + fh.size + '</b>)' : '') + ' · zadania: <b>' + f.stats.total + '</b> · hot: <b style="color:' + (hot?'#d29922':'#3fb950') + '">' + hot + '</b> · po SLA: <b style="color:' + (over?'#f85149':'#3fb950') + '">' + over + '</b>' +
     ' · override configu: <b>' + (f.override_active ? '✅ aktywny (.agents/flow/flow.config.json)' : 'nie (default)') + '</b>' +
     (f.errors && f.errors.length ? ' · <b style="color:#f85149">⚠ błędy configu: ' + f.errors.length + '</b>' : '');
 }
@@ -1146,7 +1195,7 @@ async function renderFirma(){
   for(const o of visOffices){
     const ox = o._ox, oy = o._oy;
     const byZone = {};
-    for(const d of o.desks){ (byZone[d.zone] = byZone[d.zone]||[]).push(d); }
+    for(const d of o.desks.filter(x => !hiddenSts.has(x.status))){ (byZone[d.zone] = byZone[d.zone]||[]).push(d); }
     for(const [zone, list] of Object.entries(byZone)){
       // agregacja artefaktów: gdy w strefie jest więcej biurek niż miejsc — pokaż capacity-1 + zbiorczy [+N]
       const z = cfg.zones[zone];
