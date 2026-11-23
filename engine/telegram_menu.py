@@ -123,7 +123,8 @@ def _task_text(state: State, task_id: str) -> str:
         return f"❌ Nieznane zadanie: {task_id}"
     icon = ICON.get(t["status"], "?")
     lines = [
-        f"{icon} *{t['id']}* — {t['title']}",
+        f"{icon} *{t['id']}* — {t.get('title_sponsor') or t['title']}",
+        f"   (tech: {t['title'][:80]})" if t.get('title_sponsor') and t.get('title_sponsor') != t['title'] else "",
         f"Status: *{t['status']}* | faza: {t['phase']} | rola: {t['role']}",
         f"Projekt: {t.get('project_id')} (approval_policy: {projects.approval_policy(t.get('project_id') or 'mikowhy-teams')}) | repo: {t.get('repo') or 'target'} | read_only: {'TAK — zero commitów' if t.get('read_only') else 'nie'} | milestone: {t['milestone']}",
         f"Zależy od: {t['depends_on']} | substep: {t.get('substep')} | branch: {t.get('branch')}",
@@ -264,10 +265,12 @@ def handle_text(state: State, chat_id: str, text: str) -> None:
             txt, kb = render(state, chat_id, screen)
             _send(chat_id, f"✅ Zapisano uwagę do {await_['task']}\n\n{txt}", kb)
             return
-        # czat z drużyną: osobny proces, żeby nie blokować ticka orkiestratora
+        # czat z drużyną: osobny proces w osobnej sesji — NIGDY nie blokuje ticka orkiestratora
+        # (lock per czat trzyma sam team_chat — patrz engine/team_chat.py main)
         log = open(ROOT / ".agents" / "logs" / f"team_chat.{chat_id}.log", "a", encoding="utf-8")
         subprocess.Popen([sys.executable, "-m", "engine.team_chat", chat_id, text],
-                         cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT)
+                         cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
+                         start_new_session=True)  # odczepiony od ticka, nie ubija się z nim
         _send(chat_id, "🤖 Kieruję do zespołu… odpowiedź przyjdzie jako wiadomość z podpisem (kto odpisał). "
                        "Napisz «nowe pytanie», żeby zacząć nowy temat.")
 

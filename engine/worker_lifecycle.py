@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 from engine import git_guard, projects, quality_gates, skill_compiler, telegram_reporter
 from engine.llm_gateway import get_gateway
 from engine.state import (
+    AWAITING_APPROVAL,
     FAILED,
     IN_REVIEW,
     READY,
@@ -63,21 +65,53 @@ def _llm_step(task: dict, step: str, user_payload: str, model: str) -> dict:
     return gw.complete_json(system=system, user=user_payload, step=step, model=model)
 
 
+def _ask_sponsor(state: State, task: dict, question: str, options: list | None = None) -> None:
+    """ASK_SPONSOR: zadanie nie podejmuje decyzji spoza swoich kompetencji — pyta Sponsora
+    (Telegram topic + komentarz w feedzie) i czeka: AWAITING_APPROVAL/substep=ASK_SPONSOR.
+    Odpowiedź Sponsora ląduje w review_notes (komentarz) i worker rusza dalej po approve."""
+    opts = [str(o) for o in (options or [])][:6]
+    opts_txt = "\n".join(f"- {o}" for o in opts)
+    q = str(question)[:800]
+    state.add_comment(task["id"], f"worker({task['role']})",
+                      f"❓ Pytanie do Sponsora: {q}" + (f"\nOpcje:\n{opts_txt}" if opts_txt else ""))
+    try:
+        telegram_reporter.post_event(state, task,
+                                     f"❓ *Pytanie* `{task['id']}` ({task['role']}): {q}"
+                                     + (f"\nOpcje: {', '.join(opts)}" if opts else "")
+                                     + "\nOdpisz w wątku zadania, potem zatwierdź.")
+    except Exception:
+        pass
+    state.transition(task["id"], AWAITING_APPROVAL, substep="ASK_SPONSOR",
+                     review_notes=f"Pytanie do Sponsora: {q}" + (f" | Opcje: {opts_txt}" if opts_txt else ""))
+    state.record_metric("ask_sponsor", {"question": q[:300], "options": opts}, task["id"])
+    _log(task["id"], f"ASK_SPONSOR: {q[:200]}")
+
+
 def step1_plan(state: State, task: dict) -> None:
-    """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK (z limitowaną głębokością)."""
+    """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK lub ASK_SPONSOR."""
     t0 = time.time()
     state.transition(task["id"], "RUNNING", substep="1/5_PLAN")
+    sponsor_notes = state.recent_comments(5, task_id=task["id"])
+    notes_txt = "\n".join(f"- {c.get('author')}: {str(c.get('text'))[:200]}" for c in sponsor_notes)
     result = _llm_step(
         task, "1/5_PLAN",
         json.dumps({"title": task["title"], "acceptance_criteria": task["acceptance_criteria"],
                     "scope_paths": task["scope_paths"], "split_depth": task["split_depth"],
                     "max_split_depth": MAX_SPLIT_DEPTH,
+                    "review_notes": task.get("review_notes") or "",
+                    "sponsor_comments": notes_txt,
                     "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"plan": "<krótki plan kroków>"} '
-                              'lub jeśli zadanie za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ...}]}. '
+                              'lub TYLKO GDY zadanie jest naprawdę za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ...}]}. '
+                              'REGUŁA ANTY-SPLIT: NIE dziel, gdy zadanie dotyczy <=3 plików, szacunkowo <=150 linii diffu '
+                              'i ma <3 punktów AC — wtedy wolisz jeden solidny plan i jedna paczka zmian (więcej zmian, mniej commitów). '
+                              'Split max 3 podzadania, tylko gdy to osobne, niezależne części. '
                               'NIE osadzaj treści plików — tylko plan.'}, ensure_ascii=False),
         model=skill_compiler.model_for_role(task["role"], kind="fast"),
     )
     state.record_metric("step_time", {"step": "1/5_PLAN", "seconds": round(time.time() - t0, 2)}, task["id"])
+    if result.get("signal") == "ASK_SPONSOR":
+        _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
+        return
     if result.get("signal") == "SPLIT_TASK":
         try:
             ids = state.split_task(task["id"], result.get("subtasks", []), max_split_depth=MAX_SPLIT_DEPTH)
@@ -104,6 +138,9 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
     }
     result = _llm_step(task, "2/5_IMPL", json.dumps(payload, ensure_ascii=False),
                        model=skill_compiler.model_for_role(task["role"], kind="strong"))
+    if result.get("signal") == "ASK_SPONSOR":
+        _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
+        return
     files = result.get("files") or {}
     if not files and isinstance(result.get("artifacts"), list):  # fallback: kontrakt roli (artifacts)
         for a in result["artifacts"]:
@@ -227,7 +264,25 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         state.transition(task["id"], READY, substep="1/5_PLAN",
                          review_notes=f"Odrzucono przed CR: {exc}")
         return
-    git_guard.commit_all(worktree, f"feat({task['id'].lower()}): {task['title']}")
+    if lines == 0:
+        # pusty diff = brak realnej zmiany — NIE commitujemy pustego commita (koniec z '0 linii diffu')
+        git_guard.run_git(["checkout", "--", "."], cwd=worktree, check=False)
+        state.transition(task["id"], READY, substep="1/5_PLAN",
+                         review_notes="Pusty diff względem bazy — worker nie wprowadził realnej zmiany (odrzucono przed commitem)")
+        state.record_metric("empty_diff_rejected", {}, task["id"])
+        _log(task["id"], "pusty diff (0 linii) — odrzucono przed commitem")
+        return
+    how = git_guard.commit_task(worktree, task["id"], f"feat({task['id'].lower()}): {task['title']}")
+    if how == "amended":
+        state.record_metric("commit_amended", {"branch": task["branch"]}, task["id"])
+    try:
+        git_guard.sync_with_origin(worktree, base)  # twarda reguła: wyrównaj z origin przed pushem
+    except git_guard.MergeConflict as exc:
+        state.transition(task["id"], READY, substep="1/5_PLAN",
+                         review_notes=f"Konflikt z origin/{base} przed pushem: {exc} — wyrównaj i spróbuj ponownie")
+        state.record_metric("origin_conflict", {"base": base, "error": str(exc)[:200]}, task["id"])
+        _log(task["id"], f"konflikt z origin/{base}: {exc}")
+        return
     git_guard.push(task["branch"], worktree)
     state.add_comment(task["id"], f"worker({task['role']})",
                       f"✅ zrobiłem i zacommitowałem ({lines} linii, branch {task['branch']}) → proszę o Code Review")
@@ -252,6 +307,161 @@ def _tg(state: State, task_id: str, extra: str = "") -> None:
         telegram_reporter.update_progress(state, t, extra=extra)
 
 
+def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_turns: int = 30) -> str:
+    """Pętla agentowa trybu 'llm': LLM (vibe headless, multi-turn) SAM wykonuje zadanie —
+    każdą turę odpowiada JSON-em z akcją (bash / write_file / read_file / list / done),
+    a silnik egzekwuje ją w worktree i odsyła wynik. LLM na końcu zapisuje raport
+    docs/llm-reports/<tid>.md (przez własną akcję write_file), potem daje action=done.
+
+    Dlaczego pętla w Pythonie, a nie narzędzia vibe: zagnieżdżony headless vibe ma w tym
+    sandboxie twardo odcięte wykonywanie tooli (tool_denied mimo --auto-approve), więc
+    LLM dostaje "ręce" od silnika — samo decyduje i wykonuje komendy krok po kroku.
+    """
+    tid = task["id"]
+    gw = get_gateway()
+    model = skill_compiler.model_for_role(task["role"], kind="strong")
+    full_desc = state.get_kv(f"llm_desc:{tid}") or task["title"]
+    report_rel = f"docs/llm-reports/{tid}.md"
+    system = (
+        "Jesteś agentem-wykonawcą (tryb LLM) w repozytorium mikowhy-teams (Dark Factory).\n"
+        f"Pracujesz w worktree zadania: {worktree} — wszystkie ścieżki podawaj WZGLĘDEM niego.\n"
+        "Przeczytaj AGENTS.md i contracts/git-contract.md w katalogu głównym i ich przestrzegaj.\n"
+        "NIE rób `git commit`/`git push` — zmiany commituje i pushuje silnik po Twoim `done`.\n"
+        "Pisz po polsku.\n"
+        "ZASADA GŁÓWNA: DZIAŁAJ, NIE ANALIZUJ — wykonujesz zadanie dosłownie wg opisu Sponsora. "
+        "Nie czytaj więcej niż 2-3 plików rozpoznawczych; nie powtarzaj tych samych komend.\n\n"
+        "ODPOWIADASZ WYŁĄCZNIE JEDNYM JSON-em (bez żadnego innego tekstu), akcja do wykonania:\n"
+        '{"action":"bash","cmd":"..."} — komenda powłoki w worktree (limit 300s)\n'
+        '{"action":"write_file","path":"relative/path","content":"..."} — zapis/utworzenie pliku w worktree\n'
+        '{"action":"read_file","path":"relative/path"} — odczyt pliku (max 3000 znaków zwrócone)\n'
+        '{"action":"list","path":"."} — lista katalogu\n'
+        '{"action":"ask","question":"...","options":["A","B"]} — gdy decyzja wykracza poza Twoje kompetencje '
+        '(kolor/wygląd/UX/priorytet) — NIE zgaduj, zapytaj Sponsora i czekaj\n'
+        '{"action":"done","summary":"co zrobiono"} — koniec zadania\n\n'
+        f"KONIECZNOŚĆ: przed `done` ZAWSZE zapisz raport drużynie przez write_file do `{report_rel}`:\n"
+        f"# {tid} — raport LLM\n## Co zrobiono\n## Zmienione pliki\n## Jak zweryfikować (komendy)\n## Ryzyka / uwagi\n"
+        "(max ~120 linii). Dopiero potem wyślij action=done."
+    )
+    sponsor_notes = state.recent_comments(5, task_id=tid)
+    notes_txt = "\n".join(f"- {c.get('author')}: {str(c.get('text'))[:250]}" for c in sponsor_notes)
+    user0 = (
+        f"Zadanie: {tid} — {task['title']}\n\nPełny opis od Sponsora:\n{full_desc}\n\n"
+        f"Acceptance criteria: {task.get('acceptance_criteria') or '—'}\n"
+        f"Worktree: {worktree} | base: {base} | branch: {task.get('branch')}\n\n"
+        "Wykonaj zadanie krok po kroku (bash/read_file/list/write_file), a na końcu zapisz raport i daj done.\n"
+        "NIE podejmuj decyzji wizualnych/produktowych (kolor, wygląd, UX) — dawaj wtedy action=ask.\n"
+        f"Uwagi/odpowiedzi Sponsora:\n{task.get('review_notes') or ''}\n{notes_txt}\n"
+    )
+    history: list[str] = []
+    wt_resolved = str(worktree.resolve())
+    done = False
+    for turn in range(1, max_turns + 1):
+        if turn == 1:
+            payload = user0
+        else:
+            recent = [h[:700] for h in history[-10:]]
+            payload = ("Kontynuuj zadanie. Dotychczasowe kroki i wyniki:\n" + "\n".join(recent)
+                       + "\n\nTeraz kolejny krok — odpowiadaj WYŁĄCZNIE JSON-em z action.")
+            cmds = [h.split("\n", 1)[0] for h in history[-3:] if h.startswith(f"t") and " $ " in h]
+            if len(cmds) >= 2 and cmds[-1] == cmds[-2]:
+                payload += ("\n\nUWAGA: powtarzasz ostatnią komendę — PRZESTAŃ eksplorować. "
+                            "Przejdź od razu do działania: write_file (pliki zadania + raport) i done.")
+        try:
+            resp = gw.complete_json(system=system, user=payload, step=f"LLM_EXEC-{tid}-t{turn}", model=model)
+        except Exception as exc:
+            history.append(f"t{turn}: błąd LLM {exc!r} — kontynuuj mimo to")
+            _log(tid, f"LLM t{turn} błąd: {exc!r}")
+            continue
+        if not isinstance(resp, dict):
+            history.append(f"t{turn}: odpowiedź nie-JSON: {str(resp)[:300]}")
+            continue
+        action = str(resp.get("action", "")).strip().lower()
+        if action == "bash":
+            cmd = str(resp.get("cmd", ""))
+            try:
+                proc = subprocess.run(cmd, shell=True, cwd=worktree, capture_output=True,
+                                      text=True, timeout=300)
+                out = (proc.stdout + "\n" + proc.stderr).strip()[-1500:]
+                history.append(f"t{turn} $ {cmd}\n→ rc={proc.returncode}\n{out}")
+                _log(tid, f"LLM t{turn} bash rc={proc.returncode}: {cmd[:120]}")
+            except subprocess.TimeoutExpired:
+                history.append(f"t{turn} $ {cmd}\n→ TIMEOUT 300s")
+        elif action == "write_file":
+            rel = str(resp.get("path", ""))
+            p = (worktree / rel).resolve()
+            if not str(p).startswith(wt_resolved + os.sep) and str(p) != wt_resolved:
+                history.append(f"t{turn} write_file ODRZUCONE (poza worktree): {rel}")
+                continue
+            p.parent.mkdir(parents=True, exist_ok=True)
+            content = str(resp.get("content", ""))
+            p.write_text(content, encoding="utf-8")
+            history.append(f"t{turn} write_file {rel} OK ({len(content)} znaków)")
+            _log(tid, f"LLM t{turn} write_file {rel} ({len(content)}B)")
+        elif action == "read_file":
+            p = (worktree / str(resp.get("path", ""))).resolve()
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")[:3000]
+            except OSError as exc:
+                content = f"błąd odczytu: {exc}"
+            history.append(f"t{turn} read_file {resp.get('path')}\n→\n{content}")
+        elif action == "list":
+            p = (worktree / str(resp.get("path", ".") or ".")).resolve()
+            try:
+                content = "\n".join(sorted(os.listdir(p))[:200])
+            except OSError as exc:
+                content = f"błąd listowania: {exc}"
+            history.append(f"t{turn} ls {resp.get('path')}\n→\n{content}")
+        elif action == "ask":
+            # decyzja poza kompetencjami LLM — pyta Sponsora i czeka (NIE zgaduje)
+            q = str(resp.get("question", ""))[:800]
+            history.append(f"t{turn} ASK: {q}")
+            _ask_sponsor(state, task, q, resp.get("options") or [])
+            done = True
+            break
+        elif action == "done":
+            history.append(f"t{turn} DONE: {str(resp.get('summary', ''))[:500]}")
+            _log(tid, f"LLM t{turn} done: {str(resp.get('summary',''))[:200]}")
+            done = True
+            break
+        else:
+            history.append(f"t{turn}: nieznana akcja {action!r} (resp={str(resp)[:200]}) — użyj bash|write_file|read_file|list|done")
+    if not done:
+        _log(tid, f"LLM agent: limit {max_turns} turnów bez done")
+    return report_rel
+
+
+def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
+    """Tryb 'llm' (komenda `llm <opis>` z Telegrama): całe zadanie wykonuje LLM w pętli agentowej
+    (patrz _llm_agent_loop). LLM na końcu zostawia raport docs/llm-reports/<id>.md;
+    worker dopisuje go do feeda (komentarz) i commituje wszystko przez step5."""
+    tid = task["id"]
+    state.transition(tid, "RUNNING", substep="LLM_EXEC")
+    model = skill_compiler.model_for_role(task["role"], kind="strong")
+    _log(tid, f"LLM_EXEC start (model={model}, worktree={worktree})")
+    report_rel = _llm_agent_loop(state, task, worktree, base)
+    task = state.get_task(tid)
+    if task["status"] != "RUNNING":  # ASK_SPONSOR — czekamy na odpowiedź, nie commitujemy
+        _log(tid, "LLM_EXEC zatrzymany: czekamy na Sponsora")
+        return
+    report = worktree / report_rel
+    if report.exists():
+        text = report.read_text(encoding="utf-8", errors="replace")
+        state.add_comment(tid, f"llm({model})", f"🤖 Raport LLM (`{report_rel}`):\n{text[:1500]}")
+        telegram_reporter.post_event(state, task, f"🤖 LLM wykonał `{tid}` — raport w `{report_rel}` (patrz też feed)")
+    else:
+        state.add_comment(tid, f"llm({model})",
+                          f"⚠️ LLM skończył, ale NIE ma raportu `{report_rel}` — zadanie idzie do review mimo to")
+    # LLM mógł już sam zacommitować — wtedy tylko push + IN_REVIEW
+    staged = git_guard.run_git(["diff", "--cached", "--quiet"], cwd=worktree, check=False).returncode != 0
+    ahead = git_guard.run_git(["diff", "--quiet", f"{base}...HEAD"], cwd=worktree, check=False).returncode != 0
+    if not staged and ahead:
+        git_guard.push(task["branch"], worktree)
+        state.add_comment(tid, f"llm({model})", f"✅ LLM sam zacommitował ({task['branch']}) → IN_REVIEW")
+        state.transition(tid, IN_REVIEW, substep="done")
+        return
+    step5_commit(state, task, worktree, base)
+
+
 def run(task_id: str) -> int:
     state = State()
     task = state.claim_task(task_id, claimed_by=f"worker-{os.getpid()}")
@@ -264,6 +474,13 @@ def run(task_id: str) -> int:
         worktree = step0_prepare(state, task)
         _tg(state, task_id, "worktree gotowy")
         base = state.get_milestone(task["milestone"])["branch"]
+        task = state.get_task(task_id)  # świeży wiersz (branch z step0)
+        if (task.get("mode") or "pipeline") == "llm":
+            step_llm(state, task, worktree, base)
+            task = state.get_task(task_id)
+            if task and task["status"] == "IN_REVIEW":
+                _tg(state, task_id, "LLM wykonał zadanie → IN_REVIEW (czeka na Code Review)")
+            return 0
         step1_plan(state, task)
         task = state.get_task(task_id)  # split może zmienić status
         if task["status"] != "RUNNING":
@@ -271,6 +488,10 @@ def run(task_id: str) -> int:
             return 0
         _tg(state, task_id)
         step2_implement(state, task, worktree)
+        task = state.get_task(task_id)
+        if task["status"] != "RUNNING":  # np. ASK_SPONSOR — czekamy na Sponsora
+            _tg(state, task_id)
+            return 0
         _tg(state, task_id)
         step3_tests(state, task, worktree)
         _tg(state, task_id)

@@ -18,3 +18,4 @@ __pycache__/
 docs/HEALTH.md
 *.swp
 .agents/metrics.jsonl
+.agents/pipeline.json
