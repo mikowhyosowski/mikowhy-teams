@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.5.1"
+VERSION = "2.5.2"
 
 
 def _version_info() -> dict:
@@ -448,8 +448,8 @@ let lastEventTs = 0;
 const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
 // filtry STATUSÓW — globalne; MERGED domyślnie UKRYTY (odznaczony na starcie)
 const hiddenSts = new Set(JSON.parse(localStorage.getItem('hiddenSts')||'["MERGED"]'));
-function toggleSt(st){ if(hiddenSts.has(st)) hiddenSts.delete(st); else hiddenSts.add(st); localStorage.setItem('hiddenSts', JSON.stringify([...hiddenSts])); refresh(); if(firmaWorld) renderFirma(); }
-function resetSts(){ hiddenSts.clear(); localStorage.setItem('hiddenSts','[]'); refresh(); if(firmaWorld) renderFirma(); }
+function toggleSt(st){ if(hiddenSts.has(st)) hiddenSts.delete(st); else hiddenSts.add(st); localStorage.setItem('hiddenSts', JSON.stringify([...hiddenSts])); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna */ }
+function resetSts(){ hiddenSts.clear(); localStorage.setItem('hiddenSts','[]'); refresh(); }
 let _stFilterKey = '';
 function renderStFilters(d){
   // cache: renderuj tylko gdy zmieni się zestaw statusów / liczby / stan ukrycia
@@ -467,8 +467,8 @@ function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0
 const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','AWAITING_APPROVAL':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
 function pbadge(pid){ return `<span class="pbadge" style="background:${projColor(pid||'(brak)')}">${esc(pid||'(brak)')}</span>`; }
-function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs])); refresh(); if(firmaWorld) renderFirma(); }
-function resetProjs(){ hiddenProjs.clear(); localStorage.setItem('hiddenProjs','[]'); refresh(); if(firmaWorld) renderFirma(); }
+function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs])); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna — bez dubli renderu */ }
+function resetProjs(){ hiddenProjs.clear(); localStorage.setItem('hiddenProjs','[]'); refresh(); }
 let lastVersion = null;
 let _projFilterKey = '';
 function renderProjFilters(d, visTasks){
@@ -1149,6 +1149,7 @@ let firmaWorld = null;       // ostatni /api/firma
 let firmaView = null;        // {x,y,w,h} viewBox (pan/zoom)
 let deskEls = {};            // taskId -> <g> (persistent — żeby CSS transition animował przejazd)
 let firmaGate = null;        // {x,y} brama recepcji (= Sponsor) — do dymków rozmów
+let firmaRenderSeq = 0;      // token renderu — ostatni wygrywa (ochrona przed wyścigiem klik + auto-refresh)
 let roomByRole = {};         // role -> room (kolor osoby + pozycja pokoju)
 const expandedZones = new Set();  // klucze office:zone rozwinięte po kliknięciu zbiorczego [+N]
 function toggleFirmaFs(){
@@ -1170,9 +1171,11 @@ function escXml(s){ return esc(s); }
 let dimStatus = null;         // klik legendy -> podświetl tylko ten status (reszta przyciemniona)
 let staticKey = null;         // cache warstwy statycznej mapy
 async function renderFirma(){
+  const mySeq = ++firmaRenderSeq;   // przestarzałe rendery (starszy fetch) są odrzucane niżej
   try{
     const r = await fetch('/api/firma'); firmaWorld = await r.json();
   }catch(e){ return; }
+  if(mySeq !== firmaRenderSeq) return;  // wyścig: ktoś już renderuje nowszy stan — ten porzucamy
   const W = firmaWorld, cfg = W.config, C = cfg.colors, s2 = cfg.stage2 || {};
   roomByRole = {};
   const g = cfg.estate.grid, off = cfg.office, R = cfg.rooms, D = cfg.desks;
@@ -1190,8 +1193,28 @@ async function renderFirma(){
   if(!firmaView) firmaView = {x:-10, y:-10, w:Wsvg+20, h:Hsvg+20};
   const svg = document.getElementById('estate');
   svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
-  // ===== warstwa statyczna (cache'owana — przebuduj tylko gdy zmieni się świat/config) =====
-  const key = JSON.stringify([visOffices.map(o=>[o.project_id,o.read_only,o.milestones.length,o.rooms.length]), cfg.version, s2, W.estate.host&&W.estate.host.dashboard_url, W.estate.sys&&W.estate.sys.load1]);
+  // pozycje biur i pokojów — ZAWSZE ustawiane (nowy fetch = nowe obiekty; bez tego _ox byłoby undefined -> NaN)
+  visOffices.forEach((o, oi) => {
+    const col = oi % cols, row = Math.floor(oi / cols);
+    o._ox = margin + col*(ow+gap); o._oy = rowY[row]; o._zoneOff = ohArr[oi] - off.h;
+    o.rooms.forEach((room, ri) => {
+      room._x = o._ox + R.x0 + (ri % R.perRow) * (R.w + R.gap);
+      room._y = o._oy + R.y0 + 40 + Math.floor(ri / R.perRow) * (R.h + R.gap);
+      roomByRole[room.role] = room;   // też przy cache hit (inaczej dymki rozmów by znikały)
+    });
+  });
+  // wszystkie projekty ukryte filtrem — czytelny komunikat zamiast pustej mapy
+  if(visOffices.length === 0){
+    let st0 = document.getElementById('estateStatic');
+    if(!st0){ st0 = svgEl('g', {id:'estateStatic'}, svg); }
+    st0.innerHTML = `<text x="${Wsvg/2}" y="${Hsvg/2}" text-anchor="middle" font-size="16" fill="${C.muted}">🫥 wszystkie projekty ukryte filtrem — klik „✖ wszystkie” nad zakładkami, aby biura wróciły</text>`;
+    staticKey = 'empty';
+    const dl0 = document.getElementById('deskLayer'); if(dl0) dl0.innerHTML = '';
+    const cl0 = document.getElementById('convLayer'); if(cl0) cl0.innerHTML = '';
+    return;
+  }
+  // ===== warstwa statyczna (cache'owana — przebuduj tylko gdy zmieni się struktura świata/config) =====
+  const key = JSON.stringify([visOffices.map(o=>[o.project_id,o.read_only,o.milestones.length,o.rooms.length]), cfg.version, s2]);
   let stLayer = document.getElementById('estateStatic');
   if(!stLayer){ stLayer = svgEl('g', {id:'estateStatic'}, svg); }
   if(key !== staticKey){
@@ -1308,6 +1331,7 @@ async function renderFirma(){
       s += `</g>`;
       o._ox = ox; o._oy = oy; o._zoneOff = zoneOff;
     });
+    if(mySeq !== firmaRenderSeq) return;  // wyścig — przestarzały render nie może nadpisać nowszego
     stLayer.innerHTML = s;
     // klik: biuro=filtr projektu, pokój=wątek z osobą
     stLayer.querySelectorAll('g.office').forEach(og => {
@@ -1324,6 +1348,7 @@ async function renderFirma(){
   document.getElementById('firmaLegend').innerHTML = Object.entries(cfg.statusStyle)
     .map(([k,v]) => `<button class="lchip ${dimStatus===k?'on':''}" style="background:${v.color};color:#fff;border:0;cursor:pointer" onclick="dimStatus=${dimStatus===k?'null':JSON.stringify(k)};renderFirma()">${v.icon} ${k}</button>`).join('')
     + `<span class="muted" style="font-size:11px;align-self:center">klik w legendę = pokaż tylko ten status · klik biurko = zadanie</span>`;
+  if(mySeq !== firmaRenderSeq) return;  // wyścig — ochrona przed nadpisaniem przez starszy render
   // ===== warstwa biurek (persistent; BEZ animacji przejazdu — od razu na miejscu) =====
   let deskLayer = document.getElementById('deskLayer');
   if(!deskLayer){ deskLayer = svgEl('g', {id:'deskLayer'}, svg); }

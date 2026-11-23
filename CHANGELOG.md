@@ -1,5 +1,13 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.5.2] — 2026-11-23
+- 🐛 FIX widok Firma: biuro „czasami całkowicie znikało” po kliku — przyczyna: wyścig współbieżnych renderFirma
+  (klik biuro = toggleProj wołał refresh() + renderFirma(), a refreshInner też wołał renderFirma przy aktywnej zakładce)
+  — przestarzały render (starszy fetch) nadpisywał nowy. Naprawa: token sekwencji (ostatni render wygrywa),
+  pozycje biur/pokojów (_ox/_y) ustawiane zawsze (przy cache'owanej warstwie były undefined → NaN),
+  key warstwy statycznej bez load1 (stabilny cache), bez dubli renderu w toggleProj/toggleSt
+- 🫥 gdy wszystkie projekty ukryte filtrem — czytelny komunikat na mapie zamiast pustej planszy
+
 ## [2.5.1] — 2026-11-23
 - ⚡ Przycisk **„szybka odp: TAK”** w wątku rozmowy z agentem (obok „Wyślij ✈”) — jednym klikiem wysyła
   „Zgadzam się — realizuj. O nic już nie pytaj i nic nie potwierdzaj…” przez POST /api/thread/<id>/post
