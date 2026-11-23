@@ -176,3 +176,42 @@ def test_comments_have_cel_efekt_format():
             assert "Efekt:" in t, f"brak formatu Cel/Efekt w: {t[:80]}"
     assert "napisałem testy" in texts[0]  # oryginalny tekst zachowany w Efekt
     assert texts[2].startswith("🔄 W TRAKCIE"), texts[2]  # start etapu = w trakcie, z celem etapu
+
+
+def test_resume_substep_on_return_to_ready():
+    """v2.7.9: powrót do READY NIE resetuje sub-etapu — kontynuacja od wypracowanego."""
+    from engine.state import resume_substep
+    s = _tmp_state()
+    s.add_task("T-R", "FACTORY-OPS", 9, "resume", "backend-dev", status="READY")
+    s.claim_task("T-R", "w1")
+    s.transition("T-R", "RUNNING", substep="3/5_TEST")
+    s.transition("T-R", "FAILED", review_notes="timeout")
+    s.transition("T-R", "READY", retry_count=1)  # bez substep -> NIE resetuje
+    t = s.get_task("T-R")
+    assert t["status"] == "READY"
+    assert t["substep"] == "3/5_TEST", t["substep"]
+    assert resume_substep(t) == "3/5_TEST"
+    # markery specjalne -> 1/5_PLAN, done -> 2/5_IMPL
+    assert resume_substep({"substep": "OWNER_PACKET"}) == "1/5_PLAN"
+    assert resume_substep({"substep": "done"}) == "2/5_IMPL"
+    assert resume_substep({"substep": None}) == "1/5_PLAN"
+    # komentarz przy FAILED->READY mówi o kontynuacji
+    import json as _json
+    texts = [_json.loads(r[0])["text"] for r in s._conn().execute(
+        "SELECT payload FROM metrics WHERE kind='agent_comment' AND task_id='T-R' ORDER BY ts").fetchall()]
+    assert any("kontynuacja od etapu 3/5_TEST" in t for t in texts), texts
+
+
+def test_comment_dedup_no_duplicates():
+    """v2.7.9: identyczny komentarz (task, author, text) w ciągu 15s = duplikat -> jeden wpis."""
+    s = _tmp_state()
+    s.add_task("T-D", "FACTORY-OPS", 9, "dedup", "backend-dev", status="READY")
+    s.add_comment("T-D", "worker(x)", "🔄 W TRAKCIE — etap 1/5_PLAN: 🎯 Cel: plan — nad tym pracuję")
+    s.add_comment("T-D", "worker(x)", "🔄 W TRAKCIE — etap 1/5_PLAN: 🎯 Cel: plan — nad tym pracuję")
+    s.add_comment("T-D", "worker(x)", "inny tekst")
+    rows = s._conn().execute(
+        "SELECT payload FROM metrics WHERE kind='agent_comment' AND task_id='T-D'").fetchall()
+    import json as _json
+    texts = [_json.loads(r[0])["text"] for r in rows]
+    assert texts.count("🔄 W TRAKCIE — etap 1/5_PLAN: 🎯 Cel: plan — nad tym pracuję") == 1, texts
+    assert len(texts) == 2

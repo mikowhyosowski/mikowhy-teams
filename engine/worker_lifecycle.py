@@ -27,6 +27,7 @@ from engine.state import (
     IN_REVIEW,
     READY,
     State,
+    resume_substep,
 )
 
 MAX_LOCAL_FIXES = 3        # Krok 4b — lokalne próby naprawy
@@ -54,7 +55,7 @@ def step0_prepare(state: State, task: dict) -> Path:
     git_guard.assert_writable(repo)                      # STRICT READ-ONLY guard
     ns = task.get("project_id") or "mikowhy-teams"
     worktree = git_guard.create_worktree(task["id"], base, branch, repo=repo, ns=ns)
-    state.transition(task["id"], "RUNNING", substep="1/5_PLAN", branch=branch, worktree=str(worktree))
+    state.transition(task["id"], "RUNNING", substep=resume_substep(task), branch=branch, worktree=str(worktree))  # v2.7.9: kontynuacja od wypracowanego etapu
     _log(task["id"], f"worktree={worktree} repo={repo} base={base} branch={branch}")
     return worktree
 
@@ -123,7 +124,7 @@ def _ask_sponsor(state: State, task: dict, question: str, options: list | None =
 def step1_plan(state: State, task: dict) -> None:
     """Krok 1 (LLM, ~45s): mikro-plan. Może zwrócić SPLIT_TASK lub ASK_OWNER (graniczna decyzja Opiekuna)."""
     t0 = time.time()
-    state.transition(task["id"], "RUNNING", substep="1/5_PLAN")
+    state.transition(task["id"], "RUNNING", substep=resume_substep(task))  # v2.7.9: kontynuacja od wypracowanego etapu
     sponsor_notes = state.recent_comments(5, task_id=task["id"])
     notes_txt = "\n".join(f"- {c.get('author')}: {str(c.get('text'))[:200]}" for c in sponsor_notes)
     result = _llm_step(

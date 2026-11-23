@@ -29,3 +29,5 @@
 - [2026-11-22 23:45] TWARDA REGUŁA: projekty `mikowhy-teams` i `mikowhy-teams-self` są ZŁĄCZONE w jeden — `mikowhy-teams` (approval_policy=auto). Nie twórz już zadań do `mikowhy-teams-self`. Auto-approve (policy=auto) nad fabryką merguje READY_TO_MERGE automatycznie do master (bez milestonu, bez PR, bez ręcznego mergowania) — po rebase na origin/master + regression gates.
 
 - [2026-11-23 16:33] ze nal3z6 wstrzymac prace nad wszystkimi zadaniami do czasu naprawienia problemow z kolejkami i obsluzenia tych bledow oraz usuniecia ich docelowo calkowicie
+
+- [2026-11-23 18:30] TWARDA REGUŁA (Sponsor): **jedno zadanie na raz** — każda rola/p osoba pracuje nad JEDNYM zadaniem w danym momencie i zamyka je jak najszybciej, zanim przejmie następne. Kolejność = priorytety P0→P3 (system kolejkuej zadania wg priorytetów; orchestrator wymusza max 1 RUNNING na rolę). Cel główny: szybkie zamykanie zadań, krótka kolejka, żaden agent nie skacze między zadaniami. Przy powrocie zadania do READY (retry/odblokowanie/decyzja Opiekuna) kontynuujemy od wypracowanego sub-etapu, nie od 1/5_PLAN.

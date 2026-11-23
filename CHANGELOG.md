@@ -1,5 +1,13 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.9] — 2026-11-23 — kontynuacja od sub-etapu przy READY + anty-duplikaty komentarzy + jedno zadanie na raz na rolę
+- ♻️ `state.resume_substep()`: powrót do READY (FAILED/BLOCKED/AWAITING_OWNER/requeue) NIE resetuje już sub-etapu do 1/5_PLAN —
+  zadanie kontynuuje od wypracowanego etapu (`done`→`2/5_IMPL`, markery ASK/OWNER→`1/5_PLAN`); komentarze przejść piszą „kontynuacja od etapu X”
+- 🧹 `add_comment` anty-duplikat: identyczny (task, author, text) w ostatnich 15s → pomijany (koniec dubli „🔄 W TRAKCIE”)
+- 🎯 zasada Sponsora „jedno zadanie na raz”: orchestrator nie startuje kolejnego workera dla roli z aktywnym RUNNING
+  (także w ramach jednego ticku); kolejność = priorytety P0→P3 z `claimable_tasks`; reguła dopisana do sponsor-notes.md
+- ✅ testy: `test_resume_substep_on_return_to_ready`, `test_comment_dedup_no_duplicates` — 64 passed
+
 ## [2.7.8] — 2026-11-23 — podsumowanie „W TRAKCIE” już podczas pracy + aktywne vs zakończone komentarze
 - 🔄 `transition()` przy każdym starcie etapu (też READY→RUNNING z podetapem) emituje `🔄 W TRAKCIE — etap X (N%): 🎯 Cel: … — nad tym teraz pracuję`;
   `add_comment` opakowuje w Cel/Efekt tylko gdy brak `Cel:` (komunikat w trakcie może nie mieć jeszcze Efektu)

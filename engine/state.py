@@ -57,6 +57,17 @@ def substep_progress(substep: str | None) -> float:
     return 0.0
 
 
+def resume_substep(task: dict | None) -> str:
+    """v2.7.9 — kontynuacja od wypracowanego sub-etapu przy powrocie do READY (zamiast resetu do 1/5_PLAN).
+    Markery specjalne (ASK_OWNER/OWNER_PACKET/brak) -> 1/5_PLAN; 'done' (po IN_REVIEW) -> 2/5_IMPL (poprawki)."""
+    sub = str((task or {}).get("substep") or "")
+    if not sub or sub in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
+        return "1/5_PLAN"
+    if sub == "done":
+        return "2/5_IMPL"
+    return sub
+
+
 VALID_TRANSITIONS: dict[str, set[str]] = {
     READY: {RUNNING, BLOCKED, ESCALATED, AWAITING_OWNER},  # z kolejki też można oddać decyzję Opiekunowi (utknięte zadanie)
     RUNNING: {IN_REVIEW, CHANGES_REQUESTED, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER},
@@ -472,6 +483,7 @@ class State:
         try:
             note = str(fields.get("review_notes") or "")[:120]
             sub = str(fields.get("substep") or "")
+            rs = resume_substep(task)  # v2.7.9: powrót do READY = kontynuacja od wypracowanego etapu
             key = (current, new_status)
             SUBSTEP_CEL = {
                 "1/5_PLAN": "zaplanować szczegóły zadania",
@@ -493,15 +505,15 @@ class State:
                 ("CHANGES_REQUESTED", "RUNNING"): "🎯 Cel: wprowadzić poprawki po review → ✅ Efekt: pracuję nad uwagami recenzenta",
                 ("READY_TO_MERGE", "MERGED"): "🎯 Cel: włączyć zmiany do gałęzi docelowej → ✅ Efekt: zadanie zmergowane, koniec obiegu",
                 ("RUNNING", "FAILED"): f"🎯 Cel: dokończyć {task_id} → ✅ Efekt: próba nieudana ({note or 'błąd wykonania'}) — automat robi retry z backoffem",
-                ("FAILED", "READY"): "🎯 Cel: podnieść zadanie po błędzie przejściowym → ✅ Efekt: zadanie wraca do kolejki (pełny cykl od READY), retry +1",
+                ("FAILED", "READY"): f"🎯 Cel: podnieść zadanie po błędzie przejściowym → ✅ Efekt: READY — kontynuacja od etapu {rs} (nie od początku), retry +1",
                 ("FAILED", "AWAITING_OWNER"): "🎯 Cel: rozwiązać utknięcie, którego automat nie ogarnia → ✅ Efekt: pakiet A/B/C dla Opiekuna (max_retries wyczerpane)",
                 ("RUNNING", "AWAITING_OWNER"): "🎯 Cel: uzyskać decyzję Opiekuna na rozjeździe → ✅ Efekt: czekam na wybór A/B/odrzuć (pakiet w review_notes)",
                 ("READY", "AWAITING_OWNER"): "🎯 Cel: uzyskać decyzję Opiekuna na rozjeździe → ✅ Efekt: czekam na wybór A/B/odrzuć (pakiet w review_notes)",
-                ("AWAITING_OWNER", "READY"): "🎯 Cel: wdrożyć decyzję Opiekuna → ✅ Efekt: decyzja zapisana w kontekście, zadanie wraca do kolejki (pełny cykl)",
+                ("AWAITING_OWNER", "READY"): f"🎯 Cel: wdrożyć decyzję Opiekuna → ✅ Efekt: decyzja zapisana, READY — kontynuacja od etapu {rs}",
                 ("AWAITING_OWNER", "BLOCKED"): f"🎯 Cel: zamknąć zadanie odrzucone przez Opiekuna → ✅ Efekt: BLOCKED ({note})",
                 ("RUNNING", "BLOCKED"): f"🎯 Cel: zatrzymać pracę (blokada) → ✅ Efekt: BLOCKED ({note or 'zewnętrzna zależność'}) — odblokowanie tylko przez READY",
                 ("READY", "BLOCKED"): f"🎯 Cel: zatrzymać zadanie (blokada) → ✅ Efekt: BLOCKED ({note or 'zewnętrzna zależność'})",
-                ("BLOCKED", "READY"): "🎯 Cel: odblokować zadanie po usunięciu przyczyny → ✅ Efekt: wraca do kolejki READY (pełny cykl, nic nie omija testów/CR)",
+                ("BLOCKED", "READY"): f"🎯 Cel: odblokować zadanie po usunięciu przyczyny → ✅ Efekt: READY — kontynuacja od etapu {rs} (statusy pełnym cyklem, nic nie omija testów/CR)",
                 ("IN_REVIEW", "READY"): "🎯 Cel: wrócić do poprawek po review → ✅ Efekt: uwagi recenzenta w review_notes",
                 ("READY_TO_MERGE", "READY"): "🎯 Cel: cofnąć z kolejki do merge'a → ✅ Efekt: konflikt/poprawka, wracam do READY",
                 ("RUNNING", "ESCALATED"): "🎯 Cel: uzyskać decyzję człowieka → ✅ Efekt: eskalacja (legacy → AWAITING_OWNER)",
@@ -509,6 +521,8 @@ class State:
             }.get(key)
             if tmpl is None:
                 tmpl = f"🎯 Cel: przejść {current} → {new_status} w zadaniu {task_id} → ✅ Efekt: status = {new_status}"
+            if new_status == READY and "kontynuacja" not in tmpl:
+                tmpl += f" — kontynuacja od etapu {rs}"
             if key == ("READY", "RUNNING") and sub:
                 # start pracy od razu z podetapem (np. 1/5_PLAN) = też „w trakcie”, nie „zrobione”
                 tmpl = f"🔄 W TRAKCIE — etap {sub} ({int(substep_progress(sub)*100)}%): 🎯 Cel: {SUBSTEP_CEL.get(sub, 'rozpocząć pracę')} — nad tym teraz pracuję"
@@ -575,6 +589,21 @@ class State:
             # brak formatu Cel/Efekt -> opakuj; samo „Cel:” (bez Efektu) = komunikat W TRAKCIE — zostawiamy
             if "Efekt:" not in text:
                 text = f"🎯 Cel: praca nad zadaniem {task_id or '—'} → ✅ Efekt: {text}"
+        # anty-duplikat (v2.7.9): identyczny komentarz (task, author, text) w ostatnich 15s -> pomiń
+        try:
+            _now = time.time()
+            _rows = self._conn().execute(
+                "SELECT payload, ts FROM metrics WHERE kind='agent_comment' AND task_id IS ? AND ts>? ORDER BY ts DESC LIMIT 30",
+                (task_id, _now - 15)).fetchall()
+            for _r in _rows:
+                try:
+                    _p = json.loads(_r[0])
+                except Exception:
+                    continue
+                if _p.get("author") == author and str(_p.get("text")) == text:
+                    return  # duplikat — nie zapisujemy drugi raz
+        except Exception:
+            pass
         self.record_metric("agent_comment", {"author": author, "text": text}, task_id)
 
     def add_comment_report(self, task_id: str | None, author: str, cel: str, efekt: str) -> None:

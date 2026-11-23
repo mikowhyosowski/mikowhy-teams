@@ -139,7 +139,7 @@ class Orchestrator:
             pid = task.get("project_id") or "mikowhy-teams"
             policy = projects.approval_policy(pid)
             if policy == "auto" or (policy == "auto_readonly" and task.get("read_only")):
-                self.state.transition(task["id"], READY, substep="1/5_PLAN",
+                self.state.transition(task["id"], READY,
                                       review_notes=(task.get("review_notes") or "") +
                                       f" | auto-approve (approval_policy={policy}, projekt={pid})")
                 self.state.record_metric("auto_approve",
@@ -216,7 +216,7 @@ class Orchestrator:
                                        "z pakietem opcji (A/B/odrzuć). Opiekun decyduje tylko tutaj — przy realnym rozjeździe.")
                 self.state.record_metric("owner_packet", {"task": task["id"], "reason": "max_retries"}, task["id"])
                 continue
-            self.state.transition(task["id"], READY, substep="1/5_PLAN",
+            self.state.transition(task["id"], READY,
                                   retry_count=task["retry_count"] + 1,
                                   review_notes="auto-retry po FAILED (próba %d, backoff)" % (task["retry_count"] + 2))
             self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
@@ -293,17 +293,25 @@ class Orchestrator:
         cap = self._max_workers_now()
         free = cap - len([t for t in self.running])  # wspólna pula też z review
         light_free = 2  # lekkie zadania (read_only / tryb llm) dostają 2 dodatkowe sloty — zużywają mniej zasobów
+        # v2.7.9 — zasada Sponsora „jedno zadanie na raz”: rola z aktywnym RUNNING nie dostaje kolejnego
+        # (kolejka priorytetów P0→P3 sama ustawia kolejność w claimable_tasks)
+        busy_roles = {t.get("role") for t in self.state.list_tasks(status=RUNNING)}
         for task in tasks:
             if task["id"] in self.running:
+                busy_roles.add(task.get("role"))
                 continue
+            if task.get("role") in busy_roles:
+                continue  # ta rola już pracuje nad jednym zadaniem — zamknij je najpierw
             if free > 0:
                 self._spawn("worker_lifecycle", task["id"])
+                busy_roles.add(task.get("role"))  # spawn w tym samym ticku też blokuje rolę
                 free -= 1
             elif (task.get("read_only") or task.get("mode") == "llm") and light_free > 0:
                 # równoległy lekki proces ponad głównym capem — nie rusza repo, mało RAM/CPU
                 light_free -= 1
                 self.state.record_metric("light_worker", {"task": task["id"], "mode": task.get("mode")}, task["id"])
                 self._spawn("worker_lifecycle", task["id"])
+                busy_roles.add(task.get("role"))
             else:
                 if len(tasks) > 0:
                     self.state.record_metric("throttled", {"waiting": len(tasks), "cap": cap,
@@ -509,7 +517,7 @@ class Orchestrator:
             if not alive:
                 try:
                     self.state.transition(
-                        task["id"], READY, substep="1/5_PLAN",
+                        task["id"], READY,
                         review_notes=f"{(task.get('review_notes') or '')} | zombie-recovery: proces {pid} martwy -> READY")
                 except Exception:
                     self.state._conn().execute(
@@ -628,7 +636,7 @@ class Orchestrator:
                                        f"⏳ watchdog kolejki: READY od {age/3600:.0f}h bez przejęcia → priorytet P1")
                 self.state.record_metric("stale_ready_boost", {"task": task["id"], "age_h": round(age/3600, 1)}, task["id"])
             elif st in ("BLOCKED", "ESCALATED") and age > 48 * 3600 and (task.get("retry_count") or 0) < 6:
-                self.state.transition(task["id"], READY, substep="1/5_PLAN",
+                self.state.transition(task["id"], READY,
                                       retry_count=(task.get("retry_count") or 0) + 1,
                                       review_notes=(task.get("review_notes") or "") +
                                       f" | watchdog: auto-recovery po {age/3600:.0f}h w {st}")
@@ -788,7 +796,7 @@ def cmd_approve(task_id: str) -> None:
         raise SystemExit(f"Nieznane zadanie: {task_id}")
     if task["status"] != AWAITING_APPROVAL:
         raise SystemExit(f"{task_id} ma status {task['status']} — approve tylko z AWAITING_OWNER")
-    state.transition(task_id, READY, substep="1/5_PLAN",
+    state.transition(task_id, READY,
                      review_notes=(task.get("review_notes") or "") + " | zaakceptowane przez Sponsora (CLI)")
     state.record_metric("sponsor_approve", {"task": task_id}, task_id)
     telegram_reporter.post_event(state, state.get_task(task_id), "✅ zaakceptowane przez Sponsora → READY")
@@ -898,7 +906,7 @@ def cmd_retry(task_id: str) -> None:
         raise SystemExit(f"Nieznane zadanie: {task_id}")
     if task["status"] not in (FAILED, BLOCKED):
         raise SystemExit(f"{task_id} ma status {task['status']} — retry tylko z FAILED/BLOCKED")
-    state.transition(task_id, READY, substep="1/5_PLAN", retry_count=0,
+    state.transition(task_id, READY, retry_count=0,
                      review_notes="requeue (retry) — stare review_notes wyczyszczone")
     state.record_metric("sponsor_retry", {"task": task_id}, task_id)
     print(f"🔁 {task_id} -> READY (retry_count=0)")
