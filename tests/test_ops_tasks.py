@@ -130,3 +130,24 @@ def test_owner_packet_has_error_history():
     t = s.get_task("T-PKT")
     assert t["status"] == AWAITING_OWNER
     assert "PermissionError" in (t["review_notes"] or "")  # historia błędów w pakiecie
+
+
+def test_substep_progress():
+    """Postęp zadania z substepu: 2/5_IMPL -> 0.4, done -> 1.0, LLM_EXEC -> 0.5, ASK_OWNER -> 0."""
+    from engine.state import substep_progress as p
+    assert p("1/5_PLAN") == 0.2
+    assert p("2/5_IMPL") == 0.4
+    assert p("4/5_QG") == 0.8
+    assert p("4.5_SIMPLIFY") == 0.9
+    assert p("5/5_COMMIT") == 1.0
+    assert p("4b_FIX") == 0.8
+    assert p("done") == 1.0
+    assert p("LLM_EXEC") == 0.5
+    assert p("ASK_OWNER") == 0.0 and p(None) == 0.0 and p("") == 0.0
+    # progress leci też w API (wiersz taska ma pole progress)
+    from engine.state import State
+    s = State(db_path=Path(tempfile.mkdtemp()) / "t.db")
+    s.add_milestone("MS", "g", "b", title="t")
+    s.add_task("T-P", "MS", 4, "t", "backend-dev", status="RUNNING")
+    s.transition("T-P", "RUNNING", substep="2/5_IMPL")
+    assert s.get_task("T-P")["progress"] == 0.4

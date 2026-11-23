@@ -8,6 +8,7 @@ do repozytorium tylko na koniec kamienia milowego (lub po każdym mergu).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -37,6 +38,24 @@ BLOCKED = "BLOCKED"                # twarda blokada (odrzucenie Opiekuna / brak 
 FAILED = "FAILED"                  # legacy: błąd przejściowy — auto-retry z limitem prób (backoff)
 ESCALATED = "ESCALATED"            # legacy: migrowane do AWAITING_OWNER przy starcie
 AWAITING_APPROVAL = AWAITING_OWNER  # alias wsteczny — stare odniesienia w kodzie = AWAITING_OWNER
+
+def substep_progress(substep: str | None) -> float:
+    """Postęp zadania 0..1 wyliczony z substepu: '2/5_IMPL' -> 0.4, '4.5_SIMPLIFY' -> 0.9,
+    '5/5_COMMIT'/'done' -> 1.0, 'LLM_EXEC' -> 0.5, brak/ASK_OWNER/OWNER_PACKET -> 0.0."""
+    s = (substep or "").strip()
+    if not s or s in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
+        return 0.0
+    if s == "done":
+        return 1.0
+    if s == "LLM_EXEC":
+        return 0.5
+    m = re.match(r"(\d+(?:\.\d+)?)\s*/\s*5", s)  # 2/5_IMPL
+    if not m:
+        m = re.match(r"(\d+(?:\.\d+)?)(?:b|_|$)", s)  # 4.5_SIMPLIFY, 4b_FIX
+    if m:
+        return max(0.0, min(1.0, float(m.group(1)) / 5.0))
+    return 0.0
+
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
     READY: {RUNNING, BLOCKED, ESCALATED, AWAITING_OWNER},  # z kolejki też można oddać decyzję Opiekunowi (utknięte zadanie)
@@ -369,6 +388,7 @@ class State:
         t = dict(row)
         t["scope_paths"] = json.loads(t["scope_paths"])
         t["depends_on"] = json.loads(t["depends_on"])
+        t["progress"] = substep_progress(t.get("substep"))
         return t
 
     def ready_tasks(self) -> list[dict[str, Any]]:

@@ -1,5 +1,14 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.6] — 2026-11-23 — pasek postępu zadania (zielony, % z podetapów) na widoku aktywnych zadań
+- 📊 `state.substep_progress()`: postęp 0..1 z substepu — `2/5_IMPL`→40%, `4.5_SIMPLIFY`→90%, `5/5_COMMIT`/`done`→100%,
+  `LLM_EXEC`→50%, `ASK_OWNER`→0; pole `progress` na każdym zadaniu w API (`/api/state`, `/api/flow`, `get_task`)
+- 🟢 **Zielony pasek postępu z %** w trzech miejscach:
+  - „🔥 Teraz pracują” (Przegląd) — duży pasek + etykieta substepu pod zegarem na każdej karcie RUNNING
+  - tabela Zadania — nowa kolumna **postęp** (mały pasek `sm` + %)
+  - kafelki 🌊 Flow — zielony pasek 3px na dole kafelka + `%` w linii osoby (gdy 0<p<100)
+- ✅ Test `test_substep_progress` — 61 passed
+
 ## [2.7.5] — 2026-11-23 — zasada „Opiekunowi łatwiej”: auto-heal scope, lepsze pakiety, analiza AWAITING_OWNER
 - ⭐ **TWARDA REGUŁA w sponsor-notes.md + anti-slop.md** (wstrzykiwane do KAŻDEGO promptu): „ZAWSZE działamy w myśl zasady,
   żeby OPIEKUNOWI żyło się łatwiej” — rutynowe błędy (timeout, brak pliku, plik spoza scope, test) rozwiązujemy automatyczną

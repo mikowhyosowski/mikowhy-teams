@@ -292,8 +292,13 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 .mscard.closed{opacity:.55}
 .mscard .goal{font-size:12px;color:#c9d1d9;margin:4px 0}
 .mscard .meta{font-size:11px;color:#8b949e}
-.pbar{height:8px;background:#21262d;border-radius:6px;overflow:hidden;margin:6px 0}
+.pbar{height:8px;background:#21262d;border-radius:6px;overflow:hidden;margin:6px 0;position:relative}
 .pbar i{display:block;height:100%;background:linear-gradient(90deg,#238636,#3fb950)}
+.pbar .pct{position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:8px;font-weight:bold;color:#e6ffec;text-shadow:0 1px 2px #000}
+.pbar.sm{height:6px;margin:2px 0}
+.pbar.sm .pct{font-size:7px;right:3px}
+.pbarWrap{display:flex;align-items:center;gap:6px}
+.pbarWrap .plabel{font-size:10px;color:#8b949e;white-space:nowrap}
 .blk{font-size:11px;color:#f85149;margin-top:2px}
 #spBacklog .brow{display:flex;gap:8px;align-items:center;border-bottom:1px solid #21262d;padding:4px 6px;font-size:12px;cursor:pointer;flex-wrap:wrap}
 #spBacklog .brow:hover{background:#161b22}
@@ -440,7 +445,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 </section>
 <section class="tabpage" id="tab-tasks">
 <h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację; filtry projektów są wyżej — globalne)</span></h2>
-<table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
+<table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>postęp</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 </section>
 <section class="tabpage" id="tab-flow">
 <h2>🌊 Flow <span class="muted">(dwa widoki: przepływ pracy zespołu oraz hierarchia stanowisk — kto jest czyim szefem)</span></h2>
@@ -617,6 +622,13 @@ function openChangelog(){
 })();
 const taskStatus = {};
 function fmtDur(s){ s=Math.round(s); const m=Math.floor(s/60), h=Math.floor(m/60); return (h?h+'h ':'')+(m%60)+'m '+(s%60)+'s'; }
+// postęp zadania z substepu (np. 2/5_IMPL -> 40%); progress przychodzi też z backendu (state.substep_progress)
+function progPct(t){ const p = (typeof t.progress === 'number') ? t.progress : 0; return Math.max(0, Math.min(100, Math.round(p*100))); }
+function pbarHtml(t, cls){
+  const pct = progPct(t);
+  if(!t.substep && pct === 0) return '—';
+  return `<div class="pbar ${cls||''}" title="postęp: ${esc(t.substep||'')} — ${pct}%"><i style="width:${pct}%"></i><span class="pct">${pct}%</span></div>`;
+}
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 let refreshPaused = false;
 function setPaused(p){ refreshPaused = p; document.getElementById('pause').textContent = p ? '⏸ odświeżanie wstrzymane — piszesz…' : ''; }
@@ -719,7 +731,7 @@ async function refreshInner(){
     const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>${res}` : '';
     tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
       <td class="st">${t.status==='AWAITING_OWNER'?(['ASK_OWNER','ASK_SPONSOR'].includes(t.substep)?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> '):''}${sbadge(t.status)}</td>
-      <td class="muted">${esc(t.substep||'')}</td><td>${t.retry_count}</td>
+      <td class="muted">${esc(t.substep||'')}</td><td style="min-width:90px">${pbarHtml(t,'sm')}</td><td>${t.retry_count}</td>
       <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted">${pbadge(t.project_id)}</td>
       <td class="muted">${clock}</td>
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
@@ -754,6 +766,7 @@ async function refreshInner(){
   document.getElementById('now').innerHTML = nowCards.length ? nowCards.map(t =>
     `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
+     <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
      ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
      <span class="who">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
@@ -1132,10 +1145,14 @@ async function renderFlow(){
         const clk = (t.status==='RUNNING' && t.started_at)
           ? '<tspan class="clk" data-started="' + t.started_at + '"> ⏱' + fmtDur(Date.now()/1000 - t.started_at) + '</tspan>'
           : (t.overdue ? ' <tspan fill="' + (T.overdue||'#f85149') + '">⚠' + fmtDur(t.age) + '</tspan>' : ' <tspan class="who">' + fmtDur(t.age) + '</tspan>');
+        const cpct = (typeof t.progress === 'number') ? Math.round(t.progress*100) : 0;
+        const cbar = (t.substep && cpct > 0) ? '<rect x="0" y="' + (chipH-4) + '" width="' + (w-16) + '" height="3" rx="1.5" fill="#21262d"/>' +
+          '<rect x="0" y="' + (chipH-4) + '" width="' + Math.round((w-16)*cpct/100) + '" height="3" rx="1.5" fill="#3fb950"/>' +
+          '<title>postęp ' + cpct + '% (' + esc(t.substep) + ')</title>' : '';
         s += '<g class="chip ' + (t.overdue?'overdue':'') + '" transform="translate(' + cx + ',' + cy + ')" onclick="openTask(\\'' + esc(t.id) + '\\')">' +
-          '<rect width="' + (w-16) + '" height="' + chipH + '" rx="6"/>' +
+          '<rect width="' + (w-16) + '" height="' + chipH + '" rx="6"/>' + cbar +
           '<text x="6" y="13" font-size="10"><tspan>' + (PIC[t.priority]||'') + '</tspan> <tspan class="cid" fill="' + st.color + '">' + esc(t.id) + '</tspan>' + clk + '</text>' +
-          '<text class="who" x="6" y="24" font-size="8">' + esc((t.persona||t.role||'').slice(0,16)) + (t.pr ? (' · !'+t.pr) : '') + '</text>';
+          '<text class="who" x="6" y="24" font-size="8">' + esc((t.persona||t.role||'').slice(0,16)) + (t.pr ? (' · !'+t.pr) : '') + (t.substep && cpct>0 ? (' · ' + cpct + '%') : '') + '</text>';
         acts.forEach((a, ai) => {
           const ad = (f.actions||{})[a] || {};
           s += '<text class="act" x="' + (w-16-8-(acts.length-1-ai)*17) + '" y="17" font-size="12" onclick="event.stopPropagation();flowAction(\\'' + esc(t.id) + '\\',\\'' + esc(a) + '\\')"><title>' + esc(ad.label||a) + '</title>' + (ad.icon||'▶') + '</text>';
@@ -1920,6 +1937,8 @@ def _snapshot(s: State) -> dict:
                                              "role", "project_id", "branch", "updated_at", "read_only",
                                              "mode", "parent_task", "started_at", "claimed_by", "priority",
                                              "review_notes", "created_at", "title_sponsor")})
+        from engine.state import substep_progress
+        tasks[-1]["progress"] = t.get("progress") if t.get("progress") is not None else substep_progress(t.get("substep"))
         tasks[-1]["age"] = max(0, time.time() - (t.get("updated_at") or t.get("created_at") or time.time()))
         tasks[-1]["pr"] = github_bridge.pr_for_task(t["id"])
         p = personas.persona_for_role(t.get("role") or "")

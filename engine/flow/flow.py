@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from engine.state import State, VALID_TRANSITIONS
+from engine.state import State, VALID_TRANSITIONS, substep_progress
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CFG = Path(__file__).resolve().parent / "default_flow.json"
@@ -226,6 +226,7 @@ def build_flow(snapshot: dict, state: State | None = None) -> dict:
             tlist.append({
                 "id": t.get("id"), "title": t.get("title_sponsor") or t.get("title") or "",
                 "status": t.get("status"), "substep": t.get("substep") or "",
+                "progress": t.get("progress") if t.get("progress") is not None else substep_progress(t.get("substep")),
                 "priority": t.get("priority") or "P2", "role": t.get("role") or "",
                 "persona": t.get("persona") or "", "project_id": t.get("project_id"),
                 "pr": t.get("pr"), "parent_task": t.get("parent_task"), "depth": t.get("depth") or 0,
