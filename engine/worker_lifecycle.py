@@ -23,6 +23,7 @@ from engine import git_guard, projects, quality_gates, skill_compiler, telegram_
 from engine.llm_gateway import get_gateway
 from engine.state import (
     AWAITING_OWNER,
+    COOLING,
     FAILED,
     IN_REVIEW,
     READY,
@@ -599,7 +600,7 @@ def run(task_id: str) -> int:
             _tg(state, task_id, "commit OK → IN_REVIEW (czeka na Code Review)")
         return 0
     except Exception as exc:  # deterministyczny fallback — nigdy cicha śmierć
-        state.transition(task_id, FAILED, review_notes=repr(exc))
+        state.transition(task_id, COOLING, review_notes=repr(exc))
         t = state.get_task(task_id)
         if t:
             telegram_reporter.post_event(state, t, f"💥 FAILED: `{exc!r}`")

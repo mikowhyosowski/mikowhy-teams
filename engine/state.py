@@ -38,6 +38,8 @@ AWAITING_OWNER = "AWAITING_OWNER"  # czeka na Opiekuna (Sponsora) — TYLKO osta
 BLOCKED = "BLOCKED"                # twarda blokada (odrzucenie Opiekuna / brak dostępu / wyczerpane auto-retry)
 FAILED = "FAILED"                  # legacy: błąd przejściowy — auto-retry z limitem prób (backoff)
 ESCALATED = "ESCALATED"            # legacy: migrowane do AWAITING_OWNER przy starcie
+COOLING = "COOLING"                # ❄️ v2.7.23: zamrożone po przejściowym błędzie — sleep bezpieczeństwa, potem orchestrator budzi -> READY
+COOLING = "COOLING"                # ❄️ v2.7.23: zamrożone po przejściowym błędzie — bezpieczny sleep, orchestrator budzi -> READY
 AWAITING_APPROVAL = AWAITING_OWNER  # alias wsteczny — stare odniesienia w kodzie = AWAITING_OWNER
 
 def substep_progress(substep: str | None) -> float:
@@ -86,15 +88,17 @@ def resume_substep(task: dict | None) -> str:
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
     READY: {RUNNING, BLOCKED, ESCALATED, AWAITING_OWNER},  # z kolejki też można oddać decyzję Opiekunowi (utknięte zadanie)
-    RUNNING: {IN_REVIEW, CHANGES_REQUESTED, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER},
-    CHANGES_REQUESTED: {RUNNING, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER},
-    IN_REVIEW: {READY_TO_MERGE, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
+    RUNNING: {IN_REVIEW, CHANGES_REQUESTED, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER, COOLING},
+    CHANGES_REQUESTED: {RUNNING, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER, COOLING},
+    IN_REVIEW: {READY_TO_MERGE, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER, COOLING},
     READY_TO_MERGE: {MERGED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
     MERGED: set(),
     FAILED: {READY, BLOCKED, ESCALATED, AWAITING_OWNER},  # auto-retry -> READY; po max_retries -> AWAITING_OWNER
     BLOCKED: {READY, ESCALATED, AWAITING_OWNER},          # odblokowanie WYŁĄCZNIE do READY (pełny cykl)
     ESCALATED: {READY, AWAITING_OWNER, BLOCKED},          # legacy
     AWAITING_OWNER: {READY, BLOCKED},                     # decyzja Opiekuna -> READY (z decyzją w kontekście); odrzucenie -> BLOCKED
+    # ❄️ COOLING — zamrożone po przejściowym błędzie: bezpieczny sleep, orchestrator budzi -> READY (co → na co w notyfikacji)
+    COOLING: {READY, BLOCKED, AWAITING_OWNER},
 }
 
 SCHEMA = """
@@ -289,6 +293,7 @@ class State:
                 ("tasks", "substep_since", "REAL NOT NULL DEFAULT 0"),  # v2.7.11: kiedy zaczął się bieżący sub-etap (live timer na kafelku)
                 ("tasks", "max_substep", "TEXT"),  # v2.7.16: NAJDALEJ wypracowany sub-etap w całej historii — przy powrocie do READY wznawiamy od niego
                 ("tasks", "eta_s", "REAL NOT NULL DEFAULT 0"),  # v2.7.19: szacowany czas zadania (s) — ETA, raport „za ile będzie”
+                ("tasks", "cooldown_until", "REAL NOT NULL DEFAULT 0"),  # v2.7.23: ❄️ COOLING — aż kiedy śpić (epoch)
                 ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
                 ("tasks", "title_sponsor", "TEXT"),  # tytuł wyświetlany Sponsorowi — krótko, prostymi słowami
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
@@ -551,12 +556,20 @@ class State:
         if new_status != current and new_status not in VALID_TRANSITIONS.get(current, set()):
             raise InvalidTransition(f"{current} -> {new_status} niedozwolone dla {task_id}")
         sets = ["status=?", "updated_at=?"]
+        cooldown_s = fields.pop("cooldown_s", None)  # v2.7.23: długość bezp. sleepu dla COOLING (sekundy)
         params: list[Any] = [new_status, time.time()]
         for key, value in fields.items():
             if key not in {"substep", "review_notes", "branch", "worktree", "role", "retry_count", "claimed_by"}:
                 raise StateError(f"Nieznane pole: {key}")  # telegram_* ustawia osobno set_telegram
             sets.append(f"{key}=?")
             params.append(value)
+        # v2.7.23: COOLING — zamrożenie na bezpieczny sleep; pobudka przez orchestrator (_wake_cooling)
+        cd = cooldown_s if cooldown_s is not None else 300
+        if new_status == COOLING:
+            sets.append("cooldown_until=?")
+            params.append(time.time() + float(cd if cd is not None else 300))
+        elif "cooldown_until" not in fields:
+            sets.append("cooldown_until=0")  # wyjście z mróżki (albo zwykłe przejście) — czyścimy
         params.append(task_id)
         self._conn().execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", params)
         # v2.7.11: zmiana sub-etapu = start nowego mikro-etapu (timer „teraz: …” na kafelku);
@@ -918,6 +931,14 @@ class State:
         q += " ORDER BY queued_at DESC LIMIT ?"
         params.append(limit)
         return [dict(r) for r in self._conn().execute(q, params).fetchall()]
+
+    def wake_cooling(self) -> int:
+        """❄️→▶️ v2.7.23: budzi zamrożone zadania (status COOLING), których sleep bezpieczeństwa minął -> READY."""
+        cur = self._conn().execute(
+            "UPDATE tasks SET status='READY', updated_at=?, cooldown_until=0 "
+            "WHERE status='COOLING' AND (cooldown_until IS NULL OR cooldown_until<=?)",
+            (time.time(), time.time()))
+        return cur.rowcount or 0
 
     def recent_ops(self, limit: int = 100) -> list[dict]:
         return [dict(r) for r in self._conn().execute(

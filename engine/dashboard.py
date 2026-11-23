@@ -645,7 +645,7 @@ function renderStFilters(d){
   }).join('') + `<button class="pchip reset" onclick="resetSts()">✖ wszystkie</button>`;
 }
 function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
-const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','CHANGES_REQUESTED':'#d29922','AWAITING_OWNER':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
+const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','CHANGES_REQUESTED':'#d29922','AWAITING_OWNER':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a','COOLING':'#54aeff'};
 function ccls(text){ text = String(text||''); return text.startsWith('🔄') ? 'inprogress' : (text.includes('✅') ? 'done' : ''); }
 const SUBCEL = {'1/5_PLAN':'planowanie zadania','2/5_IMPL':'implementacja kodu','3/5_TEST':'testy i weryfikacja','4/5_QG':'bramki jakości (lint/typy)','4.5_SIMPLIFY':'upraszczanie rozwiązania','5/5_COMMIT':'commit + push','LLM_EXEC':'wywołanie LLM','done':'zakończone'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
@@ -921,6 +921,7 @@ async function openTask(id, keep){
     <button class="${detailTab==='comments'?'on':''}" onclick="detailTab='comments';openTask(curTask,true)">💬 Komentarze (${(t.comments||[]).length})</button>
     <button class="${detailTab==='atts'?'on':''}" onclick="detailTab='atts';openTask(curTask,true)">📎 Załączniki (${(t.attachments||[]).length})</button>
     <button class="${detailTab==='ops'?'on':''}" onclick="detailTab='ops';openTask(curTask,true)">⚙️ Operacje (${(t.ops||[]).length})</button>
+    <button class="${detailTab==='proc'?'on':''}" onclick="detailTab='proc';openTask(curTask,true)">⚙️ Proces (${(t.proc&&t.proc.steps||[]).length})</button>
   </div>`;
   // blok podsumowania — ZAWSZE widoczny (tytuł, status, czas, rola, projekt, branch/PR)
   const summary = `<div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
@@ -967,6 +968,27 @@ async function openTask(id, keep){
     // v2.7.23: rejestr operacji zadania — każde działanie systemu (LLM/git/testy/telegram) ze statusem kolejki
     body = `<h2>⚙️ Operacje zadania <span class="muted">(⏳ czeka na wysłanie → 📤 wysłano · w trakcie → ✅ zrobione / ❌ błąd — próba N)</span></h2>
       <div class="histbox">${renderOps(t.ops||[])}</div>`;
+  } else if(detailTab === 'proc'){
+    // v2.7.23: diagram procesu — ścieżka zadań + do jdne banku historii zmian statusów i retry
+    const pp = t.proc || {};
+    const steps = ['1/5_PLAN','2/5_IMPL','3/5_TEST','4/5_QG','5/5_COMMIT'];
+    const curSub = d.substep||'';
+    const stepRow = steps.map(st => {
+      const prog = substep_progress(st), curProg = substep_progress(curSub);
+      const done = curProg > prog, on = Math.abs(curProg - prog) < 0.01;
+      return `<span style="padding:2px 8px;border-radius:6px;margin:0 3px;font-size:11px;display:inline-block;border:1px solid ${on?'#58a6ff':'#30363d'};background:${on?'#12233a':(done?'#0d2b1a':'#161b22')};color:${done?'#3fb950':(on?'#58a6ff':'#8b949e')}">${done?'✅ ':''}${st}</span>`;
+    }).join('→');
+    body = `<h2>⚙️ Proces realizacji zadania</h2>
+      <div class="histbox">
+        <div style="padding:6px 2px">${stepRow}</div>
+        <div style="padding:6px 2px"><b>kroki:</b> ${(pp.steps||[]).length} · <b>retry:</b> ${d.retry_count||0} · <b>modele LLM:</b> ${(pp.llm_models||[]).map(m=>`<span class="pbadge" style="background:#21262d">${esc(m.model||'—')} ×${m.n}</span>`).join(' ')}</div>
+      </div>
+      <h2>🕘 Historia zmian</h2>
+      <div class="histbox">${(pp.steps||[]).map(se => {
+        const age = Date.now()/1000 - (se.ts||0);
+        const cls = age<60 ? 'fresh2' : (age<3600 ? 'fresh1' : '');
+        return `<div class="${cls}"><span class="muted">${new Date((se.ts||0)*1000).toLocaleTimeString()}</span> ${esc(String(se.event||''))}</div>`;
+      }).join('')||'<span class="muted">brak</span>'}</div>`;
   } else {
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
@@ -2480,10 +2502,35 @@ def _task_detail(s: State, task_id: str) -> dict:
     for st in fcfg.get("stages", []):
         if st.get("id") == fstage:
             favail = [a for a in (st.get("actions") or []) if not flowmod.validate_action(fcfg, t["status"], a)]
+    # v2.7.23: panel „⚙️ Proces diagramu” — kroki, retry, modele LLM, czasy per krok
+    try:
+        import json as _json
+        ev_rows = s._conn().execute(
+            "SELECT ts, payload FROM metrics WHERE kind='task_event' AND task_id=? ORDER BY ts DESC LIMIT 30",
+            (task_id,)).fetchall()
+        steps_hist = []
+        for r in ev_rows:
+            try:
+                pl = _json.loads(r[1])
+            except Exception:
+                pl = {"raw": str(r[1])[:150]}
+            steps_hist.append({"ts": r[0], "from": pl.get("from") or "?", "to": pl.get("to") or "?",
+                               "by": pl.get("by") or "", "substep": (pl.get("changes") or {}).get("substep")})
+        op_rows = s._conn().execute(
+            "SELECT kind, status, COUNT(*) n FROM ops WHERE task_id=? GROUP BY kind, status", (task_id,)).fetchall()
+        op_summary = [dict(r) for r in op_rows]
+        llm_models = s._conn().execute(
+            "SELECT COALESCE(json_extract(payload,'$.model'),'—') m, COUNT(*) n FROM llm_jobs "
+            "WHERE requester='gateway' AND created_at > ? GROUP BY m", (time.time() - 86400,)).fetchall()
+    except Exception:
+        steps_hist, op_summary = [], []
+
     return {"icons": ICON, "task": t, "comments": s.recent_comments(20, task_id=task_id),
             "events": s.recent_events(50, task_id=task_id),
             "attachments": s.list_attachments(task_id),
             "ops": s.list_ops(task_id, 80),  # v2.7.23: operacje zadania (llm/git/qg/tg) ze statusem kolejki
+            "proc": {"steps": steps_hist, "ops_summary": op_summary,
+                     "llm_models": (llm_models if 'llm_models' in dir() else [])},
             "available_actions": favail, "actions_def": fcfg.get("actions", {}), "stage": fstage}
 
 

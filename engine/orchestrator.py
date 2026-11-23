@@ -212,6 +212,16 @@ class Orchestrator:
 
     # --- auto-retry FAILED (limit prób, potem AWAITING_OWNER z pakietem opcji) ---
     def _auto_retry_failed(self) -> None:
+        # v2.7.23: ❄️ COOLING — pobudka zamrożonych zadań, których sleep bezpieczeństwa już minął
+        try:
+            woken = self.state.wake_cooling()
+            if woken:
+                self._notify("wake", f"❄️→▶️ pobudzono {woken} zamrożonych zadań (sleep minął) → READY")
+        except Exception as e:
+            self.state.record_metric("wake_cooling_error", {"error": repr(e)}, None)
+        self._auto_retry_failed_inner()
+
+    def _auto_retry_failed_inner(self) -> None:
         """FAILED -> READY automatycznie (fabryka sama się podnosi po przejściowych
         błędach LLM/infra — timeouty, sieć/API, niepełny przelot testów: nikt nie widzi alertu).
         v2.7.14: próby 1..2 wracają do READY na koniec kolejki (sortowanie claimable_tasks).
