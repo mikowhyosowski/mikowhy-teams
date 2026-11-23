@@ -572,6 +572,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 <script>
 let curTask = null;
 let lastEventTs = 0;
+let lastState = null;  // v2.7.18: hoist — startowy showTab/refresh wołają renderSys/renderBell PRZED końcem skryptu (TDZ fix)
 // kolorowe filtry projektów — hiddenProjs: localStorage + URL hash + serwer (kv), żeby przeżyły odświeżenie/zmianę adresu
 const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
 // filtry STATUSÓW — globalne; MERGED domyślnie UKRYTY (odznaczony na starcie)
@@ -1129,6 +1130,7 @@ function renderSys(){
      </div>`).join('') || '<span class="muted">brak powiadomień</span>') + '</div>';
 }
 function renderBell(d){
+  if(!d) return;  // v2.7.18: TDZ/guard — przed pierwszym refresh lastState może być null
   const n = d.notif_unread||0;
   const bn = document.getElementById('bellN');
   bn.textContent = n>0 ? (n>99?'99+':String(n)) : '';
@@ -2015,7 +2017,6 @@ showTab((location.hash.slice(1).split('?')[0])||'overview', false);
 document.querySelectorAll('#flowTabs button').forEach(b => b.classList.toggle('on', b.dataset.fview === flowView));
 document.getElementById('flowWorkView').style.display = flowView === 'work' ? '' : 'none';
 document.getElementById('flowOrgView').style.display = flowView === 'org' ? '' : 'none';
-let lastState = null;
 let firmaSlowTick = 0;
 function firmaActive(){ return document.getElementById('tab-firma').classList.contains('on'); }
 let autoRefreshOn = true;

@@ -1,5 +1,11 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.18] — 2026-11-23 — fix TDZ: `Cannot access 'lastState' before initialization`
+- 🐛 `let lastState` było deklarowane na końcu skryptu (po boot `showTab(...)`) — startowy `showTab('sys')` → `renderSys()`
+  i klik 🔔 → `toggleBell()` wpadały w temporal dead zone. Deklaracja przeniesiona na górę skryptu (obok `curTask`);
+  guard `if(!d) return` w `renderBell` (null przed pierwszym refresh)
+- ✅ weryfikacja: kolejność w serwowanym JS (decl lastState przed boot showTab), `node --check` OK, 75 passed
+
 ## [2.7.17] — 2026-11-23 — FAILED parkowane na audyt zespołu + panel prezesa w sub-tabach z analogią fabryki
 - 🅿️ Po max_retries (3) zadanie zostaje **ZAPARKOWANE w FAILED** (nie do READY/Opiekuna) — czeka na członka zespołu;
   powiadomienie `failed` + notatka w review_notes. Próby 1..2 nadal auto-retry → READY (koniec kolejki)
