@@ -1,5 +1,8 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.13] — 2026-11-23 — kafelek „teraz:” — sam czas etapu (bez „⏱ etap”), jaśniejszy kolor, ten sam rozmiar
+- 🎯 teraz: implementacja kodu <span jaśniejszy>7m 53s</span> — prefix „⏱ etap” usunięty, kolor `#79c0ff` (jaśniejszy od `#58a6ff`), font-size bez zmiany (11px)
+
 ## [2.7.12] — 2026-11-23 — załączniki otwierają się jako strona (nie biała kartka) + kontekstowe akcje per status zadania
 - 📄 `GET /api/attachment/<id>/view`: podgląd załącznika jako strona HTML (tekst w `<pre>`, obraz `<img>`, pusty/brak pliku
   = czytelny komunikat zamiast białej strony); link „↗ otwórz” i nazwa załącznika prowadzą do `/view`, „⬇ raw” do surowego pliku

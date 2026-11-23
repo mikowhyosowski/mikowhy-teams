@@ -199,7 +199,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .nowcard .teraz{font-size:11px;color:#58a6ff;margin-top:2px}
  .spin{display:inline-block;animation:spin 1.2s linear infinite}
  @keyframes spin{to{transform:rotate(360deg)}}
- .subclk{color:#58a6ff;font-size:11px;font-variant-numeric:tabular-nums}
+ .subclk{color:#79c0ff;font-size:11px;font-variant-numeric:tabular-nums}  /* jaśniejszy od #58a6ff, ten sam rozmiar co „teraz:” */
  #ts{color:#8b949e;font-size:11px}
  #detail{position:fixed;top:0;right:-460px;width:440px;height:100%;background:#161b22;border-left:1px solid #30363d;
    padding:14px;overflow-y:auto;transition:right .2s;z-index:10}
@@ -779,7 +779,7 @@ async function refreshInner(){
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
      <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
      <div class="teraz"><span class="spin">🌀</span> 🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}
-       <span class="clock subclk" data-subsince="${t.substep_since||0}">${t.substep_since?('⏱ etap ' + fmtDur(Date.now()/1000 - t.substep_since)):''}</span></div>
+       <span class="subclk" data-subsince="${t.substep_since||0}">${t.substep_since?fmtDur(Date.now()/1000 - t.substep_since):''}</span></div>
      ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
      <span class="who">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
@@ -1940,7 +1940,7 @@ setInterval(() => {
   });
   // v2.7.11: licznik bieżącego mikro-etapu („teraz: …”) tyka co sekundę
   document.querySelectorAll('.subclk[data-subsince]').forEach(el => {
-    const s = parseFloat(el.dataset.subsince); if(s > 0) el.textContent = '⏱ etap ' + fmtDur(Date.now()/1000 - s);
+    const s = parseFloat(el.dataset.subsince); if(s > 0) el.textContent = fmtDur(Date.now()/1000 - s);
   });
 }, 1000);
 const _view = view; view = function(u){ document.getElementById('viewer').dataset.url = u; return _view(u); };
