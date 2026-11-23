@@ -61,6 +61,7 @@ from engine.state import (
 
 LOG_DIR = ROOT / ".agents" / "logs"
 CIRCUIT_BREAKER_RETRIES = 3
+STUCK_RETRY = 2  # zadanie z tyloma próbami (retry_count>=2) i tak utknęło -> od razu AWAITING_OWNER (nie kręci się READY->RUNNING->FAILED->READY)
 PRINCIPAL_ROLE = "principal-debugger"
 
 
@@ -131,8 +132,10 @@ class Orchestrator:
         for task in self.state.list_tasks(status=AWAITING_APPROVAL):
             if not projects.is_active(task.get("project_id") or "mikowhy-teams"):
                 continue  # projekt wstrzymany — nie auto-approve'ujemy
-            if task.get("substep") == "ASK_SPONSOR":
-                continue  # pytanie do Sponsora NIGDY nie leci auto — tylko człowiek odpowiada
+            if task.get("substep") in ("ASK_SPONSOR", "ASK_OWNER", "OWNER_PACKET"):
+                continue  # pytanie/pakiet dla Opiekuna NIGDY nie leci auto — tylko człowiek odpowiada
+            if "OWNER_PACKET" in (task.get("review_notes") or "") or "PAKIET dla Opiekuna" in (task.get("review_notes") or ""):
+                continue  # zadanie już eskalowane do Opiekuna (utknięte) — nie wraca samo do kolejki
             pid = task.get("project_id") or "mikowhy-teams"
             policy = projects.approval_policy(pid)
             if policy == "auto" or (policy == "auto_readonly" and task.get("read_only")):
@@ -142,6 +145,34 @@ class Orchestrator:
                 self.state.record_metric("auto_approve",
                                          {"policy": policy, "project": pid, "read_only": bool(task.get("read_only"))},
                                          task["id"])
+
+    # --- utknięte zadania (retry_count >= STUCK_RETRY) -> AWAITING_OWNER --------------
+    def _escalate_stuck_tasks(self) -> None:
+        """Zadania, które mimo prób utknęły (retry_count >= STUCK_RETRY) w READY/RUNNING/FAILED,
+        nie mają przechodzić całego etapu w kółko (READY->RUNNING->FAILED->READY) — idą do
+        AWAITING_OWNER z pakietem dla Opiekuna (ostatnia instancja). BLOCKED/MERGED/AWAITING_OWNER nie ruszamy."""
+        for task in self.state.list_tasks():
+            if task["status"] not in (READY, RUNNING, FAILED):
+                continue
+            if (task.get("retry_count") or 0) < STUCK_RETRY:
+                continue
+            packet = (
+                f" | AWAITING_OWNER: zadanie utknęło mimo {task.get('retry_count')} prób "
+                f"(ostatni błąd: {str(task.get('review_notes') or '')[-200:]}). "
+                "PAKIET dla Opiekuna — co utknęło i dlaczego automat nie może tego bezpiecznie rozstrzygnąć; "
+                "opcje: [A] rekomendowane — puścić dalej do READY z inną rolą/zakresem, "
+                "[B] zamknąć jako BLOCKED (odrzucone), [C] zdekomponować na mniejsze zadanie."
+            )
+            try:
+                self.state.transition(task["id"], AWAITING_OWNER, substep="OWNER_PACKET",
+                                      review_notes=(task.get("review_notes") or "") + packet)
+                self.state.add_comment(task["id"], "orchestrator",
+                                       f"🧑‍💼 {task['id']}: utknęło po {task.get('retry_count')} próbach → AWAITING_OWNER "
+                                       "(pakiet A/B/odrzuć dla Opiekuna — nie wraca już do kolejki automatycznie)")
+                self.state.record_metric("stuck_escalated", {"task": task["id"], "retry": task.get("retry_count")}, task["id"])
+                print(f"[orchestrator] 🧑‍💼 stuck {task['id']} (retry={task.get('retry_count')}) -> AWAITING_OWNER", flush=True)
+            except Exception as e:
+                print(f"[orchestrator] stuck {task['id']} błąd: {e!r}", flush=True)
 
     # --- auto-retry FAILED (limit prób, potem AWAITING_OWNER z pakietem opcji) ---
     def _auto_retry_failed(self) -> None:
@@ -609,6 +640,7 @@ class Orchestrator:
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
+        self._escalate_stuck_tasks()
         self._auto_approve()
         self._auto_retry_failed()
         self._launch_recurring()

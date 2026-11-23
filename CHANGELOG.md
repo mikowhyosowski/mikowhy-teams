@@ -1,5 +1,18 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.4] — 2026-11-23 — porządki OPS: zamknięcie OPS-LLM-ROOTCAUSE, utknięte zadania → AWAITING_OWNER (nie cały flow w kółko)
+- 🧑‍💼 **Utknięte zadania nie przechodzą już całego etapu w kółko**: nowa faza `_escalate_stuck_tasks` w ticku —
+  zadanie z `retry_count >= STUCK_RETRY (2)` w READY/RUNNING/FAILED → `AWAITING_OWNER` + `substep=OWNER_PACKET`
+  + pakiet (co utknęło + opcje A/B/C); BLOCKED/MERGED/AWAITING_OWNER nie są ruszane. `READY→AWAITING_OWNER` dodane do VALID_TRANSITIONS
+- 🚫 **Fix auto-approve**: `_auto_approve` NIGDY nie wypuszcza pakietu Opiekuna (`OWNER_PACKET`/`ASK_OWNER`/`PAKIET dla Opiekuna`)
+  do READY — tylko człowiek odpowiada (wcześniej polityka `auto` projektu wypuszczała je z powrotem do kolejki)
+- ✅ **Zamknięte `OPS-LLM-ROOTCAUSE`** → BLOCKED z komentarzem Sponsora (Mikołaj Osowski): problem LLM rozwiązany przez
+  optymalizację kolejki v2/v3 (6a892af, 971bb52)
+- 📦 **Migracja ręczna utkniętych zadań** do AWAITING_OWNER z komentarzem „Sponsor — Mikołaj Osowski”: BRAND-001 (P1, retry 3),
+  FIRMA-010 (P0, retry 3), FIRMA-010c (retry 3), CHAT-0022a (retry 2)
+- ⏸️ **Zatrzymane aktywne sesje agentów** (workery zabite; orchestrator zombie-recovery → READY, potem ruszyły od P0)
+- ✅ Test `test_escalate_stuck_tasks_phase` — 58 passed
+
 ## [2.7.3] — 2026-11-23 — LLM batch (wiele pytań = 1 request) + cache odpowiedzi; kafelki flow z licznikiem i deltem ±5 min
 - 📦 **Batchowanie requestów LLM (v3)**: gdy ≥2 joby tego samego modelu czekają (pierwsze próby),
   dispatcher wysyła je JEDNYM requestem (`_run_batch`: `{"items": [{step, system, user}...]}` →
