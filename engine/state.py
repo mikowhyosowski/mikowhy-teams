@@ -847,9 +847,23 @@ class State:
 
     def op_enqueue(self, kind: str, label: str, task_id: str | None = None, detail: str = "",
                    ref: str | None = None, payload: dict | None = None) -> str:
-        """Rejestruje operację w kolejce (status QUEUED = „czeka na wysłanie”). Zwraca op_id ('' przy błędzie — ops nigdy nie psują głównego flow)."""
+        """Rejestruje operację w kolejce (status QUEUED = „czeka na wysłanie”). Zwraca op_id ('' przy błędzie).
+        v2.7.24: dedup — identyczna operacja (kind+task_id+label) z ostatnich 30 min jest REUŻYWANA
+        (attempts+1, queued_at=now), żeby rejestr nie puchł powtórzeniami tego samego kroku."""
         try:
             now = time.time()
+            if ref:  # operacja z zewnętrznym ref (np. llmj-xxx) — uzupełnij ref jeśli op już istnieje
+                self._conn().execute("UPDATE ops SET ref=? WHERE kind=? AND task_id IS ? AND ref IS NULL AND label=?",
+                                     (ref, kind, task_id, str(label)[:160]))
+            else:    # bez refa — reuse ostatniej identycznej ops (anty-duplikat, okno 30 min)
+                row = self._conn().execute(
+                    "SELECT op_id FROM ops WHERE kind=? AND task_id IS ? AND label=? "
+                    "AND status IN ('QUEUED','RUNNING') AND queued_at>? ORDER BY id DESC LIMIT 1",
+                    (kind, task_id, str(label)[:160], now - 1800)).fetchone()
+                if row:
+                    self._conn().execute("UPDATE ops SET attempts=attempts+1, queued_at=? WHERE op_id=?",
+                                         (now, row[0]))
+                    return row[0]
             op_id = "op-" + uuid.uuid4().hex[:12]
             self._conn().execute(
                 "INSERT INTO ops(op_id,kind,ref,task_id,label,status,detail,attempts,queued_at,payload) "
