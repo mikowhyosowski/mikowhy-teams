@@ -1,5 +1,13 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.12] — 2026-11-23 — załączniki otwierają się jako strona (nie biała kartka) + kontekstowe akcje per status zadania
+- 📄 `GET /api/attachment/<id>/view`: podgląd załącznika jako strona HTML (tekst w `<pre>`, obraz `<img>`, pusty/brak pliku
+  = czytelny komunikat zamiast białej strony); link „↗ otwórz” i nazwa załącznika prowadzą do `/view`, „⬇ raw” do surowego pliku
+- ⚡ Szczegóły zadania: pasek **„Akcje dla statusu X”** — tylko akcje z flow configu dostępne dla bieżącego statusu
+  (`available_actions` per stage: READY→priorytet/komentarz, READY_TO_MERGE→🚀 Wdróż, AWAITING_OWNER→✅/🛑, BLOCKED/FAILED→🔁 retry);
+  `flowAction` korzysta też z `actions_def` z otwartego zadania
+- ✅ test `test_task_detail_context_actions_per_status` — 70 passed
+
 ## [2.7.11] — 2026-11-23 — live timer mikro-etapu na kafelku „teraz: …” + profil pracownika: skille, historia, szkolenie
 - ⏱️ `tasks.substep_since`: ustawiany przy przejęciu (`claim_task`) i każdej zmianie sub-etapu (`transition`) —
   na kafelku „🔥 Teraz pracują” obok `🎯 teraz: <etap>` kręci się 🌀 spinner + `⏱ etap mm:ss` tyczący co sekundę (JS `subclk`)

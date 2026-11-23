@@ -315,3 +315,25 @@ def test_substep_since_on_claim_even_if_same_substep():
     s.transition("T-S2", "RUNNING", substep="2/5_IMPL")      # kontynuacja tego samego etapu: timer też startuje
     t2 = s.get_task("T-S2")
     assert t2["substep_since"] >= t1["substep_since"]
+
+
+def test_task_detail_context_actions_per_status():
+    """v2.7.12: szczegóły zadania mają available_actions tylko dla bieżącego statusu (kontekstowe buttony)."""
+    from engine.dashboard import _task_detail
+    s = _tmp_state()
+    s.add_task("T-CA", "FACTORY-OPS", 9, "ctx", "backend-dev", status="READY")
+    d = _task_detail(s, "T-CA")
+    assert d["stage"] == "queue" and "set_priority" in d["available_actions"] and "approve" not in d["available_actions"]
+    s.claim_task("T-CA", "w1")
+    s.transition("T-CA", "RUNNING")
+    s.transition("T-CA", "IN_REVIEW", substep="done")
+    s.transition("T-CA", "READY_TO_MERGE")
+    d = _task_detail(s, "T-CA")
+    assert d["stage"] == "merge" and "merge" in d["available_actions"], d["available_actions"]
+    s2 = _tmp_state()
+    s2.add_task("T-CB", "FACTORY-OPS", 9, "ctx2", "backend-dev", status="READY")
+    s2.claim_task("T-CB", "w1")
+    s2.transition("T-CB", "RUNNING")
+    s2.transition("T-CB", "AWAITING_OWNER", substep="OWNER_PACKET", review_notes="x")
+    d2 = _task_detail(s2, "T-CB")
+    assert d2["stage"] == "owner" and set(d2["available_actions"]) >= {"approve", "decline"}

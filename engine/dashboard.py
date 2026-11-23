@@ -869,7 +869,8 @@ async function openTask(id, keep){
     // v2.7.10 — rezultaty/załączniki zadania w jednym miejscu, klikalne + podgląd inline
     const TEXT_K = ['md','txt','json','log','csv','py','html','patch','diff'];
     body = `<h2>📎 Załączniki / rezultaty zadania</h2><div class="histbox">` + ((t.attachments||[]).map(a=>{
-      const url = '/api/attachment/'+a.id+'/raw';
+      const url = '/api/attachment/'+a.id+'/view';  // v2.7.12: otwórz = strona HTML (nie biała kartka)
+      const rawUrl = '/api/attachment/'+a.id+'/raw';
       const isImg = ['png','jpg','jpeg','gif','svg'].includes(a.kind);
       const isTxt = TEXT_K.includes(a.kind);
       return `<div class="att" data-att="${a.id}">
@@ -877,7 +878,8 @@ async function openTask(id, keep){
         <span class="muted">${esc(a.path)} · ${(a.size/1024).toFixed(1)} KB · ${new Date(a.ts*1000).toLocaleString()}</span>
         ${isTxt?`<button class="tbtn" onclick="toggleAtt(${a.id})">👁 podgląd</button>`:''}
         <a class="tbtn" style="text-decoration:none" href="${url}" target="_blank">↗ otwórz</a>
-        ${isImg?`<div class="attprev" id="attprev-${a.id}" style="display:none"><img src="${url}" style="max-width:100%;border-radius:6px;margin-top:4px"></div>`
+        <a class="tbtn" style="text-decoration:none" href="${rawUrl}" target="_blank" title="surowy plik">⬇ raw</a>
+        ${isImg?`<div class="attprev" id="attprev-${a.id}" style="display:none"><img src="${rawUrl}" style="max-width:100%;border-radius:6px;margin-top:4px"></div>`
               :`<pre class="attprev" id="attprev-${a.id}" style="display:none;white-space:pre-wrap;font-size:11px;background:#0d1117;padding:6px;border-radius:6px;margin-top:4px;max-height:300px;overflow:auto"></pre>`}
       </div>`;
     }).join('')||'<span class="muted">brak załączników — pliki wypracowane przez agenta (np. plan w .agents/runtime/) pojawiają się tu automatycznie</span>') + '</div>';
@@ -885,9 +887,15 @@ async function openTask(id, keep){
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
     <div class="kv"><b>AC:</b> ${esc((d.acceptance_criteria||'').slice(0,300))}</div>
     <div class="kv"><b>uwagi:</b> ${esc((d.review_notes||'').slice(0,300))}</div>`;
+    // v2.7.12: pasek akcji = tylko akcje dostępne dla TEGO statusu (z flow configu) — nic zbędnego
+    lastActionsDef = t.actions_def || null;
+    const acts = t.actions_def || {};
+    const abtns = (t.available_actions||[]).map(a =>
+      `<button class="tbtn" style="margin:2px 4px 2px 0" onclick="flowAction('${esc(d.id)}','${esc(a)}')">${(acts[a]||{}).icon||''} ${esc((acts[a]||{}).label||a)}</button>`).join('');
+    if(abtns) body += `<div style="margin-top:8px;border-top:1px solid #21262d;padding-top:6px"><b>⚡ Akcje dla statusu ${esc(d.status)}:</b><br>${abtns}</div>`;
     if(d.status==='AWAITING_OWNER'){
-      body += `<button class="ok" onclick="approve()">✅ Zaakceptuj → READY</button>
-               <button class="no" onclick="decline()">🛑 Odrzuć → BLOCKED</button>`;
+      body += `<div style="margin-top:6px"><button class="ok" onclick="approve()">✅ Zaakceptuj → READY</button>
+               <button class="no" onclick="decline()">🛑 Odrzuć → BLOCKED</button></div>`;
     }
   }
   document.getElementById('detailBody').innerHTML = `<h3>${t.icons[d.status]||''} ${esc(d.id)}</h3>` + summary + tabs + body;
@@ -1116,6 +1124,7 @@ async function saveMilestone(){
 }
 // ===== 🌊 FLOW: diagram przepływu pracy budowany z configa (engine/flow) =====
 let lastFlow = null;
+let lastActionsDef = null;  // v2.7.12: actions_def z ostatnio otwartego zadania (dla flowAction poza flow)
 // filtr etapów flow (localStorage); defaultowo ukryte = etapy w pełni pokryte ukrytymi statusami (np. done przy MERGED off)
 let flowHiddenStages = null;
 function getFlowHiddenStages(){
@@ -1258,7 +1267,7 @@ function openStageInfo(sid){
       '</div>').join('') || '<span class="muted">pusto</span>') + '</div>';
 }
 async function flowAction(taskId, actionId){
-  const ad = ((lastFlow && lastFlow.actions) || (lastSponsor && lastSponsor.actions_def) || {})[actionId] || {};
+  const ad = ((lastFlow && lastFlow.actions) || lastActionsDef || (lastSponsor && lastSponsor.actions_def) || {})[actionId] || {};
   const payload = {};
   if(ad.requires_reason){
     const txt = prompt(ad.text_label || (ad.label + ':'), '');
@@ -2238,9 +2247,18 @@ def _task_detail(s: State, task_id: str) -> dict:
     t["persona"] = personas.persona_label(t.get("role") or "")
     if t.get("status") == "RUNNING" and t.get("started_at"):
         t["elapsed"] = max(0, time.time() - t["started_at"])
+    # v2.7.12: akcje kontekstowe per status (tylko te, które mają sens dla tego zadania teraz)
+    from engine.flow import flow as flowmod
+    fcfg = flowmod.load_config()
+    fstage = flowmod.stage_of_status(fcfg, t["status"])
+    favail: list[str] = []
+    for st in fcfg.get("stages", []):
+        if st.get("id") == fstage:
+            favail = [a for a in (st.get("actions") or []) if not flowmod.validate_action(fcfg, t["status"], a)]
     return {"icons": ICON, "task": t, "comments": s.recent_comments(20, task_id=task_id),
             "events": s.recent_events(50, task_id=task_id),
-            "attachments": s.list_attachments(task_id)}
+            "attachments": s.list_attachments(task_id),
+            "available_actions": favail, "actions_def": fcfg.get("actions", {}), "stage": fstage}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2394,6 +2412,44 @@ class Handler(BaseHTTPRequestHandler):
                 "file_exists": f.exists(),
                 "skills": s.list_role_skills(role),
             }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path.startswith("/api/attachment/") and u.path.endswith("/view"):
+            # v2.7.12: podgląd załącznika jako strona HTML ( nigdy biała kartka — tekst w <pre>, obraz jako <img> )
+            from engine.state import ROOT as _ROOT
+            import html as _html
+            try:
+                att_id = int(u.path.split("/")[3])
+                att = State().get_attachment(att_id)
+                if not att:
+                    page = "<h3>❌ nieznany załącznik</h3>"
+                else:
+                    full = (_ROOT / att["path"]).resolve()
+                    ok = str(full).startswith(str(_ROOT.resolve())) and full.is_file()
+                    ext = (att.get("kind") or "").lower()
+                    raw_url = f"/api/attachment/{att_id}/raw"
+                    if not ok:
+                        page = f"<h3>❌ plik niedostępny</h3><p class='muted'>{_html.escape(att['path'])}</p>"
+                    elif ext in ("png", "jpg", "jpeg", "gif", "svg"):
+                        page = (f"<h3>🖼️ {_html.escape(att.get('label') or att['path'])}</h3>"
+                                f"<p><a href='{raw_url}'>surowy plik ↗</a></p>"
+                                f"<img src='{raw_url}' style='max-width:100%;border-radius:8px'>")
+                    else:
+                        data = full.read_text(encoding="utf-8", errors="replace")
+                        if not data.strip():
+                            data = "(plik jest aktualnie pusty — agent jeszcze go nie dokończył)"
+                        page = (f"<h3>📎 {_html.escape(att.get('label') or att['path'])}</h3>"
+                                f"<p class='muted'>{_html.escape(att['path'])} · {len(data)} znaków · "
+                                f"<a href='{raw_url}'>pobierz / surowy ↗</a></p>"
+                                f"<pre style='white-space:pre-wrap;background:#0d1117;padding:10px;border-radius:8px;"
+                                f"max-height:75vh;overflow:auto;font-size:12px'>{_html.escape(data[:200000])}</pre>")
+                doc = ("<!doctype html><html><head><meta charset='utf-8'><title>📎 "
+                       + _html.escape(str(att.get('label') or 'załącznik') if att else 'załącznik')
+                       + "</title><style>body{background:#0d1117;color:#c9d1d9;font-family:monospace;padding:16px}"
+                       "a{color:#58a6ff}.muted{color:#8b949e;font-size:11px}</style></head><body>"
+                       + page + "</body></html>")
+                self._send(200, doc.encode("utf-8"), "text/html; charset=utf-8")
+            except Exception as e:
+                self._send(500, ("<h3>❌ błąd podglądu</h3><pre>" + _html.escape(repr(e)) + "</pre>").encode(),
+                           "text/html; charset=utf-8")
         elif u.path.startswith("/api/attachment/") and u.path.endswith("/raw"):
             # v2.7.10: serwowanie załącznika zadania (bezpiecznie: tylko pliki wewnątrz ROOT repo)
             from engine.state import ROOT as _ROOT
