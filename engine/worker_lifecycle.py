@@ -62,7 +62,9 @@ def step0_prepare(state: State, task: dict) -> Path:
 def _llm_step(task: dict, step: str, user_payload: str, model: str) -> dict:
     gw = get_gateway()
     system = skill_compiler.compile_system_prompt(task["role"], stack=None, task=task)
-    return gw.complete_json(system=system, user=user_payload, step=step, model=model)
+    # priorytet zadania leci też do kolejki LLM (P0/P1 nie czekają za P3)
+    return gw.complete_json(system=system, user=user_payload, step=step, model=model,
+                            priority=task.get("priority") or "P2")
 
 
 def _ask_sponsor(state: State, task: dict, question: str, options: list | None = None) -> None:

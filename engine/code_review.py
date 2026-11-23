@@ -47,6 +47,7 @@ def review(task_id: str) -> int:
     verdict = gw.complete_json(
         system=system, user=json.dumps(payload, ensure_ascii=False),
         step="CODE_REVIEW", model=skill_compiler.model_for_role("code-reviewer", kind="strong"),
+        priority="P1",  # CR to wąskie gardło linii — nie czeka za P2/P3
     )
 
     # GitHub: werdykt CR jako oficjalny review PR (jeśli task ma PR)

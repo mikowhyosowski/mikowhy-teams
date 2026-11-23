@@ -151,8 +151,10 @@ class LLMGateway:
     def complete(self, *, system: str, user: str, step: str, model: str) -> str:
         raise NotImplementedError
 
-    def complete_json(self, *, system: str, user: str, step: str, model: str) -> dict[str, Any]:
-        raw = self.complete(system=system, user=user, step=step, model=model)
+    def complete_json(self, *, system: str, user: str, step: str, model: str,
+                      priority: str = "P2", timeout_s: int | None = None, **kw) -> dict[str, Any]:
+        raw = self.complete(system=system, user=user, step=step, model=model,
+                            priority=priority, timeout_s=timeout_s)
         try:
             return extract_json(raw)
         except ValueError:
@@ -161,7 +163,7 @@ class LLMGateway:
                 system=system,
                 user=user + "\n\nYour previous answer was not parseable as JSON. "
                             "Return ONLY one compact JSON object — no markdown fences, no comments, no trailing text.",
-                step=step, model=model)
+                step=step, model=model, priority=priority, timeout_s=timeout_s)
             try:
                 return extract_json(raw)
             except ValueError as exc:
@@ -231,9 +233,10 @@ class VibeCliGateway(LLMGateway):
                 return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                       timeout=self.timeout + 60, env=clean_env)
 
-    def complete(self, *, system: str, user: str, step: str, model: str, _direct: bool = False) -> str:
-        # KOLEJKA LLM: krótkie wywołania (complete) idą przez llm_jobs — wykonuje je
-        # seryjnie dispatcher w ticku orchestratora (rate limit + retry/backoff + lease).
+    def complete(self, *, system: str, user: str, step: str, model: str, _direct: bool = False,
+                 priority: str = "P2", timeout_s: int | None = None, **_kw) -> str:
+        # KOLEJKA LLM: krótkie wywołania (complete) idą przez llm_jobs — wykonuje je seryjnie
+        # dispatcher w OSOBNYM WĄTKU orchestratora (rate limit + retry/backoff + lease + priorytety).
         # Dzięki temu keyring/vibe CLI dotyka tylko jeden proces (koniec rc=3 keyring).
         # _direct=True (używa tego dispatch_once) = wykonaj OD RAZU, bez kolejki — inaczej deadlock.
         s = None
@@ -247,11 +250,14 @@ class VibeCliGateway(LLMGateway):
             queue_on = False
         if queue_on and s is not None and not _direct:
             from engine import llm_queue
+            # v2: per-model timeout joba (fast szybciej failuje -> backoff) + priorytet zadania w kolejce
+            job_timeout = int(timeout_s or llm_queue.model_timeout_s(model))
             jid = llm_queue.enqueue(s, "complete",
-                                    {"system": system, "user": user, "step": step, "model": model},
-                                    requester="gateway", step=step)
-            # wynik/timeout/FAILED lecą dalej (nie łapiemy) — fallback tylko gdy kolejka niedostępna
-            return llm_queue.wait_result(s, jid, timeout=self.timeout + 300)
+                                    {"system": system, "user": user, "step": step, "model": model,
+                                     "timeout_s": job_timeout},
+                                    requester="gateway", step=step, priority=priority)
+            # czekamy aż job przejdzie wszystkie próby w kolejce (DONE/FAILED); timeout z zapasem na backoff
+            return llm_queue.wait_result(s, jid, timeout=job_timeout * llm_queue.MAX_ATTEMPTS + 240)
         alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
         enabled = os.environ.get("VIBE_ENABLED_TOOLS", "__none__")
         attempts = 3 if enabled == "__none__" else 2  # bez tooli: model czasem mimo zakazu próbuje tooli — retry z mocniejszym przypomnieniem

@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from engine import llm_queue
+Q = llm_queue  # alias używany w nowych testach v2
 from engine.state import State
 
 
@@ -85,12 +86,14 @@ def test_gateway_complete_uses_queue(monkeypatch):
     monkeypatch.setattr("engine.state.State", lambda *a, **k: s)
     monkeypatch.setattr(llm_queue, "enabled", lambda st: True)
 
-    def fake_enqueue(st, kind, payload, requester="", step=""):
+    def fake_enqueue(st, kind, payload, requester="", step="", priority="P2"):
         calls["enq"] = payload
+        calls["prio"] = priority
         return "J1"
 
     def fake_wait(st, jid, timeout=0):
         calls["wait"] = jid
+        calls["wait_timeout"] = timeout
         return "wynik-z-kolejki"
 
     monkeypatch.setattr(llm_queue, "enqueue", fake_enqueue)
@@ -99,6 +102,12 @@ def test_gateway_complete_uses_queue(monkeypatch):
     out = g.complete(system="sys", user="usr", step="STEP", model="fast-model")
     assert out == "wynik-z-kolejki"
     assert calls["enq"]["step"] == "STEP" and calls["wait"] == "J1"
+    # v2: per-model timeout w payloadu i priorytet zadania w kolejce
+    assert calls["enq"]["timeout_s"] == llm_queue.model_timeout_s("fast-model") == 120
+    assert calls["prio"] == "P2"
+    assert calls["wait_timeout"] == 120 * llm_queue.MAX_ATTEMPTS + 240
+    out2 = g.complete(system="sys", user="usr", step="STEP2", model="strong-model", priority="P0")
+    assert calls["enq"]["timeout_s"] == 300 and calls["prio"] == "P0"
 
 
 def test_enabled_flag():
@@ -111,3 +120,39 @@ def test_enabled_flag():
         del os.environ["LLM_QUEUE"]
     s.set_kv("llm_queue", 0)
     assert llm_queue.enabled(s) is False
+
+
+# ===== v2: priorytety, dedup, lease, cleanup =====
+
+def test_enqueue_dedup_and_priority_claim():
+    s = _tmp()
+    Q.ensure_table(s)
+    j1 = Q.enqueue(s, "complete", {"a": 1}, step="X", priority="P0")
+    j2 = Q.enqueue(s, "complete", {"a": 1}, step="X", priority="P0")   # duplikat -> ten sam job
+    j3 = Q.enqueue(s, "complete", {"b": 2}, step="Y", priority="P3")
+    assert j1 == j2 and j1 != j3
+    c1 = Q.claim_next(s)
+    assert c1["id"] == j1 and c1["priority"] == "P0"          # P0 pierwszy mimo kolejności
+    c2 = Q.claim_next(s)
+    assert c2["id"] == j3 and c2["priority"] == "P3"           # zajęty lease blokuje re-claim
+    # re-claim tylko po wygaśnięciu lease (crash recovery)
+    s._conn().execute("UPDATE llm_jobs SET lease_until=0 WHERE id=?", (j1,))
+    c3 = Q.claim_next(s)
+    assert c3["id"] == j1 and c3["attempts"] == 2
+
+
+def test_lease_covers_subprocess_timeout():
+    # v2: lease musi być dłuższy niż timeout subprocessu (inaczej re-claim = duplikaty RUNNING)
+    assert Q.LEASE_S >= 360 + 60
+    assert Q.model_timeout_s("fast-model") == 120
+    assert Q.model_timeout_s("strong-model") == 300
+
+
+def test_cleanup_removes_old_done_failed():
+    s = _tmp()
+    Q.ensure_table(s)
+    j = Q.enqueue(s, "complete", {"c": 3}, step="Z")
+    Q.finish(s, j, "ok")
+    s._conn().execute("UPDATE llm_jobs SET done_at=? WHERE id=?", (time.time() - 48 * 3600, j))
+    assert Q.cleanup(s, older_than_s=24 * 3600) == 1
+    assert s._conn().execute("SELECT COUNT(*) FROM llm_jobs WHERE id=?", (j,)).fetchone()[0] == 0

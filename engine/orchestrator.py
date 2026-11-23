@@ -595,10 +595,14 @@ class Orchestrator:
 
     # --- kolejka LLM: dispatcher (jeden proces = serialne wywołania vibe CLI) ---------
     def _dispatch_llm_queue(self) -> None:
-        """Konsumuje llm_jobs — stąd keyring/vibe CLI dotyka tylko orchestrator (koniec rc=3)."""
+        """v2: kolejka LLM jest konsumowana w osobnym wątku (dispatch_loop w run()).
+        Tu zostaje tylko awaryjny dispatch co ~30 ticków, gdyby wątek umarł."""
+        self._tick_n = getattr(self, "_tick_n", 0) + 1
+        if self._tick_n % 30:
+            return
         try:
             from engine import llm_queue
-            llm_queue.dispatch_once(self.state, max_jobs=2)
+            llm_queue.dispatch_once(self.state, max_jobs=1)
         except Exception as e:
             self.state.record_metric("llm_dispatch_error", {"error": repr(e)}, None)
 
@@ -635,6 +639,14 @@ class Orchestrator:
                   f"Kanoniczny runner to usługa: systemctl --user status mikowhy-teams. Wychodzę.", flush=True)
             sys.exit(0)
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
+        # v2 kolejki LLM: dispatcher w OSOBNYM WĄTKU — tick nie blokuje się na czas wywołania LLM
+        # (joby wykonują się seryjnie, keyring dotyka tylko ten proces; flock serializuje z workerami)
+        import threading
+        from engine import llm_queue
+        self._llm_thread = threading.Thread(
+            target=llm_queue.dispatch_loop, args=(self.state,), daemon=True, name="llm-dispatcher")
+        self._llm_thread.start()
+        print("[orchestrator] 🧵 wątek dispatchera kolejki LLM wystartowany", flush=True)
         self._recover_zombies()
         rounds = 2 if once else None  # --once: dwa cykle (worker + CR), potem wyjście
         while True:

@@ -1,5 +1,20 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.2] — 2026-11-23 — kolejka LLM v2: osobny wątek dispatchera, priorytety, dedup, per-model timeout, housekeeping
+- 🧵 **Dispatcher kolejki LLM w osobnym wątku** (`dispatch_loop` startowany w `Orchestrator.run`) — tick orchestratora
+  NIE blokuje się już na czas wywołania LLM (wcześniej cały tick czekał na subprocess `vibe`); w ticku zostaje
+  tylko awaryjny dispatch co 30 cykli
+- 🏷️ **Kolejka priorytetowa**: kolumna `priority` w llm_jobs + indeks claim `(status, delay_until, priority, created_at)`;
+  `claim_next` bierze P0→P3, potem najstarsze. Priorytet zadania leci z workera przez `complete(priority=...)`
+  (CR = P1, OPS-LLM-ROOTCAUSE P0 idzie pierwsze)
+- 🚫 **Deduplikacja jobów** (`dedup_key` = hash payloadu): ten sam payload w QUEUED/RUNNING → jeden job (brak dubli przy retry)
+- ⏱️ **Per-model timeout joba**: fast=120s, strong=300s (payload `timeout_s`, dispatcher ustawia `gw.timeout`);
+  `wait_result` czeka `timeout*MAX_ATTEMPTS+240`. Szybciej failuje → backoff zamiast wiszenia 600s
+- 🔒 **LEASE_S=480 > timeout subprocessu (360s)** — koniec re-claim/duplikatów RUNNING jobów (było 240s → podwójne wykonanie)
+- 🔁 **MAX_ATTEMPTS=3, backoff 4s·2ⁿ** (było 5 prób/8s) — szybciej do FAILED, dalej auto-retry zadania; `wait_result` poll 0.25s
+- 🧹 **Housekeeping**: `cleanup()` usuwa DONE/FAILED starsze niż 24h (co ~12s w dispatch_loop) — baza nie puchnie
+- 🗄️ Migracja tabeli llm_jobs (priority, dedup_key, nowy indeks) przy starcie; testy v2 (dedup, prio claim, lease, cleanup) — 53 passed
+
 ## [2.7.1] — 2026-11-23 — zadania OPS: audyt LLM (P0), dzienny audyt FAILED→READY, nowa rola workload-guardian (People Ops)
 - 🚨 **Zadanie P0 `OPS-LLM-ROOTCAUSE`** (rola `principal-debugger`, READY): zbadanie ostatnich problemów
   z odpowiedziami LLM (llm_queue timeouty 600s w QUEUED/RUNNING, rc=3 keyring, puste/nieJSON odpowiedzi)

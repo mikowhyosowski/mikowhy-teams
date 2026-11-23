@@ -2,19 +2,32 @@
 
 Problem: wiele workerów równolegle odpala `vibe` CLI → współbieżny odczyt keyring/keys
 (rc=3 "Reading API keys from the system keyring") i brak odpowiedzi. Rozwiązanie: kolejka
-z lease + retry/backoff + rate limit; jeden dispatcher (tick orchestratora) wykonuje
-wywołania SERYJNIE — keyring dotyka tylko jeden proces.
+z lease + retry/backoff + rate limit + priorytetami + deduplikacją; dispatcher wykonuje
+wywołania SERYJNIE (keyring dotyka tylko jeden proces naraz — flock w llm_gateway).
+
+ZOPTYMALIZOWANE (v2):
+  - dispatch w OSOBNYM WĄTKU orchestratora (dispatch_loop) — tick nie blokuje się na czas joba LLM
+  - LEASE_S > timeout subprocessu — brak re-claim/duplikatów RUNNING jobów
+  - priorytety jobów (P0..P3) — claim_next bierze najpierw P0 (kolejka priorytetowa)
+  - dedup: ten sam payload (dedup_key) w QUEUED/RUNNING -> jeden job zamiast wielu
+  - per-job timeout_s (fast/strong) — szybciej failuje -> backoff zamiast wiszenia
+  - MAX_ATTEMPTS=3, backoff 4s*2^n — szybciej do FAILED i dalej (worker robi auto-retry zadania)
+  - housekeeping: DONE/FAILED starsze niż 24h są usuwane (mniejsza baza, szybsze zapytania)
+  - indeks claim: (status, delay_until, priority, created_at)
 
 llm_jobs: id, kind(complete|agent), payload(JSON), status(QUEUED|RUNNING|DONE|FAILED),
-attempts, delay_until, lease_until, result, error, requester, step, created_at, done_at.
+attempts, delay_until, lease_until, result, error, requester, step, priority, dedup_key,
+created_at, done_at.
 
 Użycie:
-  llm_queue.enqueue(state, kind="complete", payload={...}, requester="...", step="...") -> job_id
-  llm_queue.wait_result(state, job_id, timeout=600) -> str (result) lub rzuca
-  llm_queue.dispatch_once(state)  — wołane w ticku orchestratora (max_jobs=1, rate limit)
+  llm_queue.enqueue(state, kind="complete", payload={...}, requester="...", step="...", priority="P2") -> job_id
+  llm_queue.wait_result(state, job_id, timeout=...) -> str (result) lub rzuca
+  llm_queue.dispatch_once(state)  — pojedynczy krok dispatchera (max_jobs, rate limit)
+  llm_queue.dispatch_loop(state)  — pętla do osobnego wątku/procesu (orchestrator)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -35,20 +48,62 @@ CREATE TABLE IF NOT EXISTS llm_jobs (
   error       TEXT,
   requester   TEXT,
   step        TEXT,
+  priority    TEXT NOT NULL DEFAULT 'P2',       -- P0..P3 (v2: kolejka priorytetowa)
+  dedup_key   TEXT,                             -- v2: hash payloadu — anty-duplikat
   created_at  REAL NOT NULL,
   done_at     REAL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_jobs_status ON llm_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_jobs_claim ON llm_jobs(status, delay_until, priority, created_at);
 """
 
-MAX_ATTEMPTS = 5
-LEASE_S = 240          # lease na RUNNING job (complete trwa < ~2 min)
-MIN_INTERVAL_S = 0.8   # rate limit: min odstęp między startami kolejnych jobów (cross-process)
-BACKOFF_BASE_S = 8     # backoff: delay = BASE * 2^(attempts-1)
+MAX_ATTEMPTS = 3      # v2: 3 próby z backoffem, potem FAILED (worker robi własny auto-retry zadania)
+LEASE_S = 480         # v2: lease > timeout subprocessu (fast 180s / strong 360s) — bez re-claim duplikatów
+MIN_INTERVAL_S = 0.3  # v2: rate limit między startami (było 0.8)
+BACKOFF_BASE_S = 4    # v2: backoff 4s * 2^(attempts-1) (było 8s)
+CLEANUP_AFTER_S = 24 * 3600  # v2: housekeeping — DONE/FAILED starsze niż 24h
+
+PRIO_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+# per-model timeout joba (v2): fast = szybki model, strong = wolniejszy
+MODEL_TIMEOUT_S = {"fast": 120, "strong": 300}
 
 
 def ensure_table(s: State) -> None:
-    s._conn().executescript(QUEUE_TABLE)
+    # najpierw sama tabela (bez indeksu claim), potem migracja kolumn v2, potem indeksy
+    s._conn().executescript("""
+CREATE TABLE IF NOT EXISTS llm_jobs (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL DEFAULT 'complete',
+  payload     TEXT NOT NULL DEFAULT '{}',
+  status      TEXT NOT NULL DEFAULT 'QUEUED',
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  delay_until REAL NOT NULL DEFAULT 0,
+  lease_until REAL NOT NULL DEFAULT 0,
+  result      TEXT,
+  error       TEXT,
+  requester   TEXT,
+  step        TEXT,
+  priority    TEXT NOT NULL DEFAULT 'P2',
+  dedup_key   TEXT,
+  created_at  REAL NOT NULL,
+  done_at     REAL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_jobs_status ON llm_jobs(status, created_at);
+""")
+    # migracja v2: kolumny priority/dedup_key dla starszych baz
+    cols = {r[1] for r in s._conn().execute("PRAGMA table_info(llm_jobs)")}
+    if "priority" not in cols:
+        try:
+            s._conn().execute("ALTER TABLE llm_jobs ADD COLUMN priority TEXT NOT NULL DEFAULT 'P2'")
+        except Exception:
+            pass
+    if "dedup_key" not in cols:
+        try:
+            s._conn().execute("ALTER TABLE llm_jobs ADD COLUMN dedup_key TEXT")
+        except Exception:
+            pass
+    s._conn().execute("CREATE INDEX IF NOT EXISTS idx_llm_jobs_claim ON llm_jobs(status, delay_until, priority, created_at)")
 
 
 def enabled(s: State | None = None) -> bool:
@@ -63,20 +118,45 @@ def enabled(s: State | None = None) -> bool:
         return True
 
 
-def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", step: str = "") -> str:
+def model_timeout_s(model: str) -> int:
+    """Timeout joba per rodzaj modelu (fast/strong) — v2."""
+    m = (model or "").lower()
+    if "fast" in m or "flash" in m:
+        return MODEL_TIMEOUT_S["fast"]
+    return MODEL_TIMEOUT_S["strong"]
+
+
+def _dedup_key(kind: str, payload: dict[str, Any]) -> str:
+    raw = json.dumps({"k": kind, "p": payload}, ensure_ascii=False, sort_keys=True)
+    return "dd-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", step: str = "",
+            priority: str = "P2") -> str:
+    """Dodaje job do kolejki. v2: dedup — jeśli job z tym samym payloadem już czeka/pracuje,
+    zwraca jego id (zamiast dublować wywołanie LLM)."""
     ensure_table(s)
-    jid = "llmj-" + uuid.uuid4().hex[:12]
     now = time.time()
+    prio = priority if priority in PRIO_ORDER else "P2"
+    dk = _dedup_key(kind, payload)
+    row = s._conn().execute(
+        "SELECT id FROM llm_jobs WHERE dedup_key=? AND status IN ('QUEUED','RUNNING') ORDER BY created_at LIMIT 1",
+        (dk,)).fetchone()
+    if row:
+        s.record_metric("llm_job_dedup", {"job": row[0], "step": step, "requester": requester}, None)
+        return row[0]
+    jid = "llmj-" + uuid.uuid4().hex[:12]
     s._conn().execute(
-        "INSERT INTO llm_jobs(id, kind, payload, status, attempts, delay_until, lease_until, requester, step, created_at) "
-        "VALUES(?,?,?,'QUEUED',0,0,0,?,?,?)",
-        (jid, kind, json.dumps(payload, ensure_ascii=False), requester, step, now))
-    s.record_metric("llm_job_enqueued", {"job": jid, "kind": kind, "step": step, "requester": requester}, None)
+        "INSERT INTO llm_jobs(id, kind, payload, status, attempts, delay_until, lease_until, requester, step, priority, dedup_key, created_at) "
+        "VALUES(?,?,?,'QUEUED',0,0,0,?,?,?,?,?)",
+        (jid, kind, json.dumps(payload, ensure_ascii=False), requester, step, prio, dk, now))
+    s.record_metric("llm_job_enqueued", {"job": jid, "kind": kind, "step": step, "requester": requester, "priority": prio}, None)
     return jid
 
 
 def claim_next(s: State, lease_s: int = LEASE_S) -> dict | None:
-    """Atomowy claim: QUEUED (z delay_until) lub RUNNING z wygasłym lease (crash recovery)."""
+    """Atomowy claim: QUEUED (z delay_until) lub RUNNING z wygasłym lease (crash recovery).
+    v2: kolejka priorytetowa — P0 pierwsze, potem najstarsze."""
     ensure_table(s)
     now = time.time()
     cur = s._conn().execute(
@@ -84,7 +164,9 @@ def claim_next(s: State, lease_s: int = LEASE_S) -> dict | None:
            WHERE id = (SELECT id FROM llm_jobs
                        WHERE (status='QUEUED' AND delay_until<=?)
                           OR (status='RUNNING' AND lease_until<=?)
-                       ORDER BY created_at LIMIT 1)
+                       ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+                                created_at
+                       LIMIT 1)
            RETURNING *""",
         (now + lease_s, now, now))
     row = cur.fetchone()
@@ -116,10 +198,12 @@ def fail(s: State, job_id: str, error: str, max_attempts: int = MAX_ATTEMPTS) ->
         s.record_metric("llm_job_failed", {"job": job_id, "attempts": attempts, "error": error[:200]}, None)
 
 
-def wait_result(s: State, job_id: str, timeout: float = 600.0, poll_s: float = 0.5) -> str:
-    """Czeka na wynik joba (synchronicznie dla wołającego; wykonanie robi dispatcher)."""
+def wait_result(s: State, job_id: str, timeout: float = 900.0, poll_s: float = 0.25) -> str:
+    """Czeka na wynik joba (synchronicznie dla wołającego; wykonanie robi dispatcher).
+    v2: poll 0.25s (było 0.5s) — szybciej reaguje na DONE."""
     ensure_table(s)
     deadline = time.time() + timeout
+    st = "?"
     while time.time() < deadline:
         row = s._conn().execute("SELECT status, result, error, attempts FROM llm_jobs WHERE id=?",
                                 (job_id,)).fetchone()
@@ -134,14 +218,44 @@ def wait_result(s: State, job_id: str, timeout: float = 600.0, poll_s: float = 0
     raise TimeoutError(f"llm job {job_id} timeout {timeout}s (ostatni status: {st})")
 
 
-def dispatch_once(s: State, max_jobs: int = 1, min_interval_s: float = MIN_INTERVAL_S) -> int:
-    """Wykonuje do max_jobs jobów seryjnie z rate limitem. Zwraca ile wykonano.
-    Wołane w ticku orchestratora — stąd tylko TEN proces dotyka keyring/vibe CLI."""
+def cleanup(s: State, older_than_s: float = CLEANUP_AFTER_S) -> int:
+    """v2 housekeeping: usuwa DONE/FAILED starsze niż `older_than_s` — baza nie puchnie."""
     ensure_table(s)
+    cur = s._conn().execute(
+        "DELETE FROM llm_jobs WHERE status IN ('DONE','FAILED') AND done_at < ?",
+        (time.time() - older_than_s,))
+    return cur.rowcount or 0
+
+
+def _run_job(s: State, job: dict) -> None:
+    """Wykonuje pojedynczy job (complete lub agent) z per-job timeoutem."""
     from engine.llm_gateway import get_gateway
+    payload = json.loads(job["payload"] or "{}")
+    gw = get_gateway()
+    # v2: per-job timeout — job szybciej failuje i idzie w backoff zamiast wisieć
+    t_s = int(payload.get("timeout_s") or 0)
+    if t_s and hasattr(gw, "timeout"):
+        gw.timeout = t_s
+    if job["kind"] == "agent":
+        from pathlib import Path
+        proc = gw.agent(system=payload.get("system", ""), user=payload.get("user", ""),
+                        cwd=Path(payload.get("cwd", str(s.db_path.parent.parent))), step=job["step"] or "agent",
+                        model=payload.get("model", "strong-model"))
+        finish(s, job["id"], f"rc={proc.returncode}\n{proc.stdout[-8000:]}")
+    else:
+        # _direct=True: dispatcher wykonuje OD RAZU (bez kolejki — inaczej deadlock)
+        out = gw.complete(system=payload.get("system", ""), user=payload.get("user", ""),
+                          step=job["step"] or payload.get("step", "llm"), model=payload.get("model", "strong-model"),
+                          _direct=True)
+        finish(s, job["id"], out)
+
+
+def dispatch_once(s: State, max_jobs: int = 2, min_interval_s: float = MIN_INTERVAL_S) -> int:
+    """Wykonuje do max_jobs jobów seryjnie z rate limitem. Zwraca ile wykonano.
+    v2: keyring/vibe CLI dotyka tylko ten proces (flock w gateway serializuje)."""
+    ensure_table(s)
     did = 0
     for _ in range(max_jobs):
-        # rate limit cross-process: plik z ts ostatniego startu
         import os
         last_file = s.db_path.parent / "llm_last_start"
         now = time.time()
@@ -159,26 +273,39 @@ def dispatch_once(s: State, max_jobs: int = 1, min_interval_s: float = MIN_INTER
             last_file.write_text(str(time.time()))
         except OSError:
             pass
-        payload = json.loads(job["payload"] or "{}")
         try:
-            gw = get_gateway()
-            if job["kind"] == "agent":
-                from pathlib import Path
-                proc = gw.agent(system=payload.get("system", ""), user=payload.get("user", ""),
-                                cwd=Path(payload.get("cwd", str(s.db_path.parent.parent))), step=job["step"] or "agent",
-                                model=payload.get("model", "strong-model"))
-                finish(s, job["id"], f"rc={proc.returncode}\n{proc.stdout[-8000:]}")
-            else:
-                # _direct=True: dispatcher wykonuje OD RAZU (bez kolejki — inaczej deadlock: kolejka czekałaby sama na siebie)
-                out = gw.complete(system=payload.get("system", ""), user=payload.get("user", ""),
-                                  step=job["step"] or payload.get("step", "llm"), model=payload.get("model", "strong-model"),
-                                  _direct=True)
-                finish(s, job["id"], out)
+            _run_job(s, job)
             did += 1
         except Exception as e:
             fail(s, job["id"], repr(e))
             did += 1
     return did
+
+
+def dispatch_loop(s: State, poll_s: float = 0.3, max_jobs: int = 2) -> None:
+    """v2: pętla dispatchera do OSOBNEGO WĄTKU — tick orchestratora nie czeka na LLM.
+    Co jakiś czas robi housekeeping (cleanup starych jobów)."""
+    ensure_table(s)
+    idle = 0
+    while True:
+        try:
+            did = dispatch_once(s, max_jobs=max_jobs)
+            if did == 0:
+                idle += 1
+                if idle % 40 == 0:  # co ~12s przy poll 0.3s gdy pusto
+                    try:
+                        cleanup(s)
+                    except Exception:
+                        pass
+                time.sleep(poll_s)
+            else:
+                idle = 0
+        except Exception as e:
+            try:
+                s.record_metric("llm_dispatch_error", {"error": repr(e)}, None)
+            except Exception:
+                pass
+            time.sleep(1.0)
 
 
 def stats(s: State) -> dict:
@@ -192,6 +319,6 @@ def stats(s: State) -> dict:
 def recent_jobs(s: State, limit: int = 30) -> list[dict]:
     ensure_table(s)
     rows = s._conn().execute(
-        "SELECT id, kind, status, attempts, step, requester, error, created_at, done_at FROM llm_jobs "
+        "SELECT id, kind, status, attempts, step, requester, priority, error, created_at, done_at FROM llm_jobs "
         "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
