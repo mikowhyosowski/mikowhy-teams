@@ -1,5 +1,11 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.6.3] — 2026-11-23
+- 🔄 Banner „Nowa wersja dashboardu”: karta porównuje `version|last_commit` z /api/state z zapamiętanym w localStorage
+  (`dashVer`) — gdy serwer (proces dashboardu) ma nowszy kod, na górze pojawia się banner „odśwież Ctrl+R”
+  z przyciskiem „🔄 Odśwież teraz” (ustawia dashVer + reload). Przy pierwszym load tylko zapisuje wersję.
+  + sprawdzanie stanu przy powrocie do karty (visibilitychange)
+
 ## [2.6.2] — 2026-11-23
 - 🎉 **Nowa osoba w firmie**: wykrywanie pierwszej świeżej roli (tenure < 10 min, kv seen_roles) → banner nad statystykami
   (awatar + kolor osoby + „Nowa osoba w firmie: …”) + toast (12s, pokazuje się raz) + event `new_hire` w Live feed;

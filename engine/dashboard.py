@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.6.2"
+VERSION = "2.6.3"
 
 
 def _version_info() -> dict:
@@ -275,6 +275,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 .hire-card .ava{font-size:26px}
 #toast{position:fixed;bottom:18px;right:18px;background:#0d2b1a;border:1px solid #3fb950;color:#c9d1d9;padding:12px 18px;border-radius:12px;font-size:13px;z-index:99;opacity:0;transform:translateY(20px);transition:all .3s;pointer-events:none;max-width:340px;box-shadow:0 4px 16px #000a}
 #toast.show{opacity:1;transform:none}
+/* 🔄 banner "nowa wersja dashboardu — odśwież Ctrl+R" */
+#updBanner{position:fixed;top:10px;left:50%;transform:translateX(-50%);background:#3d3000;border:1px solid #d29922;color:#f0b429;padding:10px 18px;border-radius:12px;z-index:100;font-size:13px;display:none;box-shadow:0 4px 16px #000a;animation:pulseIco 1.4s 8}
+#updBanner.show{display:block}
+#updBanner button{margin-left:10px;background:#d29922;color:#000;border:0;border-radius:8px;padding:5px 12px;font-weight:bold;cursor:pointer}
 /* 🎯 Tematy (widok opiekuna) */
 #spDecisions{display:flex;gap:10px;flex-wrap:wrap}
 .dec-card{background:#3d3000;border:1px solid #b08800;border-radius:10px;padding:10px 14px;max-width:400px;cursor:pointer;animation:pulseIco 1.6s 6} /* „odczekaj chwilę”: miga ~10s i przestaje */
@@ -573,6 +577,8 @@ let refreshPaused = false;
 function setPaused(p){ refreshPaused = p; document.getElementById('pause').textContent = p ? '⏸ odświeżanie wstrzymane — piszesz…' : ''; }
 document.addEventListener('focusin', e => { if(e.target && e.target.matches && e.target.matches('textarea,input')) setPaused(true); });
 document.addEventListener('focusout', e => { if(e.target && e.target.matches && e.target.matches('textarea,input')) { setPaused(false); refresh(); } });
+// powrót do karty = od razu sprawdź stan (i ew. nową wersję)
+document.addEventListener('visibilitychange', () => { if(!document.hidden && autoRefreshOn && !refreshPaused) refresh(); });
 async function refresh(){ if(refreshPaused) return; try{ await refreshInner(); }catch(e){ document.getElementById('ts').textContent = '⚠ błąd odświeżania: '+e; } }
 async function refreshInner(){
   const r = await fetch('/api/state'); const d = await r.json();
@@ -606,12 +612,16 @@ async function refreshInner(){
     `<span class="stat-badge ${st.running_long?'warn':''}">🐌 długo biegną (&gt;1h): <b>${st.running_long||0}</b></span>`+
     (d.sys?`<span class="stat-badge" title="load / CPU / RAM laptopa">🖥️ load <b>${d.sys.load1}</b>/${d.sys.cpus} · 🧠 RAM <b>${d.sys.mem_used_pct}%</b> (wolne ${d.sys.mem_avail_gb}GB)</span>`:'')+
     `<span class="sbadge" style="background:#238636;cursor:pointer;font-size:11px;padding:3px 10px" onclick="openMerges()" title="klik = lista ostatnich merge’ów">🔀 mergi 24h: <b>${mg.count_24h||0}</b>${mg.last_ago_s!=null?` · ostatni <b>${fmtDur(mg.last_ago_s)}</b> temu`:''}</span>`;
-  // wersja dashboardu w nagłówku (klik = changelog)
+  // wersja dashboardu w nagłówku (klik = changelog) + wykrywanie NOWEJ wersji po stronie serwera -> banner "odśwież Ctrl+R"
   if(d.version){
     const v = d.version;
     document.getElementById('ver').textContent = `v${v.version} · ${v.last_commit||''} · aktualizacja ${v.age_s!=null?fmtDur(v.age_s)+' temu':'?'}`;
     document.getElementById('ver').title = (v.commit_subject||'') + '\\nklik = changelog';
     lastVersion = v;
+    const curVer = v.version + '|' + (v.last_commit || '');
+    const seenVer = localStorage.getItem('dashVer');
+    if(!seenVer){ localStorage.setItem('dashVer', curVer); }        // pierwszy load — zapamiętaj bez bannera
+    else if(seenVer !== curVer){ showUpdateBanner(v); }               // serwer ma nowszy kod niż ta karta -> odśwież
   }
   // kolorowe filtry projektów — GLOBALNE (nad zakładkami), render tylko gdy zmieni się lista projektów (cache)
   const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)') && !hiddenSts.has(t.status));
@@ -1569,6 +1579,12 @@ let lastState = null;
 let firmaSlowTick = 0;
 function firmaActive(){ return document.getElementById('tab-firma').classList.contains('on'); }
 let autoRefreshOn = true;
+function showUpdateBanner(v){
+  let b = document.getElementById('updBanner');
+  if(!b){ b = document.createElement('div'); b.id = 'updBanner'; document.body.appendChild(b); }
+  b.innerHTML = `🔄 <b>Nowa wersja dashboardu na serwerze:</b> v${esc(v.version)} <span class="muted">(${esc(v.last_commit||'')}${v.commit_subject?' — '+esc(v.commit_subject.slice(0,60)):''})</span> — ta karta ma starą wersję, odśwież <b>Ctrl+R</b> <button onclick="localStorage.setItem('dashVer', '${esc(v.version)}|${esc(v.last_commit||'')}');location.reload()">🔄 Odśwież teraz</button>`;
+  b.classList.add('show');
+}
 function toast(msg){
   let t = document.getElementById('toast');
   if(!t){ t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
