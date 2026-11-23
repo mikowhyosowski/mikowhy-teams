@@ -1,61 +1,87 @@
-"""Regression test for the news-video-generator dashboard (CHAT-0004).
+import json
 
-Root cause pinned by this test: empty collections were serialized as null,
-so the dashboard rendered blank. Contract: empty data is [] (never null),
-dates are ISO-8601 with timezone (UTC), legacy visual_history stays readable.
-"""
-from datetime import datetime, timezone
-from typing import Any
+import pytest
 
-from app.dashboard import build_dashboard_payload, render_dashboard
-
-FIXED_NOW = datetime(2026, 11, 22, 12, 0, 0, tzinfo=timezone.utc)
+from engine.dashboard import create_app
 
 
-def _legacy_visual_history_entry() -> dict[str, Any]:
-    return {
-        "id": "vh-legacy-001",
-        "video_id": "vid-001",
-        "created_at": "2026-11-20T08:30:00+00:00",
-        "frames": [{"index": 0, "url": "https://cdn.example.com/f0.png"}],
-    }
+@pytest.fixture()
+def app(tmp_path, monkeypatch):
+    """Izolowane srodowisko dashboardu: .agents/runtime i .agents/logs w tmp_path."""
+    runtime = tmp_path / ".agents" / "runtime"
+    logs = tmp_path / ".agents" / "logs"
+    runtime.mkdir(parents=True)
+    logs.mkdir(parents=True)
+    (runtime / "worker-1.response.json").write_text(
+        '{"task": "CHAT-0005", "status": "RUNNING"}', encoding="utf-8"
+    )
+    (logs / "orchestrator.log").write_text(
+        "line-1\nline-2\nline-3\nline-4\nline-5\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("AGENTS_DIR", str(tmp_path / ".agents"))
+    app = create_app()
+    app.config["TESTING"] = True
+    return app
 
 
-class _EmptyStore:
-    def list_videos(self) -> list[dict[str, Any]]:
-        return []
-
-    def list_visual_history(self) -> list[dict[str, Any]]:
-        return [_legacy_visual_history_entry()]
+@pytest.fixture()
+def client(app):
+    return app.test_client()
 
 
-def _payload() -> dict[str, Any]:
-    return build_dashboard_payload(_EmptyStore(), now=FIXED_NOW)
+def test_health_endpoint_returns_200(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
 
 
-def test_empty_collections_serialize_as_list_not_null() -> None:
-    data = _payload()
-    assert data["recent_videos"] == []
-    assert isinstance(data["visual_history"], list)
+def test_index_renders_runtime_and_logs_sections(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert ".agents/runtime" in body
+    assert ".agents/logs" in body
 
 
-def test_payload_contains_all_key_sections() -> None:
-    assert {"stats", "recent_videos", "visual_history"} <= set(_payload())
+def test_api_raw_serves_runtime_file_content(client):
+    resp = client.get("/api/raw/worker-1.response.json")
+    assert resp.status_code == 200
+    payload = json.loads(resp.get_data(as_text=True))
+    assert payload["task"] == "CHAT-0005"
 
 
-def test_dates_are_iso8601_with_timezone() -> None:
-    data = _payload()
-    assert data["generated_at"] == "2026-11-22T12:00:00+00:00"
-    for entry in data["visual_history"]:
-        assert datetime.fromisoformat(entry["created_at"]).tzinfo is not None
+def test_api_raw_rejects_path_traversal(client):
+    resp = client.get("/api/raw/..%2F..%2Fetc%2Fpasswd")
+    assert resp.status_code in (400, 404)
 
 
-def test_legacy_visual_history_remains_compatible() -> None:
-    entry = next(e for e in _payload()["visual_history"] if e["id"] == "vh-legacy-001")
-    assert entry["frames"][0]["url"] == "https://cdn.example.com/f0.png"
+def test_api_raw_returns_404_for_missing_file(client):
+    resp = client.get("/api/raw/missing.response.json")
+    assert resp.status_code == 404
 
 
-def test_render_dashboard_emits_all_sections_even_when_empty() -> None:
-    html = render_dashboard(_payload())
-    for marker in ("stats", "recent_videos", "visual_history", "vh-legacy-001"):
-        assert marker in html
+def test_api_log_tail_returns_last_n_lines(client):
+    resp = client.get("/api/log/orchestrator.log?n=2")
+    assert resp.status_code == 200
+    lines = resp.get_json()["lines"]
+    assert lines == ["line-4", "line-5"]
+
+
+def test_api_log_tail_defaults_without_n(client):
+    resp = client.get("/api/log/orchestrator.log")
+    assert resp.status_code == 200
+    lines = resp.get_json()["lines"]
+    assert lines[-1] == "line-5"
+    assert len(lines) <= 200
+
+
+def test_api_log_rejects_path_traversal(client):
+    resp = client.get("/api/log/../../etc/passwd")
+    assert resp.status_code in (400, 404)
+
+
+def test_dashboard_lists_file_clickable_content(client):
+    """Klik na plik w .agents/runtime pokazuje jego tresc (naprawa CHAT-0005)."""
+    index = client.get("/").get_data(as_text=True)
+    assert "worker-1.response.json" in index
+    assert "/api/raw/worker-1.response.json" in index

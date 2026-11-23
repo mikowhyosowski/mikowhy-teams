@@ -153,6 +153,17 @@ def compile_system_prompt(role: str, stack: list[str] | None, task: dict) -> str
         parts.append(f"# Persona: {persona}\n{desc.get(persona, persona)}")
     parts.append("# Zamrożone kontrakty (FROZEN — tylko do odczytu)\n" + json.dumps(load_contracts(), ensure_ascii=False))
     parts.append("# Zadanie (JSON)\n" + json.dumps(_sanitize_task(task), ensure_ascii=False, default=str))
+    parts.append(
+        "# KOMPETENCJE — kiedy PYTAĆ, a kiedy decydować samemu\n"
+        "NIE podejmujesz decyzji produktowych, wizualnych ani biznesowych: kolor, wygląd, layout, UX, "
+        "priorytety biznesowe, nazewnictwo, wybór między równoważnymi opcjami UX — tego NIE zgadujesz. "
+        "Gdy taka decyzja jest konieczna, zwróć signal ASK_SPONSOR: "
+        '{"signal":"ASK_SPONSOR","question":"<konkretne pytanie>","options":["opcja A","opcja B"]} '
+        "(w trybie llm agent-loop: {\"action\":\"ask\",\"question\":\"...\",\"options\":[...]}). "
+        "Sponsor odpowiada komentarzem, Ty kontynuujesz zgodnie z odpowiedzią. "
+        "Decyzje czysto techniczne i implementacyjne (struktura kodu, nazwy zmiennych, kolejność kroków) "
+        "podejmujesz samodzielnie — nie zawracaj nimi głowy Sponsorowi."
+    )
     return "\n\n---\n\n".join(parts)
 
 

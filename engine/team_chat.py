@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import skill_compiler, telegram_gate
+from engine import personas, skill_compiler, telegram_gate
 from engine.llm_gateway import get_gateway
 from engine.state import State
 
@@ -109,6 +109,52 @@ def main() -> int:
     state = State()
     low = text.lower()
 
+    # lock per czat — jedna odpowiedź na raz; druga wiadomość podczas generowania dostaje info
+    import fcntl
+    lock_f = open(ROOT / ".agents" / "logs" / f"team_chat.{chat_id}.lock", "w")
+    try:
+        fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        telegram_gate._call("sendMessage", {"chat_id": chat_id,
+            "text": "🤖 Poprzednia odpowiedź jeszcze się generuje — poczekaj na nią (albo napisz «nowe pytanie»)."})
+        return 0
+
+    # --- tryb LLM: "llm <opis>" -> zadanie wykonywane w 100% przez LLM (vibe z narzędziami) ---
+    if low == "llm" or low.startswith("llm ") or low.startswith("llm\t"):
+        desc = text[3:].strip()
+        if not desc:
+            telegram_gate._call("sendMessage", {"chat_id": chat_id, "text": (
+                "Użycie: `llm <opis zadania>`\n"
+                "Opisz co LLM ma zrobić — zadanie wykona samodzielnie (vibe z włączonymi narzędziami: "
+                "bash, edycja plików), a na końcu sam dopisze raport dla drużyny "
+                "(docs/llm-reports/<zadanie>.md + komentarz w feedzie).").replace("*", "")})
+            return 0
+        from engine import projects as _projects
+        n = state.get_kv("chat_task_seq", 0) + 1
+        state.set_kv("chat_task_seq", n)
+        tid = f"CHAT-{n:04d}"
+        # zadania LLM piszą do fabryki (repo="factory") i mają iść od razu — projekt self ma approval_policy=auto
+        pid = "mikowhy-teams-self" if (p := _projects.AGENTS / "projects" / "mikowhy-teams-self" / "project.json").exists() else _projects.active_project_id()
+        state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
+                            "milestone/chat-ops", project_id=pid)
+        prio = "P0" if any(k in low for k in ("pilne", "pilny", "pilna", "asap", "natychmiast", "od razu")) else "P2"
+        from engine.llm_gateway import make_sponsor_title
+        sponsor_title = make_sponsor_title(desc[:90], desc)
+        state.add_task(tid, milestone="CHAT-OPS", phase=4, title=desc[:90], role="llm-executor",
+                       title_sponsor=sponsor_title,
+                       scope_paths=[], depends_on=[],
+                       acceptance_criteria=(f"Zadanie wykonane w 100% przez LLM; raport dla drużyny w "
+                                            f"docs/llm-reports/{tid}.md; zmiany zacommitowane na branchu feature/{tid.lower()}"),
+                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False, mode="llm",
+                       priority=prio)
+        state.set_kv(f"llm_desc:{tid}", desc)  # pełny opis Sponsora (tytuł jest skrócony do 90 znaków)
+        telegram_gate._call("sendMessage", {"chat_id": chat_id, "text": (
+            f"🤖 Stworzyłem zadanie {tid} w trybie LLM (wykona je sam vibe z narzędziami, "
+            f"projekt: {pid}, status: AWAITING_APPROVAL — wg polityki albo samo pójdzie dalej, albo czeka na klik).\n"
+            f"Opis: {desc[:200]}\nŚledź: `list` / dashboard :8765").replace("*", "")})
+        state.record_metric("team_chat_llm_task", {"task": tid, "desc": desc[:200]}, tid)
+        return 0
+
     # --- akcja: dodaj globalną regułę (sponsor-notes.md — wstrzykiwane do KAŻDEGO promptu) ---
     is_add_rule = (any(k in low for k in ("reguł", "regule", "zasad", "rule", "pamiętaj", "zapamiętaj"))
                    and any(k in low for k in ("dodaj", "add")))
@@ -149,9 +195,11 @@ def main() -> int:
         pid = _projects.active_project_id()
         state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
                             "milestone/chat-ops", project_id=pid)
+        from engine.llm_gateway import make_sponsor_title
         state.add_task(tid, milestone="CHAT-OPS", phase=4, title=title, role=role,
                        scope_paths=[], depends_on=[], acceptance_criteria=acc,
-                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False)
+                       project_id=pid, repo="factory", status="AWAITING_APPROVAL", read_only=False,
+                       title_sponsor=make_sponsor_title(title, text))
         telegram_gate._call("sendMessage", {"chat_id": chat_id,
             "text": (f"✅ Stworzyłem zadanie {tid} (rola: {role}, projekt: {pid}, status: AWAITING_APPROVAL; "
                      f"zgodnie z polityką projektu zadanie albo samo pójdzie dalej, albo poczeka na Twój klik). "
@@ -187,9 +235,10 @@ def main() -> int:
     except Exception as exc:
         answer = f"(nie udało się uzyskać odpowiedzi: {exc!r})"
 
+    p = personas.persona_for_role(role)
     telegram_gate._call("sendMessage", {
         "chat_id": chat_id,
-        "text": f"👤 {role} (model: {model}) odpowiada [{how}]:\n\n{answer}".replace("*", ""),
+        "text": f"👤 {p['name']} — {p['position']} ({p['gender']}, rola: {role}, model: {model}) odpowiada [{how}]:\n\n{answer}".replace("*", ""),
     })
     history.append({"author": "sponsor", "text": text})
     history.append({"author": role, "text": answer[:2000]})
