@@ -197,6 +197,9 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .threadbox .tmsg.done .tt{background:#0e2a1a;border-left:3px solid #3fb950}
  @keyframes pulseB{0%,100%{box-shadow:0 0 0 0 rgba(31,111,235,.35)}50%{box-shadow:0 0 10px 2px rgba(31,111,235,.35)}}
  .nowcard .teraz{font-size:11px;color:#58a6ff;margin-top:2px}
+ .spin{display:inline-block;animation:spin 1.2s linear infinite}
+ @keyframes spin{to{transform:rotate(360deg)}}
+ .subclk{color:#58a6ff;font-size:11px;font-variant-numeric:tabular-nums}
  #ts{color:#8b949e;font-size:11px}
  #detail{position:fixed;top:0;right:-460px;width:440px;height:100%;background:#161b22;border-left:1px solid #30363d;
    padding:14px;overflow-y:auto;transition:right .2s;z-index:10}
@@ -775,7 +778,8 @@ async function refreshInner(){
     `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
      <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
-     <div class="teraz">🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}</div>
+     <div class="teraz"><span class="spin">🌀</span> 🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}
+       <span class="clock subclk" data-subsince="${t.substep_since||0}">${t.substep_since?('⏱ etap ' + fmtDur(Date.now()/1000 - t.substep_since)):''}</span></div>
      ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
      <span class="who">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
@@ -1410,9 +1414,47 @@ function openPerson(nodeId){
     <div class="kv"><b>zadania:</b> ${n.tasks} razem · ${n.merged} zmergowanych ${chips ? ' · ' + chips : ''}</div>
     ${n.description ? `<div class="kv muted" style="font-size:11px">${esc(n.description)}</div>` : ''}
     <div style="margin-top:8px">
-      ${n.role ? `<button class="tbtn" onclick="startThread('${esc(n.role)}')">💬 rozmowa z ${esc(n.name||n.role)}</button> <button class="tbtn" onclick="openDuties('${esc(n.role)}')">📋 obowiązki</button>` : ''}
+      ${n.role ? `<button class="tbtn" onclick="startThread('${esc(n.role)}')">💬 rozmowa z ${esc(n.name||n.role)}</button> <button class="tbtn" onclick="openDuties('${esc(n.role)}')">📋 obowiązki</button> <button class="tbtn" style="border-color:#a371f7;color:#a371f7" onclick="openPersonCfg('${esc(n.role)}','${esc(n.name||n.role)}')">⚙️ ustawienia · 🎓 szkolenia</button>` : ''}
       <button class="tbtn" onclick="closeDetail()">✖ Zamknij</button>
     </div>`;
+}
+// ===== ⚙️ profil pracownika: ustawienia + skille + historia + szkolenie (v2.7.11) =====
+async function openPersonCfg(role, name){
+  curTask = null; curThread = null;
+  document.getElementById('detail').classList.add('open');
+  let d = {skills: []};
+  try { const r = await fetch('/api/role/'+encodeURIComponent(role)+'/skills'); d = await r.json(); } catch(e) {}
+  document.getElementById('detailBody').dataset.key = 'pcfg|' + role + '|' + (d.skills||[]).length;
+  const skills = d.skills || [];
+  const skillRows = skills.length ? skills.map(sk => `
+    <div style="border-bottom:1px solid #21262d;padding:4px 0">
+      <b>🎓 ${esc(sk.name)}</b> <span class="muted" style="font-size:10px">${new Date(sk.ts*1000).toLocaleString()} · źródło: ${esc(sk.source)}</span>
+      ${sk.description ? `<div class="muted" style="font-size:11px">${esc(sk.description.slice(0,300))}</div>` : ''}
+    </div>`).join('')
+    : '<span class="muted">brak dodanych szkoleń — użyj formularza niżej</span>';
+  document.getElementById('detailBody').innerHTML = `
+    <h3>⚙️ Ustawienia: ${esc(name||role)} <span class="muted" style="font-size:12px">rola <code>${esc(role)}</code></span></h3>
+    <div class="kv muted" style="font-size:11px">Plik skilli roli: <code>${esc(d.file||('.agents/skills/roles/'+role+'.md'))}</code> — trafia do promptu każdego zadania tej roli. Historia poniżej = kiedy który skill został nadany.</div>
+    <h2>🎓 Szkolenia — nadane skille (${skills.length})</h2>
+    <div class="histbox" style="max-height:200px">${skillRows}</div>
+    <h2>➕ Dodaj skill (szkolenie)</h2>
+    <div class="kv"><input id="skillName" placeholder="nazwa skilla, np. 'testy E2E w Playwright'" style="width:60%"></div>
+    <div class="kv"><textarea id="skillDesc" placeholder="co dokładnie ma potrafić agent po tym szkoleniu…" style="width:100%;height:70px"></textarea></div>
+    <button class="tbtn" style="background:#238636;border-color:#2ea043;color:#fff" onclick="addSkill('${esc(role)}')">➕ Dodaj skill (szkolenie)</button>
+    <div class="muted" style="font-size:10px;margin-top:4px">Skill dopisuje się do pliku roli i od razu ląduje w promptcie agenta; wpisuje się też do historii (tabela role_skills).</div>
+    <div style="margin-top:8px"><button class="tbtn" onclick="closeDetail()">✖ Zamknij</button></div>`;
+}
+async function addSkill(role){
+  const name = (document.getElementById('skillName').value||'').trim();
+  const description = (document.getElementById('skillDesc').value||'').trim();
+  if(!name || !description){ alert('Podaj nazwę i opis szkolenia.'); return; }
+  const r = await fetch('/api/role/'+encodeURIComponent(role)+'/skill', {method:'POST',
+    body: JSON.stringify({name, description})});
+  const res = await r.json();
+  if(!r.ok){ alert('Błąd: ' + (res.error||r.status)); return; }
+  if(res.findings && res.findings.length){ alert('Ostrzeżenia security scan:\\n' + res.findings.join('\\n')); }
+  openPersonCfg(role, role);
+  refresh();
 }
 // ===== ⚙️ zarządzanie configem hierarchii (override .agents/flow/org.config.json) =====
 async function openOrgCfg(){
@@ -1887,6 +1929,10 @@ setInterval(() => {
   document.querySelectorAll('.clock[data-started]').forEach(el => {
     const s = parseFloat(el.dataset.started); if(s > 0) el.textContent = '⏱ ' + fmtDur(Date.now()/1000 - s);
   });
+  // v2.7.11: licznik bieżącego mikro-etapu („teraz: …”) tyka co sekundę
+  document.querySelectorAll('.subclk[data-subsince]').forEach(el => {
+    const s = parseFloat(el.dataset.subsince); if(s > 0) el.textContent = '⏱ etap ' + fmtDur(Date.now()/1000 - s);
+  });
 }, 1000);
 const _view = view; view = function(u){ document.getElementById('viewer').dataset.url = u; return _view(u); };
 </script></body></html>"""
@@ -1982,7 +2028,7 @@ def _snapshot(s: State) -> dict:
 
     tasks = []
     for t in raw:
-        tasks.append({k: t.get(k) for k in ("id", "title", "status", "substep", "retry_count",
+        tasks.append({k: t.get(k) for k in ("id", "title", "status", "substep", "substep_since", "retry_count",
                                              "role", "project_id", "branch", "updated_at", "read_only",
                                              "mode", "parent_task", "started_at", "claimed_by", "priority",
                                              "review_notes", "created_at", "title_sponsor")})
@@ -2335,6 +2381,19 @@ class Handler(BaseHTTPRequestHandler):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
+        elif u.path.startswith("/api/role/") and u.path.endswith("/skills"):
+            # v2.7.11: skille roli + historia (profil pracownika)
+            role = u.path.split("/")[3]
+            s = State()
+            from engine import skill_compiler, personas
+            f = skill_compiler.SKILLS / "roles" / f"{role}.md"
+            return self._send(200, json.dumps({
+                "role": role,
+                "persona": personas.persona_label(role),
+                "file": str(f.relative_to(skill_compiler.ROOT)) if f.exists() else None,
+                "file_exists": f.exists(),
+                "skills": s.list_role_skills(role),
+            }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
         elif u.path.startswith("/api/attachment/") and u.path.endswith("/raw"):
             # v2.7.10: serwowanie załącznika zadania (bezpiecznie: tylko pliki wewnątrz ROOT repo)
             from engine.state import ROOT as _ROOT
@@ -2501,6 +2560,29 @@ class Handler(BaseHTTPRequestHandler):
             from engine.flow import org as orgmod
             removed = orgmod.reset_override()
             self._send(200, json.dumps({"ok": True, "removed": removed}).encode(), "application/json")
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "skill":
+            # v2.7.11: szkolenie — dodaj skill do roli (plik roli + historia role_skills)
+            import re as _re
+            from engine import skill_compiler
+            role = parts[2]
+            name = str(body.get("name") or "").strip()[:120]
+            description = str(body.get("description") or "").strip()[:4000]
+            if not name or not description:
+                self._send(400, '{"error":"name i description wymagane"}'.encode(), "application/json")
+                return
+            f = skill_compiler.SKILLS / "roles" / f"{role}.md"
+            if not f.exists():
+                self._send(400, json.dumps({"error": f"brak pliku roli {role}.md"}).encode(), "application/json")
+                return
+            findings = skill_compiler.security_scan_skill(description)
+            section = (f"\n\n## 🎓 Szkolenie: {name} (dodane {time.strftime('%Y-%m-%d %H:%M')} przez Sponsora)\n"
+                       f"{description}\n")
+            with open(f, "a", encoding="utf-8") as fh:
+                fh.write(section)
+            sk = State().add_role_skill(role, name, description, source="sponsor/dashboard")
+            self._send(200, json.dumps({"ok": True, "skill": sk, "findings": findings},
+                                        ensure_ascii=False, default=str).encode(), "application/json")
             return
         if len(parts) == 4 and parts[:2] == ["api", "approval"]:
             # v2.7.10: zgoda/odrzucenie DEPLOY_PROD (i innych approvals) z dashboardu

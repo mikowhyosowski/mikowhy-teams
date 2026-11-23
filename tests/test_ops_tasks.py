@@ -269,3 +269,49 @@ def test_flow_merge_action():
         assert False, "merge z READY powinien rzucić"
     except ValueError:
         pass
+
+
+def test_substep_since_timer():
+    """v2.7.11: zmiana sub-etapu ustawia substep_since (live timer na kafelku 'teraz: …')."""
+    s = _tmp_state()
+    s.add_task("T-S", "FACTORY-OPS", 9, "timer", "backend-dev", status="READY")
+    s.claim_task("T-S", "w1")
+    s.transition("T-S", "RUNNING", substep="1/5_PLAN")
+    t1 = s.get_task("T-S")
+    assert t1["substep_since"] > 0
+    import time as _t
+    _t.sleep(0.05)
+    s.transition("T-S", "RUNNING", substep="2/5_IMPL")
+    t2 = s.get_task("T-S")
+    assert t2["substep"] == "2/5_IMPL" and t2["substep_since"] >= t1["substep_since"]
+    # ten sam substep drugi raz -> bez zmiany czasu
+    s.transition("T-S", "RUNNING", substep="2/5_IMPL")
+    assert s.get_task("T-S")["substep_since"] == t2["substep_since"]
+
+
+def test_role_skills_history():
+    """v2.7.11: szkolenie — add_role_skill ląduje w historii roli (ts, source), lista sortowana od najnowszego."""
+    s = _tmp_state()
+    a = s.add_role_skill("backend-dev", "testy E2E", "Playwright: smoki + pełne flow", source="sponsor/dashboard")
+    b = s.add_role_skill("backend-dev", "SQL tuning", "indeksy, EXPLAIN", source="sponsor")
+    lst = s.list_role_skills("backend-dev")
+    assert [x["name"] for x in lst] == [b["name"], a["name"]]  # najnowszy pierwszy
+    assert lst[0]["ts"] >= lst[1]["ts"]
+    import json as _json
+    rows = s._conn().execute("SELECT payload FROM metrics WHERE kind='skill_granted'").fetchall()
+    assert len(rows) == 2 and _json.loads(rows[0][0])["role"] == "backend-dev"
+
+
+def test_substep_since_on_claim_even_if_same_substep():
+    """v2.7.11: przejęcie do RUNNING (nawet przy kontynuacji tego samego sub-etapu) startuje timer."""
+    s = _tmp_state()
+    s.add_task("T-S2", "FACTORY-OPS", 9, "timer2", "backend-dev", status="READY")
+    s.claim_task("T-S2", "w1")
+    s.transition("T-S2", "RUNNING", substep="2/5_IMPL")   # claim -> RUNNING: timer start
+    t1 = s.get_task("T-S2")
+    assert t1["substep_since"] > 0
+    s.transition("T-S2", "READY")                            # wraca do kolejki (substep zostaje)
+    s.claim_task("T-S2", "w1")
+    s.transition("T-S2", "RUNNING", substep="2/5_IMPL")      # kontynuacja tego samego etapu: timer też startuje
+    t2 = s.get_task("T-S2")
+    assert t2["substep_since"] >= t1["substep_since"]

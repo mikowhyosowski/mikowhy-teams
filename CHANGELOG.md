@@ -1,5 +1,14 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.11] — 2026-11-23 — live timer mikro-etapu na kafelku „teraz: …” + profil pracownika: skille, historia, szkolenie
+- ⏱️ `tasks.substep_since`: ustawiany przy przejęciu (`claim_task`) i każdej zmianie sub-etapu (`transition`) —
+  na kafelku „🔥 Teraz pracują” obok `🎯 teraz: <etap>` kręci się 🌀 spinner + `⏱ etap mm:ss` tyczący co sekundę (JS `subclk`)
+- 🎓 Profil pracownika (klik w osobę w „Struktura” → **⚙️ ustawienia · 🎓 szkolenia**): lista nadanych skilli + historia
+  (kiedy, skąd) + formularz **➕ Dodaj skill (szkolenie)** — opis dopisuje się do `.agents/skills/roles/<role>.md`
+  (czyli od razu leci do promptu agenta) i do tabeli `role_skills`; security scan (`security_scan_skill`) przed zapisem
+- 🔌 API: `GET /api/role/<role>/skills`, `POST /api/role/<role>/skill` {name, description}; metryka `skill_granted`
+- ✅ testy: `test_substep_since_timer`, `test_substep_since_on_claim_even_if_same_substep`, `test_role_skills_history` — 69 passed
+
 ## [2.7.10] — 2026-11-23 — załączniki/rezultaty zadania (klikalne) + przycisk 🚀 Wdróż (merge) i Deploy → PROD
 - 📎 `task_attachments` + `State.add_attachment/list_attachments/get_attachment`: każdy rezultat (plan, plik, screenshot, JSON)
   dopina się do zadania; `add_comment` AUTO-wykrywa ścieżki plików w komentarzu (`.md/.png/.json/...`) i sam je dopina (dedup po task+path, tylko pliki wewnątrz ROOT)

@@ -196,6 +196,16 @@ CREATE TABLE IF NOT EXISTS task_attachments (
   ts       REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_att_task ON task_attachments(task_id);
+-- v2.7.11: skille nadane roli (szkolenia) + historia (kiedy, skąd) — profil pracownika w dashboardzie
+CREATE TABLE IF NOT EXISTS role_skills (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  role     TEXT NOT NULL,
+  name     TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  source   TEXT NOT NULL DEFAULT 'sponsor',
+  ts       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_role_skills ON role_skills(role, ts);
 """
 
 
@@ -230,6 +240,7 @@ class State:
                 ("tasks", "read_only", "INTEGER NOT NULL DEFAULT 0"),  # zadanie nic nie commituje (audyt/decyzja/plan)
                 ("tasks", "mode", "TEXT DEFAULT 'pipeline'"),  # 'pipeline' (domyślny) | 'llm' — wykonuje sam LLM (vibe z narzędziami)
                 ("tasks", "started_at", "REAL"),  # kiedy worker przejął zadanie (do liczenia czasu pracy)
+                ("tasks", "substep_since", "REAL NOT NULL DEFAULT 0"),  # v2.7.11: kiedy zaczął się bieżący sub-etap (live timer na kafelku)
                 ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
                 ("tasks", "title_sponsor", "TEXT"),  # tytuł wyświetlany Sponsorowi — krótko, prostymi słowami
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
@@ -440,10 +451,10 @@ class State:
         """Atomowe przejęcie: tylko jeśli status nadal READY lub CHANGES_REQUESTED (ACID, bez fcntl)."""
         now = time.time()
         cur = self._conn().execute(
-            """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?, started_at=?
+            """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?, started_at=?, substep_since=?
                WHERE id=? AND status IN ('READY','CHANGES_REQUESTED')
                RETURNING *""",
-            (claimed_by, now, now, task_id),
+            (claimed_by, now, now, now, task_id),  # v2.7.11: przejęcie = start timera bieżącego etapu
         )
         row = cur.fetchone()
         if row:
@@ -469,6 +480,10 @@ class State:
             params.append(value)
         params.append(task_id)
         self._conn().execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", params)
+        # v2.7.11: zmiana sub-etapu = start nowego mikro-etapu (timer „teraz: …” na kafelku);
+        # przejęcie do RUNNING też startuje timer (nawet gdy sub-etap się nie zmienił — kontynuacja)
+        if ("substep" in fields and str(task.get("substep")) != str(fields["substep"])) or (new_status == RUNNING and current != RUNNING):
+            self._conn().execute("UPDATE tasks SET substep_since=? WHERE id=?", (time.time(), task_id))
         # historia zmian / live feed: CO się zmieniło (pole: stare → nowe) + KTO (imię nazwisko rola)
         from engine import personas as _p
         changes: dict[str, str] = {}
@@ -667,6 +682,21 @@ class State:
         r = self._conn().execute(
             "SELECT id, task_id, path, label, kind, size, ts FROM task_attachments WHERE id=?", (att_id,)).fetchone()
         return dict(r) if r else None
+
+    # --- skille roli (szkolenia) — v2.7.11 --------------------------------------
+    def add_role_skill(self, role: str, name: str, description: str = "", source: str = "sponsor") -> dict:
+        cur = self._conn().execute(
+            "INSERT INTO role_skills(role, name, description, source, ts) VALUES(?,?,?,?,?)",
+            (role, name, description, source, time.time()))
+        self.record_metric("skill_granted", {"role": role, "skill": name, "source": source}, None)
+        return {"id": cur.lastrowid, "role": role, "name": name, "description": description,
+                "source": source, "ts": time.time()}
+
+    def list_role_skills(self, role: str) -> list[dict]:
+        rows = self._conn().execute(
+            "SELECT id, role, name, description, source, ts FROM role_skills WHERE role=? ORDER BY ts DESC",
+            (role,)).fetchall()
+        return [dict(r) for r in rows]
 
     def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
         q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"
