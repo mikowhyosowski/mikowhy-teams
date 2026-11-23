@@ -1,5 +1,17 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.6.5] — 2026-11-23
+- 🏗️ Zakładka 🌊 Flow ma teraz **dwa pod-widoki** (przełącznik, stan w localStorage + hash `fv=org`): ⚙️ **Flow pracy** (bez zmian)
+  i 🏗️ **Flow stanowisk** — org chart hierarchii zespołu: kto jest czyim szefem (`reports_to`), każda rola = osoba (persona: imię,
+  stanowisko, ikona, kolor) z żywymi danymi (bieżące zadanie RUNNING, liczniki per status, kropka zielona = pracuje teraz)
+- 🌳 Hierarchia w configie `engine/flow/default_org.json` + override `.agents/flow/org.config.json` (deep-merge jak flow);
+  root = 👑 Sponsor (human), dalej tech-lead-planner → solutions-architect → backend-dev/frontend-dev/sre-deployer → health-monitor,
+  tech-lead-planner → code-reviewer/principal-debugger/systems-auditor, product-owner → ideation-challenger, security-auditor → sponsor
+- ✅ Walidacja hierarchii (`engine/flow/org.py`): dokładnie jeden root, brak cykli, `reports_to` istnieje, role znane w rejestrze,
+  węzły dosięgalne z root; zły override blokowany przy zapisie
+- 🔌 API: GET `/api/org`, GET+POST `/api/org/config`, POST `/api/org/config/reset`; edytor JSON hierarchii w UI (jak flow);
+  klik osoba = karta pracownika (szef, podwładni, bieżące zadanie, 💬 wątek, 📋 obowiązki); testy `tests/test_org.py` (7)
+
 ## [2.6.4] — 2026-11-23
 - 🐛 FIX deadlock kolejki LLM: dispatch_once wołał gw.complete, która sama enqueue'owała do kolejki i czekała
   sama na siebie. Teraz dispatcher woła `gw.complete(..., _direct=True)` — wykonuje od razu, bez kolejki

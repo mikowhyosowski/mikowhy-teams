@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "meta": {
+    "name": "Dark Factory — flow stanowisk (hierarchia zespołu)",
+    "lang": "pl",
+    "description": "Drzewo stanowisk: kto jest czyim szefem (reports_to). Każdy węzeł to albo rola agenta (kind=agent — osoba = persona z engine/personas.py, dane z żyjących zadań) albo człowiek (kind=human, np. Sponsor jako root). Edytuj ten plik (lub override w .agents/flow/org.config.json), aby zmienić hierarchię, tytuły stanowisk i wygląd. Walidacja pilnuje: dokładnie jeden root (reports_to=null), brak cykli, reports_to wskazuje na istniejący węzeł, role muszą istnieć w rejestrze (.agents/registry.json)."
+  },
+  "layout": {
+    "direction": "top-down",
+    "nodeW": 196,
+    "nodeH": 92,
+    "hGap": 20,
+    "vGap": 70,
+    "pad": 18
+  },
+  "theme": {
+    "bg": "#0b0f14",
+    "nodeBg": "#161b22",
+    "nodeStroke": "#30363d",
+    "rootBg": "#1c2333",
+    "rootStroke": "#b08800",
+    "humanBg": "#1c2333",
+    "humanStroke": "#b08800",
+    "line": "#484f58",
+    "name": "#c9d1d9",
+    "role": "#8b949e",
+    "muted": "#8b949e",
+    "busy": "#3fb950",
+    "idle": "#6e7681",
+    "stats": "#58a6ff"
+  },
+  "nodes": [
+    {
+      "id": "sponsor",
+      "kind": "human",
+      "label": "Sponsor",
+      "icon": "👑",
+      "title": "CEO / właściciel fabryki",
+      "reports_to": null,
+      "description": "Człowiek — decyduje o kierunku, akceptuje/odrzuca przez flow pracy. Ma bezpośredni tor decyzji w diagramie flow."
+    },
+    {
+      "id": "tech-lead-planner",
+      "kind": "agent",
+      "role": "tech-lead-planner",
+      "label": "Tech Lead",
+      "icon": "🧭",
+      "title": "Head of Engineering",
+      "reports_to": "sponsor",
+      "description": "Szef działu technicznego: planuje, dekomponuje zadania na podzadania, ustawia priorytety."
+    },
+    {
+      "id": "solutions-architect",
+      "kind": "agent",
+      "role": "solutions-architect",
+      "label": "Architekt",
+      "icon": "🏗️",
+      "title": "Solutions Architect",
+      "reports_to": "tech-lead-planner",
+      "description": "Projektuje architekturę i kontrakty (ADR, OpenAPI); nadzoruje implementację devów."
+    },
+    {
+      "id": "backend-dev",
+      "kind": "agent",
+      "role": "backend-dev",
+      "label": "Backend Dev",
+      "icon": "⚙️",
+      "title": "Backend Developer",
+      "reports_to": "solutions-architect",
+      "description": "Implementuje backend (API, logika, baza) zgodnie z kontraktem architekta."
+    },
+    {
+      "id": "frontend-dev",
+      "kind": "agent",
+      "role": "frontend-dev",
+      "label": "Frontend Dev",
+      "icon": "🎨",
+      "title": "Frontend Developer",
+      "reports_to": "solutions-architect",
+      "description": "Implementuje frontend (UI, dashboard, wideo) zgodnie z projektem architekta."
+    },
+    {
+      "id": "sre-deployer",
+      "kind": "agent",
+      "role": "sre-deployer",
+      "label": "SRE / Deploy",
+      "icon": "🚀",
+      "title": "SRE / Deployer",
+      "reports_to": "solutions-architect",
+      "description": "CI/CD, deploy, worktree'y, pipeline — dba żeby kod trafiał na produkcję bezpiecznie."
+    },
+    {
+      "id": "health-monitor",
+      "kind": "agent",
+      "role": "health-monitor",
+      "label": "Health Monitor",
+      "icon": "💚",
+      "title": "Health Monitor",
+      "reports_to": "sre-deployer",
+      "description": "Monitoruje zdrowie fabryki (health-report, procesy, LLM) — podlega SRE."
+    },
+    {
+      "id": "code-reviewer",
+      "kind": "agent",
+      "role": "code-reviewer",
+      "label": "Code Reviewer",
+      "icon": "🔍",
+      "title": "Code Reviewer",
+      "reports_to": "tech-lead-planner",
+      "description": "Niezależny code review przed merge — ostatnia linia jakości."
+    },
+    {
+      "id": "principal-debugger",
+      "kind": "agent",
+      "role": "principal-debugger",
+      "label": "Principal Debugger",
+      "icon": "🐞",
+      "title": "Principal Debugger",
+      "reports_to": "tech-lead-planner",
+      "description": "Diagnozuje najtrudniejsze bugi i awarie (trace, root cause)."
+    },
+    {
+      "id": "systems-auditor",
+      "kind": "agent",
+      "role": "systems-auditor",
+      "label": "Systems Auditor",
+      "icon": "📊",
+      "title": "Systems Auditor",
+      "reports_to": "tech-lead-planner",
+      "description": "Audytuje strukturę repo i procesy — co i jak działa w fabryce."
+    },
+    {
+      "id": "product-owner",
+      "kind": "agent",
+      "role": "product-owner",
+      "label": "Product Owner",
+      "icon": "🎯",
+      "title": "Head of Product",
+      "reports_to": "sponsor",
+      "description": "Szef produktu: wymagania biznesowe, PRD, priorytety z perspektywy użytkownika."
+    },
+    {
+      "id": "ideation-challenger",
+      "kind": "agent",
+      "role": "ideation-challenger",
+      "label": "Ideation Challenger",
+      "icon": "💡",
+      "title": "Ideation Challenger",
+      "reports_to": "product-owner",
+      "description": "Rzuca wyzwanie pomysłom (devil's advocate) — 3 warianty rozwiązania zanim się zdecydujemy."
+    },
+    {
+      "id": "security-auditor",
+      "kind": "agent",
+      "role": "security-auditor",
+      "label": "Security Auditor",
+      "icon": "🛡️",
+      "title": "Security Auditor",
+      "reports_to": "sponsor",
+      "description": "Audyt bezpieczeństwa niezależny od działu tech — raportuje bezpośrednio Sponsorowi."
+    }
+  ]
+}

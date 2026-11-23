@@ -327,6 +327,32 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 #flowCfgBox{width:100%;height:52vh;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit;font-size:11px;border-radius:8px;padding:8px}
 .flowErr{color:#f85149;font-size:11px;white-space:pre-wrap;background:#3d1215;border:1px solid #f85149;border-radius:6px;padding:6px;margin:6px 0}
 .flowOk{color:#3fb950;font-size:11px}
+
+/* 🌊 FLOW — przełącznik pod-zakładek: ⚙️ flow pracy / 🏗️ flow stanowisk */
+.ftabs{display:flex;gap:6px;margin:2px 0 10px;flex-wrap:wrap}
+.ftabs button{background:#161b22;border:1px solid #30363d;color:#8b949e;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;white-space:nowrap}
+.ftabs button.on{background:#1f6feb;color:#fff;border-color:#1f6feb;font-weight:bold}
+.ftabs button:active{transform:scale(.96)}
+#flowWorkView,#flowOrgView{animation:fadeIn .15s}
+/* 🏗️ FLOW STANOWISK — org chart (config-based: engine/flow/default_org.json + override) */
+#orgToolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+#orgToolbar button{background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer}
+#orgToolbar button:hover{border-color:#58a6ff}
+#orgToolbar button.cfg{background:#1f6feb;color:#fff;border-color:#1f6feb;font-weight:bold}
+#orgWrap{width:100%;overflow:auto;border:1px solid #21262d;border-radius:10px;background:#0b0f14}
+#orgSvg{width:100%;min-width:960px;height:auto;display:block}
+#orgSvg .edge{stroke:#484f58;stroke-width:2;fill:none}
+#orgSvg .person{cursor:pointer}
+#orgSvg .person rect.box{fill:#161b22;stroke:#30363d;stroke-width:1.5}
+#orgSvg .person:hover rect.box{stroke:#58a6ff}
+#orgSvg .person.root rect.box{fill:#1c2333;stroke:#b08800}
+#orgSvg .person .av{font-size:20px}
+#orgSvg .person .nm{fill:#c9d1d9;font-size:12px;font-weight:bold}
+#orgSvg .person .rl{fill:#8b949e;font-size:10px}
+#orgSvg .person .st{fill:#58a6ff;font-size:9px}
+#orgSvg .person .dot{fill:#6e7681}
+#orgSvg .person.busy .dot{fill:#3fb950}
+#orgSvg .depthLbl{fill:#8b949e;font-size:10px;font-weight:bold}
 /* widok FIRMA (osiedle z góry) */
  #estateWrap{width:100%;overflow:hidden;border:1px solid #d9c8a9;border-radius:10px}
  #estate{width:100%;height:72vh;display:block;cursor:grab;background:#f3ead8;touch-action:none}
@@ -414,7 +440,13 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 </section>
 <section class="tabpage" id="tab-flow">
-<h2>🌊 Flow — przepływ pracy zespołu <span class="muted">(diagram budowany z configa · klik kafelek = szczegóły zadania · klik ikonka akcji na kafelku = akcja Sponsora · klik nagłówek etapu = opis + wszystkie zadania)</span></h2>
+<h2>🌊 Flow <span class="muted">(dwa widoki: przepływ pracy zespołu oraz hierarchia stanowisk — kto jest czyim szefem)</span></h2>
+<div class="ftabs" id="flowTabs">
+  <button data-fview="work" onclick="showFlowView('work')">⚙️ Flow pracy</button>
+  <button data-fview="org" onclick="showFlowView('org')">🏗️ Flow stanowisk</button>
+</div>
+<div id="flowWorkView">
+<h3>⚙️ Flow pracy <span class="muted">(diagram budowany z configa · klik kafelek = szczegóły zadania · klik ikonka akcji na kafelku = akcja Sponsora · klik nagłówek etapu = opis + wszystkie zadania)</span></h3>
 <div id="flowToolbar">
   <button onclick="renderFlow()">🔄 odśwież diagram</button>
   <button class="cfg" onclick="openFlowCfg()">⚙️ zarządzaj flow (config JSON)</button>
@@ -422,6 +454,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div id="flowStageFilters" title="Filtry etapów flow — klik = ukryj/pokaż etap · dwuklik = SOLO (tylko ten etap)"></div>
 </div>
 <div id="flowWrap"><svg id="flowSvg" preserveAspectRatio="xMidYMin meet"></svg></div>
+</div>
+<div id="flowOrgView" style="display:none">
+<h3>🏗️ Flow stanowisk <span class="muted">(hierarchia zespołu: kto komu podlega · klik osobę = karta pracownika · klik „szef”/„podwładny” = skok po drzewie · dane z configu org)</span></h3>
+<div id="orgToolbar">
+  <button onclick="renderOrg()">🔄 odśwież hierarchię</button>
+  <button class="cfg" onclick="openOrgCfg()">⚙️ zarządzaj hierarchią (config JSON)</button>
+  <span id="orgMeta" class="muted"></span>
+</div>
+<div id="orgWrap"><svg id="orgSvg" preserveAspectRatio="xMidYMin meet"></svg></div>
+</div>
 </section>
 <section class="tabpage" id="tab-team">
 <h2>👥 Zespół <span class="muted">(kto aktualnie nad czym pracuje + krótka historia + staż; 💬 = rozmowa z osobą)</span></h2>
@@ -740,7 +782,7 @@ async function refreshInner(){
   if(curTask) openTask(curTask, true);
   if(curThread) openThread(curThread, true);
   if(document.getElementById('tab-firma').classList.contains('on')) renderFirma();
-  if(document.getElementById('tab-flow').classList.contains('on')) renderFlow();
+  if(document.getElementById('tab-flow').classList.contains('on')){ if(flowView === 'org') renderOrg(); else renderFlow(); }
   if(document.getElementById('tab-sponsor').classList.contains('on')) renderSponsor();
   document.getElementById('runtime').innerHTML = (d.runtime||[]).map(f =>
     `<div><a href="#" onclick="view('/api/raw/'+encodeURIComponent(f.name));return false" style="color:#58a6ff">${esc(f.name)}</a> <span class="muted">${f.size}B, ${f.age}s temu</span></div>`).join('');
@@ -912,7 +954,7 @@ function showTab(name, push){
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   if(push !== false) history.replaceState(null, '', '#'+name+filterParams()); // hash zachowuje filtry przy zmianie zakładki
   if(name === 'firma') renderFirma();
-  if(name === 'flow') renderFlow();
+  if(name === 'flow') showFlowView(flowView, false);
   if(name === 'sponsor') renderSponsor();
 }
 // ===== 🎯 TEMATY — widok opiekuna (milestone'y + decyzje + zgody + backlog) =====
@@ -1188,6 +1230,145 @@ async function resetFlowCfg(){
   if(!confirm('Usunąć override .agents/flow/flow.config.json i wrócić do default_flow.json?')) return;
   await fetch('/api/flow/config/reset', {method:'POST', body:'{}'});
   openFlowCfg(); renderFlow(); refresh();
+}
+// ===== 🌊 FLOW — pod-zakładki: ⚙️ flow pracy / 🏗️ flow stanowisk =====
+let flowView = (function(){ const h = (location.hash||'').match(/(?:^|[?&])fv=([^&]*)/); const v = h ? h[1] : (localStorage.getItem('flowView') || 'work'); return (v === 'org') ? 'org' : 'work'; })();
+function showFlowView(v, push){
+  flowView = (v === 'org') ? 'org' : 'work';
+  localStorage.setItem('flowView', flowView);
+  document.querySelectorAll('#flowTabs button').forEach(b => b.classList.toggle('on', b.dataset.fview === flowView));
+  document.getElementById('flowWorkView').style.display = flowView === 'work' ? '' : 'none';
+  document.getElementById('flowOrgView').style.display = flowView === 'org' ? '' : 'none';
+  if(push !== false) history.replaceState(null, '', '#flow' + filterParams() + (flowView === 'org' ? (filterParams() ? '&' : '?') + 'fv=org' : ''));
+  if(flowView === 'org') renderOrg(); else renderFlow();
+}
+// ===== 🏗️ FLOW STANOWISK: org chart z configa (engine/flow/default_org.json + override) =====
+let lastOrg = null;
+async function renderOrg(){
+  const svg = document.getElementById('orgSvg');
+  let o;
+  try{ const r = await fetch('/api/org'); o = await r.json(); }catch(e){ return; }
+  lastOrg = o;
+  const meta = document.getElementById('orgMeta');
+  if(meta) meta.textContent = `👥 ${o.stats.agents} agentów + ${o.stats.humans} ludzi · max głębokość ${o.stats.depth_max} · pracuje teraz ${o.stats.busy} · ${o.override_active ? 'override AKTYWNY (.agents/flow/org.config.json)' : 'default (engine/flow/default_org.json)'}` + (o.errors && o.errors.length ? ` · ⚠ błędy configu: ${o.errors.length}` : '');
+  const cfg = o.config || {}, L = cfg.layout || {}, T = cfg.theme || {};
+  const nodes = o.nodes || [];
+  const nodeW = L.nodeW || 196, nodeH = L.nodeH || 92, hGap = L.hGap || 20, vGap = L.vGap || 70, pad = L.pad || 18;
+  // poziomy = depth; węzły centrowane per poziom
+  const byDepth = {};
+  for(const n of nodes){ (byDepth[n.depth] = byDepth[n.depth] || []).push(n); }
+  const depths = Object.keys(byDepth).map(Number).sort((a,b)=>a-b);
+  const maxN = Math.max(1, ...depths.map(d => byDepth[d].length));
+  const W = pad*2 + maxN*nodeW + (maxN-1)*hGap;
+  const H = pad*2 + depths.length*nodeH + (depths.length-1)*vGap;
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  const pos = {};
+  for(const d of depths){
+    const row = byDepth[d];
+    const rowW = row.length*nodeW + (row.length-1)*hGap;
+    let x = pad + Math.max(0, (maxN*nodeW + (maxN-1)*hGap - rowW)/2);
+    const y = pad + d*(nodeH + vGap);
+    for(const n of row){ pos[n.id] = {x, y, cx: x + nodeW/2, cy: y + nodeH/2}; x += nodeW + hGap; }
+  }
+  const byId = {}; for(const n of nodes) byId[n.id] = n;
+  let s = '';
+  // etykiety poziomów (głębokości)
+  for(const d of depths){
+    const lbl = d === 0 ? '👑 zarząd' : 'poziom ' + d;
+    s += `<text class="depthLbl" x="4" y="${pos[byDepth[d][0].id].y + 12}">${lbl}</text>`;
+  }
+  // krawędzie szef -> podwładny (łamana: dół szefa -> środek -> góra dziecka)
+  for(const n of nodes){
+    if(!n.reports_to || !pos[n.reports_to]) continue;
+    const p = pos[n.reports_to], c = pos[n.id];
+    const my = (p.y + nodeH + c.y) / 2;
+    s += `<path class="edge" d="M ${p.cx} ${p.y + nodeH} L ${p.cx} ${my} L ${c.cx} ${my} L ${c.cx} ${c.y}"/>`;
+  }
+  // węzły (osoby)
+  for(const n of nodes){
+    const p = pos[n.id]; if(!p) continue;
+    const col = (n.persona && n.persona.color) || (n.kind === 'human' ? '#b08800' : '#8b949e');
+    const root = n.depth === 0;
+    const busy = n.busy ? ' busy' : '';
+    const nm = esc(n.name || n.label);
+    const rl = esc(n.position || n.title || n.role || '');
+    const stLine = n.current
+      ? `🔨 ${esc(n.current.id)} ⏱ ${fmtDur(n.current.elapsed||0)}`
+      : (n.kind === 'agent' ? `${n.tasks} zad · ${n.merged} zmerg.` : (n.title || ''));
+    const boss = n.reports_to && byId[n.reports_to] ? `szef: ${esc(byId[n.reports_to].name || byId[n.reports_to].label)}` : 'root (nikt wyżej)';
+    const kids = (n.reports || []).map(rid => byId[rid] ? byId[rid].name || byId[rid].label : rid);
+    s += `<g class="person${root?' root':''}${busy}" onclick="openPerson('${esc(n.id)}')" transform="translate(${p.x},${p.y})">
+      <rect class="box" width="${nodeW}" height="${nodeH}" rx="10"/>
+      <text class="av" x="12" y="26">${n.icon || '🧑'}</text>
+      <circle class="dot" cx="${nodeW-14}" cy="14" r="5" title="${n.busy ? 'pracuje teraz' : 'wolny/a'}"/>
+      <text class="nm" x="40" y="24" fill="${col}">${nm}</text>
+      <text class="rl" x="12" y="44">${rl.length > 26 ? rl.slice(0,25)+'…' : rl}</text>
+      <text class="st" x="12" y="${nodeH-24}">${esc(stLine).slice(0, 30)}</text>
+      <text class="rl" x="12" y="${nodeH-10}" fill="${T.muted||'#8b949e'}">${esc(boss).slice(0, 34)}${kids.length ? ' · podwładni: ' + esc(kids.join(', ')).slice(0, 40) : ''}</text>
+    </g>`;
+  }
+  svg.innerHTML = s;
+}
+function openPerson(nodeId){
+  const o = lastOrg; if(!o) return;
+  const n = (o.nodes||[]).find(x => x.id === nodeId); if(!n) return;
+  const byId = {}; for(const x of (o.nodes||[])) byId[x.id] = x;
+  curTask = null; curThread = null;
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'person|' + nodeId + '|' + (o.ts || 0);
+  const col = (n.persona && n.persona.color) || '#b08800';
+  const boss = n.reports_to && byId[n.reports_to];
+  const kids = (n.reports || []).map(rid => byId[rid]).filter(Boolean);
+  const chips = Object.entries(n.by_status||{}).sort((a,b)=>b[1]-a[1]).map(([st,c]) =>
+    `<span class="sbadge" style="background:${ST_COLOR[st]||'#6e7681'};font-size:9px;margin:0 3px 2px 0">${esc(st)} ${c}</span>`).join('');
+  const cur = n.current ? `<div class="cur" onclick="closeDetail();openTask('${esc(n.current.id)}')" style="cursor:pointer">🔨 <b>${esc(n.current.id)}</b> ${esc((n.current.title||'').slice(0,80))} <span class="prio prio-${n.current.priority||'P2'}">${n.current.priority||'P2'}</span> <span class="clock" data-started="${n.current.started_at||0}">⏱ ${fmtDur(n.current.elapsed||0)}</span> ${pbadge(n.current.project_id)}</div>` : '<div class="cur muted">— wolny/a (brak bieżącego zadania) —</div>';
+  document.getElementById('detailBody').innerHTML = `
+    <h3>${n.icon||'🧑'} <span style="color:${col}">${esc(n.name||n.label)}</span> <span class="muted" style="font-size:12px">${esc(n.title||'')} · rola: <code>${esc(n.role||'—')}</code></span></h3>
+    ${n.persona && n.persona.backstory ? `<div class="story">„${esc(n.persona.backstory)}”</div>` : ''}
+    <div class="kv"><b>stanowisko:</b> ${esc(n.position||'—')} ${n.persona?('· płeć: ' + esc(n.persona.gender)):''}</div>
+    <div class="kv"><b>szef:</b> ${boss ? `<a href="#" onclick="openPerson('${esc(boss.id)}');return false">${boss.icon||''} ${esc(boss.name||boss.label)}</a> <span class="muted">(${esc(boss.title||boss.role||'')})</span>` : '👑 root — nikt wyżej'}</div>
+    <div class="kv"><b>podwładni (${kids.length}):</b> ${kids.length ? kids.map(k => `<a href="#" onclick="openPerson('${esc(k.id)}');return false">${k.icon||''} ${esc(k.name||k.label)}</a>`).join(' · ') : '<span class="muted">brak (liść drzewa)</span>'}</div>
+    <div class="kv"><b>bieżące:</b></div>${cur}
+    <div class="kv"><b>zadania:</b> ${n.tasks} razem · ${n.merged} zmergowanych ${chips ? ' · ' + chips : ''}</div>
+    ${n.description ? `<div class="kv muted" style="font-size:11px">${esc(n.description)}</div>` : ''}
+    <div style="margin-top:8px">
+      ${n.role ? `<button class="tbtn" onclick="startThread('${esc(n.role)}')">💬 rozmowa z ${esc(n.name||n.role)}</button> <button class="tbtn" onclick="openDuties('${esc(n.role)}')">📋 obowiązki</button>` : ''}
+      <button class="tbtn" onclick="closeDetail()">✖ Zamknij</button>
+    </div>`;
+}
+// ===== ⚙️ zarządzanie configem hierarchii (override .agents/flow/org.config.json) =====
+async function openOrgCfg(){
+  curTask = null; curThread = null;
+  let c;
+  try{ const r = await fetch('/api/org/config'); c = await r.json(); }catch(e){ alert('❌ ' + e); return; }
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'orgcfg';
+  const src = (c.override_raw != null) ? c.override_raw : c.default_raw;
+  const errs = c.errors || [];
+  document.getElementById('detailBody').innerHTML = '<h3>⚙️ Config hierarchii stanowisk (JSON)</h3>' +
+    '<div class="kv muted" style="font-size:11px">Edytuj <b>nodes</b>: każdy węzeł ma <b>id</b>, <b>kind</b> (agent|human), dla agenta <b>role</b> (musi istnieć w rejestrze), <b>reports_to</b> = id szefa (null tylko dla jednego root). Walidacja pilnuje: jeden root, brak cykli, reports_to istnieje, węzły dosięgalne z root. Zapis tworzy override <b>.agents/flow/org.config.json</b> (deep-merge z default; lista nodes zastępuje).</div>' +
+    '<div class="kv">stan: ' + (c.override_active ? 'override <b>AKTYWNY</b>' : 'default (engine/flow/default_org.json)') + ' · błędy bieżącego configu: <b style="color:' + (errs.length?'#f85149':'#3fb950') + '">' + errs.length + '</b></div>' +
+    (errs.length ? '<div class="flowErr">' + esc(errs.join('\\n')) + '</div>' : '') +
+    '<textarea id="flowCfgBox" spellcheck="false">' + esc(src) + '</textarea>' +
+    '<div><button class="ok" onclick="saveOrgCfg()">💾 Zapisz override</button> ' +
+    '<button onclick="resetOrgCfg()">🗑️ Reset do defaultu</button> ' +
+    '<button onclick="closeDetail()">✖ Zamknij</button></div>' +
+    '<div id="flowCfgMsg"></div>';
+}
+async function saveOrgCfg(){
+  const el = document.getElementById('flowCfgBox'); if(!el) return;
+  const msg = document.getElementById('flowCfgMsg');
+  try{
+    const r = await fetch('/api/org/config', {method:'POST', body: JSON.stringify({config: el.value})});
+    const j = await r.json();
+    if(r.ok && j.ok){ msg.innerHTML = '<div class="flowOk">✅ zapisano override — hierarchia przeładowana</div>'; renderOrg(); refresh(); }
+    else { msg.innerHTML = '<div class="flowErr">❌ odrzucono:\\n' + esc(((j.errors||[j.error||'błąd']).join('\\n'))) + '</div>'; }
+  }catch(e){ msg.innerHTML = '<div class="flowErr">❌ ' + esc(String(e)) + '</div>'; }
+}
+async function resetOrgCfg(){
+  if(!confirm('Usunąć override .agents/flow/org.config.json i wrócić do default_org.json?')) return;
+  await fetch('/api/org/config/reset', {method:'POST', body:'{}'});
+  openOrgCfg(); renderOrg(); refresh();
 }
 // ===== 📋 Obowiązki cykliczne (recurring) per pracownik — priorytet P3 (niżej niż bieżące) =====
 async function openDuties(role){
@@ -1575,6 +1756,10 @@ function initFirmaPanZoom(){
 initFirmaPanZoom();
 window.addEventListener('hashchange', () => { applyHashFilters(); showTab((location.hash.slice(1).split('?')[0])||'overview', false); });
 showTab((location.hash.slice(1).split('?')[0])||'overview', false);
+// inicjalny stan przełącznika pod-zakładek Flow (⚙️ praca / 🏗️ stanowiska) — bez renderowania, samo UI
+document.querySelectorAll('#flowTabs button').forEach(b => b.classList.toggle('on', b.dataset.fview === flowView));
+document.getElementById('flowWorkView').style.display = flowView === 'work' ? '' : 'none';
+document.getElementById('flowOrgView').style.display = flowView === 'org' ? '' : 'none';
 let lastState = null;
 let firmaSlowTick = 0;
 function firmaActive(){ return document.getElementById('tab-firma').classList.contains('on'); }
@@ -2024,6 +2209,24 @@ class Handler(BaseHTTPRequestHandler):
                 "override_active": flowmod.OVERRIDE_CFG.exists(),
                 "errors": flowmod.validate_config(cfg),
             }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path == "/api/org":
+            # ORG: flow stanowisk — hierarchia zespołu (kto jest czyim szefem) z configa + persony + żywe zadania
+            from engine.flow import org as orgmod
+            self._send(200, json.dumps(orgmod.build_org(snapshot(), State()),
+                                       ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
+        elif u.path == "/api/org/config":
+            # ORG: surowy config hierarchii (merged) + override + default + błędy walidacji (do edytora w UI)
+            from engine.flow import org as orgmod
+            cfg = orgmod.load_config()
+            self._send(200, json.dumps({
+                "config": cfg,
+                "default_raw": orgmod.DEFAULT_CFG.read_text(encoding="utf-8"),
+                "override_raw": (orgmod.OVERRIDE_CFG.read_text(encoding="utf-8")
+                                 if orgmod.OVERRIDE_CFG.exists() else None),
+                "override_active": orgmod.OVERRIDE_CFG.exists(),
+                "errors": orgmod.validate_config(cfg),
+            }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
         elif u.path == "/api/llm/jobs":
             # kolejka wywołań LLM (engine/llm_queue) — stats + ostatnie joby
             from engine import llm_queue
@@ -2172,6 +2375,21 @@ class Handler(BaseHTTPRequestHandler):
             # FLOW: usuń override -> powrót do default_flow.json
             from engine.flow import flow as flowmod
             removed = flowmod.reset_override()
+            self._send(200, json.dumps({"ok": True, "removed": removed}).encode(), "application/json")
+            return
+        if u.path == "/api/org/config":
+            # ORG: zapis override configu hierarchii (walidacja; błędy blokują zapis)
+            from engine.flow import org as orgmod
+            errs = orgmod.save_override(body.get("config"))
+            if errs:
+                self._send(400, json.dumps({"ok": False, "errors": errs}).encode(), "application/json")
+            else:
+                self._send(200, json.dumps({"ok": True}).encode(), "application/json")
+            return
+        if u.path == "/api/org/config/reset":
+            # ORG: usuń override -> powrót do default_org.json
+            from engine.flow import org as orgmod
+            removed = orgmod.reset_override()
             self._send(200, json.dumps({"ok": True, "removed": removed}).encode(), "application/json")
             return
         if len(parts) == 4 and parts[:2] == ["api", "task"]:
