@@ -656,6 +656,17 @@ class State:
             if key == ("READY", "RUNNING") and sub:
                 # start pracy od razu z podetapem (np. 1/5_PLAN) = też „w trakcie”, nie „zrobione”
                 tmpl = f"🔄 W TRAKCIE — etap {sub} ({int(substep_progress(sub)*100)}%): 🎯 Cel: {SUBSTEP_CEL.get(sub, 'rozpocząć pracę')} — nad tym teraz pracuję"
+            # v2.7.24: licznik „który raz” — jeśli zadanie już przechodziło TO SAMO przejście,
+            # dopisz do komentarza, że to kolejna pętla (Opiekun od razu widzi powtórki)
+            try:
+                same = self._conn().execute(
+                    "SELECT COUNT(*) FROM metrics WHERE kind='task_event' AND task_id=? "
+                    "AND json_extract(payload,'$.to')=?",
+                    (task_id, new_status)).fetchone()[0]
+                if same > 1:
+                    tmpl += f" — właśnie domykam pętlę (raz {same} w tym zadaniu)"
+            except Exception:
+                pass
             self.add_comment(task_id, by, tmpl)
         except Exception:
             pass
