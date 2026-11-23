@@ -217,6 +217,8 @@ def ensure_pr_for_task(task: dict, base: str) -> int | None:
     pr = pr_for_branch(branch) or open_pr(branch, base, f"[{task['id']}] {task['title']}",
                                           body=(f"Zadanie: {task['id']}\nRola: {task['role']}\n"
                                                 f"AC: {task.get('acceptance_criteria', '')[:500]}"))
+    if isinstance(pr, dict):  # pr_for_branch zwraca pełny obiekt PR — normalizujemy do numeru
+        pr = pr.get("number")
     if pr:
         link_task_pr(task["id"], pr)
     return pr
