@@ -404,6 +404,9 @@ class Orchestrator:
                 else:
                     # gałąź milestonu mogła nie powstać (team_chat) — utwórz z HEAD, inaczej worktree add leci w GitError co tick
                     git_guard.run_git(["branch", base, "HEAD"], cwd=repo, check=False)
+                # v2.7.20: prune + usuń stary worktree integracyjny przed add (inaczej rc=128 co tick)
+                git_guard.run_git(["worktree", "prune"], cwd=repo, check=False)
+                git_guard.remove_worktree("_integration", ns=ns, repo=repo)
                 wt = git_guard.integration_worktree(tmp, repo=repo, ns=f"{ns}/_integration".strip("/"))
                 git_guard.rebase_onto(wt, task["branch"])  # konflikt -> mikro-bot
                 reg = quality_gates.regression(wt)
@@ -456,12 +459,22 @@ class Orchestrator:
         for ms in self.state.list_milestones():
             if ms["status"] != "OPEN" or not self.state.milestone_complete(ms["id"]):
                 continue
+            pid = ms.get("project_id") or "mikowhy-teams"
+            # v2.7.20: projekt read-only nie dostaje worktree/merge — nie miel tego co tick (było 169/h spamu)
+            if projects.project_config(pid).get("read_only"):
+                key = f"ms_skip_ro:{ms['id']}"
+                if not self.state.get_kv(key):
+                    self.state.set_kv(key, time.time())
+                    self.state.record_metric("milestone_skip_readonly", {"milestone": ms["id"]}, ms["id"])
+                continue
             try:
                 self._process_milestone(ms)
             except Exception as e:
-                # Jeden zepsuty mileston NIE może blokować reszty ticka
-                # (telegram/health/approvals leżą za _handle_milestones w tick()).
-                self.state.record_metric("milestone_error", {"error": repr(e)}, task_id=ms["id"])
+                # Jeden zepsuty mileston NIE może blokować reszty ticka; błąd logujemy max raz na 5 min
+                key = f"ms_err:{ms['id']}"
+                if time.time() - float(self.state.get_kv(key, 0) or 0) > 300:
+                    self.state.set_kv(key, time.time())
+                    self.state.record_metric("milestone_error", {"error": repr(e)}, task_id=ms["id"])
                 print(f"[orchestrator] błąd milestonu {ms['id']}: {e!r}", flush=True)
 
     def _process_milestone(self, ms: dict) -> None:
@@ -469,6 +482,9 @@ class Orchestrator:
             repo = Path(projects.project_config(pid)["target_repo_path"]) if pid != "mikowhy-teams" else ROOT
             # mileston mógł powstać bez gałęzi (np. team_chat) — utwórz ją z HEAD, inaczej worktree add leci w GitError co tick
             git_guard.run_git(["branch", ms["branch"], "HEAD"], cwd=repo, check=False)
+            # v2.7.20: wyczyść stary worktree integracyjny (worktree add na istniejący = GitError rc=128 co tick)
+            git_guard.run_git(["worktree", "prune"], cwd=repo, check=False)
+            git_guard.remove_worktree("_integration", ns=pid, repo=repo)
             wt = git_guard.integration_worktree(ms["branch"], repo=repo, ns=f"{pid}/_integration".strip("/"))
             qg3 = quality_gates.qg3_integration_e2e(ms["branch"], wt)  # zmiana #3
             if not qg3["ok"]:

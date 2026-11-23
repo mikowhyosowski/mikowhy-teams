@@ -210,50 +210,79 @@ def claim_batch(s: State, model: str, n: int, lease_s: int = LEASE_S) -> list[di
     return [dict(r) for r in cur.fetchall()]
 
 
+BATCH_MAX_CHARS = 20000  # v4: batch tylko gdy suma promptów < 20k znaków (inaczej pojedynczo — parse safety)
+
+
+def _parse_batch(raw: str, n: int) -> dict[int, str]:
+    """v4: parsowanie odpowiedzi batchowej po separatorach `###ODP-<i>###` (odporne na zagnieżdżony JSON).
+    Zwraca {i: tekst}. Rzuca ValueError przy niepełnej liczbie odpowiedzi."""
+    import re as _re
+    parts = _re.split(r"###ODP-(\d+)###", raw)
+    answers: dict[int, str] = {}
+    for i in range(1, len(parts) - 1, 2):
+        try:
+            idx = int(parts[i])
+        except ValueError:
+            continue
+        answers[idx] = parts[i + 1].strip()
+    if set(answers) != set(range(1, n + 1)):
+        raise ValueError(f"batch answers mismatch: {sorted(answers)} != 1..{n}")
+    return answers
+
+
 def _run_batch(s: State, jobs: list[dict]) -> int:
-    """v3: wykonuje grupę jobów JEDNYM requestem LLM (batch): model dostaje listę pytań
-    {"items": [{step, system, user}...]} i ma zwrócić {"answers": [...]} w tej samej kolejności.
-    Wyniki rozdzielane per job (finish). Błąd parsowania/liczby odpowiedzi -> fail każdego joba
-    osobno (backoff; retrye pójdą pojedynczo)."""
-    from engine.llm_gateway import get_gateway, extract_json
+    """v4: wykonuje grupę jobów JEDNYM requestem LLM (batch), ale odpowiedź w formacie SEPARATOROWYM
+    (`###ODP-1###\\n…\\n###ODP-2###…`), nie JSON — v3 padało na zagnieżdżonym JSON w odpowiedziach
+    (llm_batch_fail ~30%). Przy zbyt dużych promptach (>BATCH_MAX_CHARS) wykonuje joby pojedynczo.
+    Błąd parsowania -> fail każdego joba osobno (backoff; retrye pójdą pojedynczo)."""
+    from engine.llm_gateway import get_gateway
     model = str(jobs[0].get("model") or "strong-model")
     payloads = []
     timeout_s = 0
+    total_chars = 0
     for j in jobs:
         p = json.loads(j["payload"] or "{}")
         payloads.append({"step": j.get("step") or p.get("step") or "", "system": p.get("system", ""),
                          "user": p.get("user", "")})
+        total_chars += len(payloads[-1]["system"]) + len(payloads[-1]["user"])
         try:
             timeout_s = max(timeout_s, int(p.get("timeout_s") or 0))
         except Exception:
             pass
     timeout_s = timeout_s or model_timeout_s(model)
+    if total_chars > BATCH_MAX_CHARS:
+        # za duży batch — pojedynczo (bezpieczniej dla parsera i kontekstu)
+        did = 0
+        for j in jobs:
+            try:
+                _run_job(s, j)
+            except Exception as e:
+                fail(s, j["id"], repr(e))
+            did += 1
+        s.record_metric("llm_batch_skip_big", {"n": len(jobs), "chars": total_chars}, None)
+        return did
     gw = get_gateway()
     if hasattr(gw, "timeout"):
         gw.timeout = timeout_s
     sys_prompt = (
-        "Odpowiadasz na WIELE zapytań naraz (batch — jedna odpowiedź na wszystkie). "
+        "Odpowiadasz na WIELE osobnych zapytań JEDNĄ odpowiedzią (batch). "
         "Dostaniesz JSON: {\"items\": [{\"step\": ..., \"system\": ..., \"user\": ...}, ...]}. "
-        "Każdy item to osobne zadanie z własnym kontekstem (system) i pytaniem (user). "
-        "Zwróć WYŁĄCZNIE jeden JSON: {\"answers\": [\"<pełna odpowiedź na items[0]>\", \"<items[1]>\", ...]} — "
-        "dokładnie tyle odpowiedzi ile items, W TEJ SAMEJ KOLEJNOŚCI. "
-        "Każda odpowiedź to czysty tekst (może zawierać JSON jako tekst) — bez markdown fence'ów na zewnątrz."
+        "Każdy item to osobne zadanie. Odpowiedz WYŁĄCZNIE w formacie separatorowym, bez żadnego innego tekstu:\n"
+        "###ODP-1###\n<pełna odpowiedź na items[0] — czysty tekst, może zawierać JSON jako tekst>\n"
+        "###ODP-2###\n<items[1]>\n... aż do ostatniego. Dokładnie tyle sekcji ile items, w tej samej kolejności."
     )
     user_payload = json.dumps({"items": payloads}, ensure_ascii=False)
     try:
         raw = gw.complete(system=sys_prompt, user=user_payload, step="BATCH×" + str(len(jobs)),
                           model=model, _direct=True)
-        data = extract_json(raw)
-        answers = data.get("answers")
-        if not isinstance(answers, list) or len(answers) != len(jobs):
-            raise ValueError(f"batch answers mismatch: {len(answers) if isinstance(answers, list) else type(answers)} != {len(jobs)}")
+        answers = _parse_batch(raw, len(jobs))
     except Exception as e:
         for j in jobs:
             fail(s, j["id"], f"batch parse error: {e!r}"[:900])
         s.record_metric("llm_batch_fail", {"n": len(jobs), "model": model, "error": repr(e)[:200]}, None)
         return len(jobs)
-    for j, ans in zip(jobs, answers):
-        finish(s, j["id"], str(ans))
+    for i, j in enumerate(jobs, start=1):
+        finish(s, j["id"], answers[i][:20000])
     s.record_metric("llm_batch_done", {"n": len(jobs), "model": model, "step": jobs[0].get("step", "")}, None)
     return len(jobs)
 
@@ -366,6 +395,25 @@ def _busy_model(s: State) -> tuple[str, int] | None:
     return None
 
 
+def _reclaim_expired(s: State) -> int:
+    """v4: RECLAIM wygasłych lease'ów — dispatcher jest seryjny (1 wątek), więc każdy job RUNNING
+    z lease_until <= now to ZAWIESZONY job (crash/stuck dispatchera) i blokuje kolejkę na minuty.
+    Przepychamy go od razu do QUEUED z backoffem (lub FAILED gdy attempts >= MAX)."""
+    ensure_table(s)
+    now = time.time()
+    rows = s._conn().execute(
+        "SELECT id, attempts FROM llm_jobs WHERE status='RUNNING' AND lease_until<=?", (now,)).fetchall()
+    for r in rows:
+        if (r["attempts"] or 0) >= MAX_ATTEMPTS:
+            fail(s, r["id"], "lease expired (dispatcher stuck/crash)", MAX_ATTEMPTS)
+        else:
+            s._conn().execute(
+                "UPDATE llm_jobs SET status='QUEUED', lease_until=0, delay_until=?, error=? WHERE id=?",
+                (now + BACKOFF_BASE_S, "lease expired — reclaim", r["id"]))
+            s.record_metric("llm_lease_reclaim", {"job": r["id"], "attempts": r["attempts"]}, None)
+    return len(rows)
+
+
 def dispatch_once(s: State, max_jobs: int = 4, min_interval_s: float = MIN_INTERVAL_S) -> int:
     """Wykonuje joby seryjnie z rate limitem. Zwraca ile jobów wykonano (batch liczy się jako tyle jobów,
     ile pytań w jednym requeście).
@@ -377,6 +425,7 @@ def dispatch_once(s: State, max_jobs: int = 4, min_interval_s: float = MIN_INTER
         batch_size = max(BATCH_MIN, int(s.get_kv("llm_batch_size", BATCH_DEFAULT) or BATCH_DEFAULT))
     except Exception:
         batch_size = BATCH_DEFAULT
+    _reclaim_expired(s)  # v4: najpierw odzyskaj zawieszone joby (lease wygasły), potem normalny dispatch
     did = 0
     while did < max_jobs:
         _rate_limit(s, min_interval_s)

@@ -105,7 +105,8 @@ def test_gateway_complete_uses_queue(monkeypatch):
     # v2: per-model timeout w payloadu i priorytet zadania w kolejce
     assert calls["enq"]["timeout_s"] == llm_queue.model_timeout_s("fast-model") == 120
     assert calls["prio"] == "P2"
-    assert calls["wait_timeout"] == 120 * llm_queue.MAX_ATTEMPTS + 240
+    # v4: cap timeoutu — min(stary wzór, 2 próby + 120s), żeby worker nie wisiał 19 min
+    assert calls["wait_timeout"] == min(120 * llm_queue.MAX_ATTEMPTS + 240, 120 * 2 + 120)
     out2 = g.complete(system="sys", user="usr", step="STEP2", model="strong-model", priority="P0")
     assert calls["enq"]["timeout_s"] == 300 and calls["prio"] == "P0"
 
@@ -209,7 +210,8 @@ def test_run_batch_one_request_many_answers(monkeypatch):
             calls["model"] = model
             import json as _json
             items = _json.loads(user)["items"]
-            return _json.dumps({"answers": [f"odp-na-{it['user']}" for it in items]})
+            # v4: format separatorowy (nie JSON answers — ten padał na zagnieżdżonym JSON)
+            return "".join(f"###ODP-{i+1}###\nodp-na-{it['user']}\n" for i, it in enumerate(items))
 
     monkeypatch.setattr(gwmod, "get_gateway", lambda: FakeGw())
     did = Q._run_batch(s, claimed)
@@ -239,3 +241,38 @@ def test_run_batch_mismatch_fails_jobs(monkeypatch):
     for j in claimed:
         row = s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j["id"],)).fetchone()
         assert row["status"] == "QUEUED"  # fail -> backoff -> retry pojedynczo
+
+
+def test_parse_batch_separators_v4():
+    """v4: batch parse po separatorach ###ODP-i### — odporny na zagnieżdżony JSON w odpowiedziach."""
+    from engine.llm_queue import _parse_batch
+    raw = '###ODP-1###\n{"plan": "x \\"z\\" y"}\n###ODP-2###\nplain answer\n###ODP-3###\n{}\n'
+    a = _parse_batch(raw, 3)
+    assert a[1] == '{"plan": "x \\"z\\" y"}'
+    assert a[2] == 'plain answer'
+    assert a[3] == '{}'
+    # brakująca odpowiedź -> ValueError (fail jobów, retry pojedyncze)
+    try:
+        _parse_batch('###ODP-1###\nonly one\n', 2)
+        assert False
+    except ValueError:
+        pass
+
+
+def test_reclaim_expired_leases():
+    """v4: _reclaim_expired — RUNNING z wygasłym lease wraca do QUEUED (backoff), a po max attempts -> FAILED."""
+    import time as _t
+    s = _tmp()
+    Q.ensure_table(s)
+    j1 = Q.enqueue(s, "complete", {"q": 1, "model": "fast-model", "system": "s", "user": "u"}, step="S")
+    j2 = Q.enqueue(s, "complete", {"q": 2, "model": "fast-model", "system": "s", "user": "u2"}, step="S")
+    # oba jako RUNNING z wygasłym lease
+    s._conn().execute("UPDATE llm_jobs SET status='RUNNING', lease_until=?, attempts=1 WHERE id IN (?,?)",
+                      (_t.time() - 10, j1, j2))
+    s._conn().execute("UPDATE llm_jobs SET attempts=? WHERE id=?", (Q.MAX_ATTEMPTS, j2))
+    n = Q._reclaim_expired(s)
+    assert n == 2
+    r1 = s._conn().execute("SELECT status, lease_until FROM llm_jobs WHERE id=?", (j1,)).fetchone()
+    r2 = s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j2,)).fetchone()
+    assert r1["status"] == "QUEUED" and r1["lease_until"] == 0   # do kolejki z powrotem
+    assert r2["status"] == "FAILED"                               # attempts >= MAX -> FAILED

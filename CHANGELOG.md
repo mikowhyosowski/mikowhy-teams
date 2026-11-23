@@ -1,5 +1,17 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.20] — 2026-11-23 — naprawa kolejki LLM v4 (separatorowy batch + reclaim lease) + koniec spamu milestone_error
+- 🧩 `llm_queue._run_batch` v4: odpowiedź batchowa w formacie SEPARATORÓW `###ODP-i###` zamiast JSON `{"answers":[...]}`
+  (v3 padało ~30% na zagnieżdżonym JSON — root cause timeoutów workerów); batch tylko gdy suma promptów < 20k znaków,
+  inaczej pojedynczo (`llm_batch_skip_big`); `_parse_batch` + test
+- ♻️ `_reclaim_expired`: na starcie każdego `dispatch_once` joby RUNNING z wygasłym lease wracają do QUEUED z backoffem
+  (albo FAILED po max attempts) — dispatcher seryjny nie może być blokowany przez zawieszony job (było 9 wiszących
+  do 64 min, kolejka stała); metryka `llm_lease_reclaim`
+- ⏱️ `wait_result` cap: `min(3×timeout+240, 2×timeout+120)` — worker nie wisi 19 min, szybciej auto-retry zadania
+- 🧹 `milestone_error` spam wyciszony: projekty read-only skipowane raz (`milestone_skip_readonly`), błąd milestonu
+  logowany max raz na 5 min, `git worktree prune` + usunięcie starego `_integration` przed `worktree add` (rc=128 co tick)
+- ✅ testy: `_parse_batch` v4, reclaim lease, batch separator mock — 77 passed
+
 ## [2.7.19] — 2026-11-23 — ETA zadań i raport „za ile będzie” + skill szacowania dla agentów
 - ⏱️ `tasks.eta_s`: heurystyka przy `add_task` (`estimate_eta_s`: baza 5/10 min + 4 min/scope-path, P0 ×0.7, max 4h),
   backfill 95 zadań; `State.set_eta()` do doprecyzowania

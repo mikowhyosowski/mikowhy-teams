@@ -256,8 +256,10 @@ class VibeCliGateway(LLMGateway):
                                     {"system": system, "user": user, "step": step, "model": model,
                                      "timeout_s": job_timeout},
                                     requester="gateway", step=step, priority=priority)
-            # czekamy aż job przejdzie wszystkie próby w kolejce (DONE/FAILED); timeout z zapasem na backoff
-            return llm_queue.wait_result(s, jid, timeout=job_timeout * llm_queue.MAX_ATTEMPTS + 240)
+            # czekamy aż job przejdzie próby w kolejce; v4: krótszy cap (max 2 próby + 120s zapasu) —
+            # przy timeout worker od razu dostaje wyjątek i robi własny auto-retry zadania (nie wisi 19 min)
+            return llm_queue.wait_result(s, jid, timeout=min(job_timeout * llm_queue.MAX_ATTEMPTS + 240,
+                                                             job_timeout * 2 + 120))
         alias = MODEL_ALIASES.get(model, model)  # "fast-model"/"strong-model" -> alias CLI
         enabled = os.environ.get("VIBE_ENABLED_TOOLS", "__none__")
         attempts = 3 if enabled == "__none__" else 2  # bez tooli: model czasem mimo zakazu próbuje tooli — retry z mocniejszym przypomnieniem
