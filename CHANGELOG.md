@@ -1,5 +1,12 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.26] — 2026-11-23 — heartbeat agentów (🟢/💀) + LIVE-001
+- `t_brief`: pola `alive` i `res` (CPU/RSS z /proc) dla RUNNING — kafelk „Teraz pracują": 🟢 żyje / 💀 zombie
+- osoba na karcie zespołu: 💤 przy martwym procesie
+- zadanie LIVE-001 (systems-auditor): analiza „co można ugrać na żywotności agentów" (auto-healing, SLA, predictive timeout)
+
+# CHANGELOG — mikowhy-teams dashboard
+
 ## [2.7.23] — 2026-11-23 — rejestr operacji (ops): wszystko co przechodzi przez kolejki ma spójny status
 - 🧾 `state.ops` — nowa tabela rejestru operacji + API `op_enqueue/op_start/op_done/op_fail/op_requeue` (+ warianty `*_ref`).
   Cykl każdej operacji: `QUEUED` (⏳ czeka na wysłanie) → `RUNNING` (📤 wysłano · w trakcie, próba N) → `DONE` (✅) / `FAILED` (❌);

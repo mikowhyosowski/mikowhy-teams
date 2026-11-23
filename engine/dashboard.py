@@ -837,7 +837,7 @@ async function refreshInner(){
   document.getElementById('team').innerHTML = (d.team||[]).map(m => {
     const col = m.color || '#8b949e';
     const curRes = m.current && m.current.res ? ` <span class="muted" title="pid ${m.current.res.pid}">⚙️${m.current.res.cpu}% 🧠${m.current.res.rss_mb}MB</span>` : '';
-    const cur = m.current ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span>${curRes}</div>` : '<div class="cur muted">— wolny/a —</div>';
+    const cur = m.current ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span>${curRes}${!m.current.res?" 💤":""}</div>` : '<div class="cur muted">— wolny/a —</div>';
     // liczba zadań per status (kolorowe chipsy) zamiast „zadania: X zmergowane: Y”
     const chips = Object.entries(m.by_status||{}).sort((a,b)=>b[1]-a[1]).map(([st,n]) =>
       `<span class="sbadge" style="background:${ST_COLOR[st]||'#6e7681'};font-size:9px;padding:0 6px;margin:0 3px 2px 0" title="${esc(st)}: ${n}">${d.icons[st]||''} ${n}</span>`).join('');
@@ -859,7 +859,7 @@ async function refreshInner(){
        ${th.last?`<div class="muted" style="font-size:11px">${new Date(th.last.ts*1000).toLocaleTimeString()} <b>${esc(th.last.author)}</b>: ${esc((th.last.text||'').slice(0,90))}</div>`:''}
      </div>`).join('') || '<span class="muted">brak wątków — kliknij 💬 przy osobie lub napisz na Telegramie</span>';
   document.getElementById('now').innerHTML = nowCards.length ? nowCards.map(t =>
-    `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
+    `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.alive===false?"💀":(t.alive?"🟢":"❔")} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
      <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
      <div class="teraz"><span class="spin">🌀</span> 🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}
@@ -2439,7 +2439,7 @@ def _sponsor_view(s: State) -> dict:
         by_ms.setdefault(t.get("milestone") or "?", []).append(t)
 
     def t_brief(t: dict) -> dict:
-        return {"id": t["id"], "title": t.get("title") or "", "title_sponsor": t.get("title_sponsor") or "",
+        d = {"id": t["id"], "title": t.get("title") or "", "title_sponsor": t.get("title_sponsor") or "",
                 "status": t["status"], "substep": t.get("substep") or "", "priority": t.get("priority") or "P2",
                 "role": t.get("role") or "", "persona": personas.persona_label(t.get("role") or ""),
                 "project_id": t.get("project_id"), "branch": t.get("branch"),
@@ -2449,6 +2449,11 @@ def _sponsor_view(s: State) -> dict:
                 "scope_paths": t.get("scope_paths") or [], "parent_task": t.get("parent_task"),
                 "age": max(0, now - (t.get("updated_at") or t.get("created_at") or now)),
                 "started_at": t.get("started_at"), "milestone": t.get("milestone")}
+        if t["status"] == "RUNNING":
+            _ps = _proc_stats(t.get("claimed_by"))
+            d["alive"] = _ps is not None
+            d["res"] = _ps
+        return d
 
     milestones = []
     for m in s.list_milestones():

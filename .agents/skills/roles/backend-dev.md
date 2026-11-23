@@ -17,3 +17,4 @@ Krok 3: `{"test_files": {"tests/...": "<kod>"}}`.
 
 ## Zakazy
 - Zakaz edycji contracts/, lockfile, routerów poza scope_paths.
+
