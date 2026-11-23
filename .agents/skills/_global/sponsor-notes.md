@@ -17,3 +17,5 @@
 - [2026-11-23 01:01] ami i naszym flow. Niech najpierw wypracuje zasady a pizniej je propaguje dodajac reguly (zaakceprowane w jakims topicu czy rasku. Taki sprzatacz i zarzafca w systemie zadan. Zaproponyj najlepsze rozwiazanie i je wdroz
 
 - [2026-11-23 01:25] Niech audytuje wykonane zadania analizuje co moglo pojsc lepiej i odpoqiednio szkoli agenta - daje mu nauke na przyszlosc. Tworzy pewnie sobie na te potrzeby taska np "zredukowac bledy agenta albo podsunac skille ktore to rozwiaza. Niech dziala w mysl zasady ze jesli idzie cos mauxzyc niech uczy i wyciaga wnioski jezeli jakis wniosek jest globalny agent informuje wszystkich dodajac jakas no regule
+
+- [2026-11-22 23:45] TWARDA REGUŁA: projekty `mikowhy-teams` i `mikowhy-teams-self` są ZŁĄCZONE w jeden — `mikowhy-teams` (approval_policy=auto). Nie twórz już zadań do `mikowhy-teams-self`. Auto-approve (policy=auto) nad fabryką merguje READY_TO_MERGE automatycznie do master (bez milestonu, bez PR, bez ręcznego mergowania) — po rebase na origin/master + regression gates.

@@ -235,17 +235,31 @@ class Orchestrator:
     # --- faza 6: merge do gałęzi milestonu --------------------------------------
     def _handle_merges(self) -> None:
         for task in self.state.list_tasks(status=READY_TO_MERGE):
-            milestone = self.state.get_milestone(task["milestone"])
-            if not milestone:
-                continue
-            base = milestone["branch"]
-            repo = projects.repo_for_task(task, self.state)  # multi-project: fizyczne repo projektu
             ns = task.get("project_id") or "mikowhy-teams"
+            repo = projects.repo_for_task(task, self.state)  # multi-project: fizyczne repo projektu
+            # AUTO-MERGE DO MAIN: projekt z approval_policy=auto nad samym silnikiem (fabryka)
+            # merguje READY_TO_MERGE od razu do default branch (master) — bez milestonu i bez ręcznego mergowania
+            auto_main = (projects.approval_policy(ns) == "auto"
+                         and repo.resolve() == projects.ROOT.resolve())
+            if auto_main:
+                base = git_guard.default_branch(repo)       # cel pusha: master
+                # master jest zajęty w głównym worktree — worktree integracyjny stawiamy na temp branchu z origin/master
+                tmp = f"_auto/{task['id']}"
+            else:
+                milestone = self.state.get_milestone(task["milestone"])
+                if not milestone:
+                    continue
+                base = milestone["branch"]
+                tmp = base
             try:
                 git_guard.run_git(["fetch", "origin"], cwd=repo, check=False)
-                # gałąź milestonu mogła nie powstać (team_chat) — utwórz z HEAD, inaczej worktree add leci w GitError co tick
-                git_guard.run_git(["branch", base, "HEAD"], cwd=repo, check=False)
-                wt = git_guard.integration_worktree(base, repo=repo, ns=f"{ns}/_integration".strip("/"))
+                if auto_main:
+                    # wyrównaj temp branch z origin/master przed pushem (twarda reguła sync-z-origin)
+                    git_guard.run_git(["branch", "-f", tmp, f"origin/{base}"], cwd=repo, check=False)
+                else:
+                    # gałąź milestonu mogła nie powstać (team_chat) — utwórz z HEAD, inaczej worktree add leci w GitError co tick
+                    git_guard.run_git(["branch", base, "HEAD"], cwd=repo, check=False)
+                wt = git_guard.integration_worktree(tmp, repo=repo, ns=f"{ns}/_integration".strip("/"))
                 git_guard.rebase_onto(wt, task["branch"])  # konflikt -> mikro-bot
                 reg = quality_gates.regression(wt)
                 if not reg.get("ok"):
@@ -265,16 +279,21 @@ class Orchestrator:
                         self.state.record_metric("squash_empty", {"task": task["id"]}, task["id"])
                 else:
                     git_guard.merge_no_ff(wt, task["branch"], f"Merge {task['id']} into {base}")
-                git_guard.run_git(["push", "origin", base], cwd=wt, check=False)
+                # auto_main: push z detached/temp worktree -> HEAD leci na refs/heads/master
+                push_ref = f"HEAD:refs/heads/{base}" if auto_main else base
+                git_guard.run_git(["push", "origin", push_ref], cwd=wt, check=False)
                 self.state.transition(task["id"], MERGED)
                 self.state.record_metric("merge", {"milestone": task["milestone"]}, task["id"])
                 merged = self.state.get_task(task["id"])
                 if merged:
-                    diff_stat = git_guard.run_git(["diff", "--shortstat", f"{base}~1", base], cwd=wt, check=False).stdout.strip()
+                    stat_ref = f"origin/{base}" if auto_main else base  # po pushu auto_main lokalny ref base się nie ruszył
+                    diff_stat = git_guard.run_git(["diff", "--shortstat", f"{stat_ref}~1", stat_ref], cwd=wt, check=False).stdout.strip()
                     telegram_reporter.close_topic(
                         self.state, merged,
                         summary=f"Zmergowane do `{base}` ({diff_stat or '—'}). Rola: {merged['role']}, retry: {merged['retry_count']}")
                 git_guard.remove_worktree("_integration", ns=ns, repo=repo)
+                if auto_main:
+                    git_guard.run_git(["branch", "-D", tmp], cwd=repo, check=False)  # sprzątnij temp branch
                 self.state.export_snapshot(project_id=ns)  # snapshot po każdym mergu
                 lessons_gardener.garden(self.state)  # zmiana #2: co 10 mergy
                 skill_curator.prune_if_needed(self.state)  # Skill Fitness: auto-prune + promocja lekcji
@@ -449,7 +468,7 @@ class Orchestrator:
             self.state.add_task(tid, milestone="CHAT-OPS", phase=9, title=f"Napraw usługę {svc} (systemd --user): nieaktywna mimo restartu",
                                 role="principal-debugger", scope_paths=[], depends_on=[],
                                 acceptance_criteria=f"Usługa {svc} aktywna (systemctl --user is-active = active) i przyczyna awarii opisana w raporcie",
-                                project_id="mikowhy-teams-self", repo="factory",
+                                project_id="mikowhy-teams", repo="factory",
                                 status="AWAITING_APPROVAL", read_only=False, mode="llm")
             self.state.set_kv(f"llm_desc:{tid}",
                               f"Usługa systemd --user '{svc}' ma stan '{state2}' mimo restartu. "

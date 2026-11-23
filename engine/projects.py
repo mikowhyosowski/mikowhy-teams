@@ -37,13 +37,20 @@ def set_active_project(project_id: str) -> None:
 
 
 def project_config(project_id: str) -> dict:
+    p = AGENTS / "projects" / project_id / "project.json"
+    if p.exists():
+        # projekt self też może mieć project.json (np. approval_policy=auto) — czytaj z dysku
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+        cfg.setdefault("project_id", project_id)
+        if project_id == SELF_ID:
+            cfg.setdefault("name", "mikowhy-teams (silnik)")
+            cfg.setdefault("target_repo_path", str(ROOT))
+            cfg.setdefault("read_only", False)
+        return cfg
     if project_id == SELF_ID:
         return {"project_id": SELF_ID, "name": "mikowhy-teams (silnik)",
                 "target_repo_path": str(ROOT), "read_only": False}
-    p = AGENTS / "projects" / project_id / "project.json"
-    if not p.exists():
-        raise KeyError(f"Nieznany projekt: {project_id} (brak {p})")
-    return json.loads(p.read_text(encoding="utf-8"))
+    raise KeyError(f"Nieznany projekt: {project_id} (brak {p})")
 
 
 def register_project(project_id: str, name: str, target_repo_path: str, read_only: bool = False) -> dict:
@@ -91,12 +98,19 @@ def set_approval_policy(project_id: str, policy: str) -> dict:
 
 
 def list_projects() -> list[dict]:
-    out = [project_config(SELF_ID)]
+    out, seen = [], set()
     pdir = AGENTS / "projects"
     if pdir.exists():
         for d in sorted(pdir.iterdir()):
             if (d / "project.json").exists():
-                out.append(json.loads((d / "project.json").read_text(encoding="utf-8")))
+                cfg = json.loads((d / "project.json").read_text(encoding="utf-8"))
+                pid = cfg.get("project_id", d.name)
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                out.append(cfg)
+    if SELF_ID not in seen:
+        out.insert(0, project_config(SELF_ID))
     return out
 
 

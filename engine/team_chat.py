@@ -133,8 +133,8 @@ def main() -> int:
         n = state.get_kv("chat_task_seq", 0) + 1
         state.set_kv("chat_task_seq", n)
         tid = f"CHAT-{n:04d}"
-        # zadania LLM piszą do fabryki (repo="factory") i mają iść od razu — projekt self ma approval_policy=auto
-        pid = "mikowhy-teams-self" if (p := _projects.AGENTS / "projects" / "mikowhy-teams-self" / "project.json").exists() else _projects.active_project_id()
+        # zadania LLM piszą do fabryki (repo="factory") i mają iść od razu — projekt mikowhy-teams ma approval_policy=auto
+        pid = _projects.SELF_ID if _projects.approval_policy(_projects.SELF_ID) == "auto" else _projects.active_project_id()
         state.add_milestone("CHAT-OPS", "Zadania tworzone przez Sponsora z czatu (Telegram team chat)",
                             "milestone/chat-ops", project_id=pid)
         prio = "P0" if any(k in low for k in ("pilne", "pilny", "pilna", "asap", "natychmiast", "od razu")) else "P2"
