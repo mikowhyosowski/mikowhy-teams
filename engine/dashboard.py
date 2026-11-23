@@ -205,6 +205,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .bellHead{padding:6px 8px;border-bottom:1px solid #30363d;position:sticky;top:0;background:#0d1117}
  .notif{padding:5px 8px;border-bottom:1px solid #161b22}
  .notif.read{opacity:.55}
+ .notif.nstatus{border-left:3px solid #1f6feb;background:#0d1a2e}  /* v2.7.22: zmiana statusu wyraźnie zaznaczona */
  .nbadge{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:0 5px;font-size:9px;color:#a371f7}
  .qbox{border:1px solid #21262d;border-radius:8px;padding:6px;background:#0d1117}
  .legend{display:flex;flex-wrap:wrap;gap:4px 14px;border:1px solid #30363d;border-radius:8px;padding:8px 10px;background:#0d1117;font-size:11px;margin-bottom:8px}
@@ -1092,6 +1093,37 @@ function showTab(name, push){
 }
 // ===== 🗂️ Kolejka & Logi + 🔔 powiadomienia (v2.7.15/17 — panel prezesa w sub-tabach) =====
 let sysView = 'queue';
+// v2.7.22: czytelny postęp w logach — task_event jako kolorowa strzałka „co → na co” (status + substep osobno)
+function fmtLogPayload(kind, payload){
+  if(kind === 'task_event'){
+    try{
+      const p = JSON.parse(payload);
+      let h = '';
+      if(p.from || p.to){
+        const toC = ST_COLOR[p.to] || '#3fb950';
+        h += ` <b style="color:#8b949e">${esc(p.from||'?')}</b> <span style="color:${toC};font-weight:bold">→ ${esc(p.to||'?')}</span>`;
+      }
+      const ch = p.changes || {};
+      for(const [k,v] of Object.entries(ch)){
+        const [o,n] = String(v).split(' → ');
+        if(k === 'substep'){
+          h += ` <span class="muted">etap:</span> <b style="color:#8b949e">${esc(o)}</b> <span style="color:#d29922;font-weight:bold">→ ${esc(n)}</span>`;
+        } else if(k !== 'status'){
+          h += ` <span class="muted">${esc(k)}:</span> <b style="color:#8b949e">${esc(o)}</b> → <b>${esc(n)}</b>`;
+        }
+      }
+      if(p.by) h += ` <span class="muted">— ${esc(String(p.by).slice(0,40))}</span>`;
+      return h || `<span class="muted">${esc(payload)}</span>`;
+    }catch(e){ /* fallback niżej */ }
+  }
+  return `<span class="muted">${esc(payload)}</span>`;
+}
+// v2.7.22: powiadomienie statusowe — strzałka „→ STATUS” kolorowana na zielono/kolor statusu
+function fmtNotifText(x){
+  const t = esc(x.text);
+  if(x.kind !== 'status') return t;
+  return t.replace(/→\\s*([A-Z_]+)/, (m, st) => `→ <b style="color:${ST_COLOR[st]||'#3fb950'}">${st}</b>`);
+}
 function showSysView(v){
   sysView = v;
   document.querySelectorAll('#sysTabs button').forEach(b => b.classList.toggle('on', b.dataset.sview === v));
@@ -1126,12 +1158,12 @@ function renderSys(){
   let rows = Object.values(groups).sort((a,b)=>b.last-a.last);
   if(onlyErr) rows = rows.filter(r=>r.bad);
   document.getElementById('logsBox').innerHTML = rows.length ? rows.map(g =>
-    `<div class="${g.bad?'logbad':''}"><span class="muted">${new Date(g.last*1000).toLocaleTimeString()}</span>${g.n>1?` <b style="color:#d29922">×${g.n}</b> <span class="muted">(od ${new Date(g.first*1000).toLocaleTimeString()})</span>`:''} <b>${esc(g.kind)}</b> ${g.task_id?`<a href="#" onclick="openTask('${esc(g.task_id)}');return false" style="color:#58a6ff">${esc(g.task_id)}</a>`:''} <span class="muted">${esc(g.payload)}</span></div>`).join('')
+    `<div class="${g.bad?'logbad':''}"><span class="muted">${new Date(g.last*1000).toLocaleTimeString()}</span>${g.n>1?` <b style="color:#d29922">×${g.n}</b> <span class="muted">(od ${new Date(g.first*1000).toLocaleTimeString()})</span>`:''} <b>${esc(g.kind)}</b> ${g.task_id?`<a href="#" onclick="openTask('${esc(g.task_id)}');return false" style="color:#58a6ff">${esc(g.task_id)}</a>`:''} ${fmtLogPayload(g.kind, g.payload)}</div>`).join('')
     : '<span class="muted">brak logów</span>';
   // powiadomienia (pełna lista w sub-tabie)
   document.getElementById('notifList').innerHTML = `<div class="histbox">` + ((d.notifications||[]).map(x =>
-    `<div class="notif ${x.read?'read':''}" ${x.task_id?`onclick="openTask('${esc(x.task_id)}')" style="cursor:pointer"`:''}>
-       <span class="muted">${new Date(x.ts*1000).toLocaleString()}</span> <span class="nbadge">${esc(x.kind)}</span> ${esc(x.text)}${x.task_id?` <b>${esc(x.task_id)}</b>`:''}
+    `<div class="notif ${x.read?'read':''} ${x.kind==='status'?'nstatus':''}" ${x.task_id?`onclick="openTask('${esc(x.task_id)}')" style="cursor:pointer"`:''}>
+       <span class="muted">${new Date(x.ts*1000).toLocaleString()}</span> <span class="nbadge">${esc(x.kind)}</span> ${fmtNotifText(x)}${x.task_id?` <b>${esc(x.task_id)}</b>`:''}
      </div>`).join('') || '<span class="muted">brak powiadomień</span>') + '</div>';
 }
 function renderBell(d){
@@ -1143,8 +1175,8 @@ function renderBell(d){
   document.getElementById('bellPanel').innerHTML =
     `<div class="bellHead"><b>🔔 Powiadomienia systemowe</b> <button class="tbtn" onclick="markNotifsRead()">✓ oznacz przeczytane</button></div>` +
     ((d.notifications||[]).map(x =>
-      `<div class="notif ${x.read?'read':''}" ${x.task_id?`onclick="openTask('${esc(x.task_id)}');toggleBell(false)" style="cursor:pointer"`:''}>
-         <span class="muted">${new Date(x.ts*1000).toLocaleString()}</span> <span class="nbadge">${esc(x.kind)}</span> ${esc(x.text)}${x.task_id?` <b>${esc(x.task_id)}</b>`:''}
+      `<div class="notif ${x.read?'read':''} ${x.kind==='status'?'nstatus':''}" ${x.task_id?`onclick="openTask('${esc(x.task_id)}');toggleBell(false)" style="cursor:pointer"`:''}>
+         <span class="muted">${new Date(x.ts*1000).toLocaleString()}</span> <span class="nbadge">${esc(x.kind)}</span> ${fmtNotifText(x)}${x.task_id?` <b>${esc(x.task_id)}</b>`:''}
        </div>`).join('') || '<div class="muted" style="padding:6px">brak powiadomień</div>');
 }
 function toggleBell(force){

@@ -476,3 +476,17 @@ def test_safe_transition_race_no_crash():
         assert False, "powinien być SystemExit"
     except SystemExit as e:
         assert e.code == 0
+
+
+def test_status_change_notification_arrow():
+    """v2.7.22: ważna zmiana statusu generuje powiadomienie „co → na co” (+ etap), z dedupem."""
+    s = _tmp_state()
+    s.add_task("T-N", "FACTORY-OPS", 9, "notif", "backend-dev", status="READY")
+    s.claim_task("T-N", "w1")
+    s.transition("T-N", "RUNNING")                      # READY->RUNNING nie notyfikuje (za częste)
+    assert not [n for n in s.list_notifications() if n["task_id"] == "T-N"]
+    s.transition("T-N", "IN_REVIEW", substep="done")
+    ns = [n for n in s.list_notifications() if n["task_id"] == "T-N"]
+    assert ns and ns[0]["kind"] == "status" and "RUNNING → IN_REVIEW" in ns[0]["text"] and "etap" in ns[0]["text"]
+    s.transition("T-N", "IN_REVIEW", substep="done")    # duplikat w oknie 600s -> skip
+    assert len([n for n in s.list_notifications() if n["task_id"] == "T-N"]) == 1

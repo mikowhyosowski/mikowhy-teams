@@ -551,6 +551,12 @@ class State:
         if fields.get("claimed_by"):
             by += f" ({fields['claimed_by']})"
         self.record_metric("task_event", {"from": current, "to": new_status, "changes": changes, "by": by}, task_id)
+        # v2.7.22: powiadomienie o ważnej zmianie statusu — wyraźnie „co → na co” (+ zmiana etapu), dla Opiekuna
+        if new_status != current and new_status in ("IN_REVIEW", "READY_TO_MERGE", "MERGED", "FAILED", "AWAITING_OWNER", "BLOCKED"):
+            sub_note = ""
+            if fields.get("substep") and str(fields["substep"]) != str(task.get("substep")):
+                sub_note = f" · etap {task.get('substep') or '—'} → {fields['substep']}"
+            self.add_notification("status", f"{task_id}: {current} → {new_status}{sub_note}", task_id)
         # akumulacja czasu pracy per rola (badge „przepracowane” w zakładce Zespół):
         # RUNNING -> cokolwiek: elapsed leci do kv work_s:<role>
         if current == RUNNING and new_status != RUNNING and task.get("started_at"):

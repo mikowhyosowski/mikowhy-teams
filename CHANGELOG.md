@@ -1,5 +1,13 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.22] — 2026-11-23 — zmiany statusu/etapu wyraźnie „co → na co” w logach i powiadomieniach
+- 🔔 `state.transition`: przejście w ważny status (IN_REVIEW / READY_TO_MERGE / MERGED / FAILED / AWAITING_OWNER /
+  BLOCKED) generuje powiadomienie kind=`status` „TASK: STARY → NOWY · etap X → Y” (dedup 600 s; READY/RUNNING bez notyfikacji)
+- 📜 dashboard: `fmtLogPayload` — logi `task_event` jako kolorowa strzałka `from → to` (kolor statusu), zmiana substepu
+  `etap: a → b` na bursztynowo; `fmtNotifText` — w powiadomieniach status „→ STATUS” pogrubiony kolorem; notyfikacje
+  statusowe mają niebieską belkę (`.notif.nstatus`) w dzwonku i w zakładce System → Powiadomienia
+- 🧪 test `test_status_change_notification_arrow`
+
 ## [2.7.21] — 2026-11-23 — fix crash-loop workerów (InvalidTransition race) + worktree --detach
 - 🛡️ `worker_lifecycle._safe_transition` (wszystkie 18 przejść): wyścig zombie-recovery↔worker crashował workera
   (`InvalidTransition` → rc=1 → zombie → READY → re-claim → pętla). Teraz: zadanie znów claimowalne → re-claim
