@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.6.0"
+VERSION = "2.6.1"
 
 
 def _version_info() -> dict:
@@ -446,12 +446,55 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <script>
 let curTask = null;
 let lastEventTs = 0;
-// kolorowe filtry projektów — hiddenProjs przechowywane w localStorage
+// kolorowe filtry projektów — hiddenProjs: localStorage + URL hash + serwer (kv), żeby przeżyły odświeżenie/zmianę adresu
 const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
 // filtry STATUSÓW — globalne; MERGED domyślnie UKRYTY (odznaczony na starcie)
 const hiddenSts = new Set(JSON.parse(localStorage.getItem('hiddenSts')||'["MERGED"]'));
-function toggleSt(st){ if(hiddenSts.has(st)) hiddenSts.delete(st); else hiddenSts.add(st); localStorage.setItem('hiddenSts', JSON.stringify([...hiddenSts])); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna */ }
-function resetSts(){ hiddenSts.clear(); localStorage.setItem('hiddenSts','[]'); refresh(); }
+function currentTabName(){ const b = document.querySelector('#tabs button.on'); return (b && b.dataset.tab) || 'overview'; }
+function filterParams(){
+  const p = [];
+  if(hiddenProjs.size) p.push('hp=' + [...hiddenProjs].join(','));
+  if(hiddenSts.size) p.push('hs=' + [...hiddenSts].join(','));
+  if(typeof getFlowHiddenStages === 'function'){ const fh = getFlowHiddenStages(); if(fh.size) p.push('fs=' + [...fh].join(',')); }
+  return p.length ? '?' + p.join('&') : '';
+}
+function persistFilters(){
+  // źródła prawdy: localStorage (cache) + URL hash (przeżywa F5 i zmianę karty) + serwer kv (współdzielone między urządzeniami)
+  localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs]));
+  localStorage.setItem('hiddenSts', JSON.stringify([...hiddenSts]));
+  if(typeof getFlowHiddenStages === 'function') localStorage.setItem('flowHiddenStages', JSON.stringify([...getFlowHiddenStages()]));
+  history.replaceState(null, '', '#' + currentTabName() + filterParams());
+  syncFiltersToServer();
+}
+async function syncFiltersToServer(){
+  try{ await fetch('/api/filters', {method:'POST', body: JSON.stringify({hiddenProjs:[...hiddenProjs], hiddenSts:[...hiddenSts], flowHiddenStages:(typeof getFlowHiddenStages==='function'?[...getFlowHiddenStages()]:[])})}); }catch(e){}
+}
+function applyHashFilters(){
+  const h = location.hash || '';
+  if(h.indexOf('?') < 0) return false;
+  const get = k => { const m = h.match(new RegExp('(?:^|[?&])' + k + '=([^&]*)')); return m ? m[1] : undefined; };
+  let applied = false;
+  const hp = get('hp'); if(hp !== undefined){ hiddenProjs.clear(); hp.split(',').filter(Boolean).forEach(x => hiddenProjs.add(x)); applied = true; }
+  const hs = get('hs'); if(hs !== undefined){ hiddenSts.clear(); hs.split(',').filter(Boolean).forEach(x => hiddenSts.add(x)); applied = true; }
+  const fs = get('fs'); if(fs !== undefined){ flowHiddenStages = new Set(fs.split(',').filter(Boolean)); applied = true; }
+  if(applied){ persistFilters(); }
+  return applied;
+}
+async function loadFiltersFromServer(){
+  try{
+    const r = await fetch('/api/filters'); const j = await r.json();
+    if(!j) return false;
+    if(j.hiddenProjs){ hiddenProjs.clear(); (j.hiddenProjs||[]).forEach(x => hiddenProjs.add(x)); }
+    if(j.hiddenSts){ hiddenSts.clear(); (j.hiddenSts||[]).forEach(x => hiddenSts.add(x)); }
+    if(j.flowHiddenStages && typeof getFlowHiddenStages === 'function') flowHiddenStages = new Set(j.flowHiddenStages);
+    localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs]));
+    localStorage.setItem('hiddenSts', JSON.stringify([...hiddenSts]));
+    if(typeof getFlowHiddenStages === 'function') localStorage.setItem('flowHiddenStages', JSON.stringify([...getFlowHiddenStages()]));
+    return true;
+  }catch(e){ return false; }
+}
+function toggleSt(st){ if(hiddenSts.has(st)) hiddenSts.delete(st); else hiddenSts.add(st); persistFilters(); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna */ }
+function resetSts(){ hiddenSts.clear(); persistFilters(); refresh(); }
 let _stFilterKey = '';
 function renderStFilters(d){
   // cache: renderuj tylko gdy zmieni się zestaw statusów / liczby / stan ukrycia
@@ -469,8 +512,8 @@ function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0
 const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','AWAITING_APPROVAL':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
 function pbadge(pid){ return `<span class="pbadge" style="background:${projColor(pid||'(brak)')}">${esc(pid||'(brak)')}</span>`; }
-function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs])); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna — bez dubli renderu */ }
-function resetProjs(){ hiddenProjs.clear(); localStorage.setItem('hiddenProjs','[]'); refresh(); }
+function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); persistFilters(); refresh(); /* refreshInner samo odświeży Firmę gdy aktywna — bez dubli renderu */ }
+function resetProjs(){ hiddenProjs.clear(); persistFilters(); refresh(); }
 let lastVersion = null;
 let _projFilterKey = '';
 function renderProjFilters(d, visTasks){
@@ -835,7 +878,7 @@ function showTab(name, push){
   if(!TABS.includes(name)) name = 'overview';
   document.querySelectorAll('.tabpage').forEach(el => el.classList.toggle('on', el.id === 'tab-'+name));
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  if(push !== false) history.replaceState(null, '', '#'+name);
+  if(push !== false) history.replaceState(null, '', '#'+name+filterParams()); // hash zachowuje filtry przy zmianie zakładki
   if(name === 'firma') renderFirma();
   if(name === 'flow') renderFlow();
   if(name === 'sponsor') renderSponsor();
@@ -939,9 +982,9 @@ function getFlowHiddenStages(){
   }
   return flowHiddenStages;
 }
-function toggleFlowStage(sid){ const h = getFlowHiddenStages(); if(h.has(sid)) h.delete(sid); else h.add(sid); localStorage.setItem('flowHiddenStages', JSON.stringify([...h])); renderFlow(); }
-function soloFlowStage(sid){ const all = (lastFlow ? lastFlow.stages.map(s => s.id) : []); flowHiddenStages = new Set(all.filter(x => x !== sid)); localStorage.setItem('flowHiddenStages', JSON.stringify([...flowHiddenStages])); renderFlow(); }
-function resetFlowStages(){ flowHiddenStages = new Set(); localStorage.setItem('flowHiddenStages', '[]'); renderFlow(); }
+function toggleFlowStage(sid){ const h = getFlowHiddenStages(); if(h.has(sid)) h.delete(sid); else h.add(sid); persistFilters(); renderFlow(); }
+function soloFlowStage(sid){ const all = (lastFlow ? lastFlow.stages.map(s => s.id) : []); flowHiddenStages = new Set(all.filter(x => x !== sid)); persistFilters(); renderFlow(); }
+function resetFlowStages(){ flowHiddenStages = new Set(); persistFilters(); renderFlow(); }
 async function renderFlow(){
   const svg = document.getElementById('flowSvg');
   let f;
@@ -1498,8 +1541,8 @@ function initFirmaPanZoom(){
   window.addEventListener('mouseup', () => { drag = null; });
 }
 initFirmaPanZoom();
-window.addEventListener('hashchange', () => showTab(location.hash.slice(1)||'overview', false));
-showTab(location.hash.slice(1)||'overview', false);
+window.addEventListener('hashchange', () => { applyHashFilters(); showTab((location.hash.slice(1).split('?')[0])||'overview', false); });
+showTab((location.hash.slice(1).split('?')[0])||'overview', false);
 let lastState = null;
 let firmaSlowTick = 0;
 function firmaActive(){ return document.getElementById('tab-firma').classList.contains('on'); }
@@ -1512,7 +1555,15 @@ function toggleAutoRefresh(){
   document.getElementById('ts').textContent = autoRefreshOn ? new Date().toLocaleTimeString() : '⏸ zatrzymano';
   if(autoRefreshOn) refresh();
 }
-refresh();
+(async function initFilters(){
+  // kolejność: URL hash -> localStorage -> serwer (kv, współdzielone między urządzeniami) -> default
+  if(!applyHashFilters()){
+    if(!localStorage.getItem('hiddenProjs') && !localStorage.getItem('hiddenSts') && !localStorage.getItem('flowHiddenStages')){
+      await loadFiltersFromServer();
+    }
+  }
+  refresh();
+})();
 setInterval(() => {
   if(refreshPaused || !autoRefreshOn) return;
   if(firmaActive()){
@@ -1919,6 +1970,14 @@ class Handler(BaseHTTPRequestHandler):
             s = State()
             self._send(200, json.dumps({"stats": llm_queue.stats(s), "jobs": llm_queue.recent_jobs(s, 30)},
                                        ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path == "/api/filters":
+            # filtry dashboardu współdzielone między przeglądarkami/urządzeniami (kv w state.db)
+            s = State()
+            self._send(200, json.dumps({
+                "hiddenProjs": json.loads(s.get_kv("filters:hiddenProjs", "[]") or "[]"),
+                "hiddenSts": json.loads(s.get_kv("filters:hiddenSts", '["MERGED"]') or '["MERGED"]'),
+                "flowHiddenStages": json.loads(s.get_kv("filters:flowHiddenStages", "[]") or "[]"),
+            }).encode(), "application/json; charset=utf-8")
         elif u.path == "/api/sponsor":
             # widok opiekuna: tematy (milestone'y) + decyzje + zgody + backlog
             self._send(200, json.dumps(_sponsor_view(State()), ensure_ascii=False, default=str).encode(),
@@ -1991,6 +2050,14 @@ class Handler(BaseHTTPRequestHandler):
             s.record_metric("direct_ask", {"qid": qid, "q": text[:500], "status": "running"}, None)
             threading.Thread(target=_run_ask, args=(qid, text), daemon=True).start()
             self._send(200, json.dumps({"ok": True, "qid": qid}).encode(), "application/json")
+            return
+        if u.path == "/api/filters":
+            # zapisz filtry (współdzielone) — POST body: {hiddenProjs, hiddenSts, flowHiddenStages}
+            s = State()
+            s.set_kv("filters:hiddenProjs", json.dumps(body.get("hiddenProjs") or []))
+            s.set_kv("filters:hiddenSts", json.dumps(body.get("hiddenSts") or ["MERGED"]))
+            s.set_kv("filters:flowHiddenStages", json.dumps(body.get("flowHiddenStages") or []))
+            self._send(200, b'{"ok":true}', "application/json")
             return
         if u.path == "/api/milestone":
             # opiekun zakłada nowy temat (milestone) — read-only dopiero po review, jak zadania AWAITING_APPROVAL

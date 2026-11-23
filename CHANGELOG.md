@@ -1,5 +1,11 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.6.1] — 2026-11-23
+- 🐛 FIX filtry znikały po odświeżeniu/zmianie adresu: były tylko w localStorage (per-origin) i showTab nadpisywał hash.
+  Teraz filtry są w **3 miejscach**: URL hash (`#flow?hs=MERGED&hp=…`), localStorage i serwerze (kv `filters:*`,
+  API GET+POST /api/filters — współdzielone między przeglądarkami/urządzeniami). Przy starcie: hash → localStorage → serwer → default
+- 🗺️ Pan/zoom/scroll na mapie Firma NIE mają wpływu na filtry (tylko viewBox w pamięci) — zweryfikowane testem
+
 ## [2.6.0] — 2026-11-23
 - 🤖 **Kolejka LLM** (`engine/llm_queue.py`, tabela `llm_jobs`): wszystkie wywołania `complete` idą przez kolejkę
   (QUEUED→RUNNING→DONE/FAILED, **lease** z auto-requeue po crashu, **retry z backoff** 8s·2^n do 5 prób,
