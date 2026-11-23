@@ -10,6 +10,7 @@ LLM nigdy nie wywołuje git — robi to wyłącznie ten moduł.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -79,8 +80,11 @@ def create_worktree(task_id: str, base_branch: str, branch: str,
     WORKTREES_ROOT.mkdir(parents=True, exist_ok=True)
     path = worktree_path(task_id, ns)
     path.parent.mkdir(parents=True, exist_ok=True)
+    run_git(["worktree", "prune"], cwd=repo, check=False)  # usuń rejestracje zaginionych katalogów
     if path.exists():
         run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
     exists = run_git(["rev-parse", "--verify", "--quiet", branch], cwd=repo, check=False).returncode == 0
     if exists:
         run_git(["worktree", "add", str(path), branch], cwd=repo)
@@ -94,8 +98,11 @@ def integration_worktree(milestone_branch: str, repo: Path | str = ROOT, ns: str
     assert_writable(repo)
     WORKTREES_ROOT.mkdir(parents=True, exist_ok=True)
     path = WORKTREES_ROOT / ns
+    run_git(["worktree", "prune"], cwd=repo, check=False)  # usuń rejestracje zaginionych katalogów
     if path.exists():
         run_git(["worktree", "remove", "--force", str(path)], cwd=repo, check=False)
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
     run_git(["worktree", "add", str(path), milestone_branch], cwd=repo)
     return path
 
@@ -177,9 +184,44 @@ def commit_all(worktree: Path, message: str) -> None:
     run_git(["commit", "-m", message], cwd=worktree)
 
 
+def commit_task(worktree: Path, task_id: str, message: str) -> str:
+    """Commit zadania odporny na retry: jeśli ostatni commit na gałęzi już należy do tego
+    zadania (retry), robimy --amend zamiast kolejnego duplikatu. Zwraca 'amended'|'committed'."""
+    assert_writable(worktree)
+    run_git(["add", "-A"], cwd=worktree)
+    staged = run_git(["status", "--porcelain"], cwd=worktree, check=False).stdout.strip()
+    if not staged:
+        raise RuntimeError("Brak zmian w scope_paths — LLM nie wyprodukował żadnego pliku ze scope_paths "
+                           "(enforce_scope wszystko cofnął albo odpowiedź nie miała klucza files)")
+    last = run_git(["log", "-1", "--format=%s"], cwd=worktree, check=False).stdout.lower()
+    if f"({task_id.lower()})" in last:
+        run_git(["commit", "--amend", "--no-edit"], cwd=worktree)
+        return "amended"
+    run_git(["commit", "-m", message], cwd=worktree)
+    return "committed"
+
+
 def push(branch: str, worktree: Path, remote: str = "origin") -> None:
     assert_writable(worktree)
     run_git(["push", "-u", remote, branch], cwd=worktree, check=False)
+
+
+def sync_with_origin(worktree: Path, base: str, remote: str = "origin") -> None:
+    """TWARDA REGUŁA: przed pushem wyrównaj gałąź zadania z remote base (origin/<base>),
+    żeby nie było konfliktów między branchami. Konflikt -> MergeConflict."""
+    assert_writable(worktree)
+    run_git(["fetch", remote, base], cwd=worktree, check=False)
+    remote_base = f"{remote}/{base}"
+    exists = run_git(["rev-parse", "--verify", "--quiet", remote_base], cwd=worktree, check=False).returncode == 0
+    if not exists:
+        return  # base jeszcze nie na remote — nie ma z czym wyrównywać
+    behind = run_git(["rev-list", "--count", f"HEAD..{remote_base}"], cwd=worktree, check=False).stdout.strip()
+    if behind and int(behind) > 0:
+        proc = run_git(["rebase", remote_base], cwd=worktree, check=False)
+        if proc.returncode != 0:
+            conflicted = run_git(["diff", "--name-only", "--diff-filter=U"], cwd=worktree, check=False).stdout.split()
+            run_git(["rebase", "--abort"], cwd=worktree, check=False)
+            raise MergeConflict(f"konflikt przy wyrównaniu z {remote_base}: {conflicted}")
 
 
 def rebase_onto(worktree: Path, base: str) -> None:
