@@ -236,14 +236,35 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
     }
     result = _llm_step(task, "2/5_IMPL", json.dumps(payload, ensure_ascii=False),
                        model=skill_compiler.model_for_role(task["role"], kind="strong"))
-    if result.get("signal") in ("ASK_SPONSOR", "ASK_OWNER"):  # ASK_OWNER = alias, graniczna decyzja Opiekuna
-        _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
-        return
     files = result.get("files") or {}
     if not files and isinstance(result.get("artifacts"), list):  # fallback: kontrakt roli (artifacts)
         for a in result["artifacts"]:
             if isinstance(a, dict) and a.get("path"):
                 files[a["path"]] = a.get("content", "")
+    # v2.7.27: pusta odpowiedź LLM = PRAWIE zawsze karamy pełnym cyklem (pusty diff -> retry).
+    # Teraz: natychmiastowy wewnętrzny retry z feedbackiem (max 2) — bez zmiany statusu.
+    empty_retries = 0
+    while not files and empty_retries < 2:
+        empty_retries += 1
+        state.record_metric("impl_empty_response", {"attempt": empty_retries}, task["id"])
+        result = _llm_step(
+            task, "2/5_IMPL",
+            json.dumps({**payload,
+                        "ERROR_FEEDBACK": f"Twoja poprzednia odpowiedź nie zawierała klucza 'files' "
+                                          f"(próba {empty_retries + 1}/3). Zwróć PLIKI z implementacją wg planu — "
+                                          f"pusty wynik oznacza nieudane zadanie."},
+                       ensure_ascii=False),
+            model=skill_compiler.model_for_role(task["role"], kind="strong"))
+        files = result.get("files") or {}
+        if not files and isinstance(result.get("artifacts"), list):
+            for a in result["artifacts"]:
+                if isinstance(a, dict) and a.get("path"):
+                    files[a["path"]] = a.get("content", "")
+    if result.get("signal") in ("ASK_SPONSOR", "ASK_OWNER"):  # ASK_OWNER = alias, graniczna decyzja Opiekuna
+        _ask_sponsor(state, task, str(result.get("question", "")), result.get("options") or [])
+        return
+    if not files:
+        raise RuntimeError("LLM trzykrotnie zwrócił pustą implementację (bez 'files') — przejściowy błąd LLM")
     for rel, content in files.items():
         if task["scope_paths"] and rel not in task["scope_paths"]:
             # AUTO-HEAL (zasada „Opiekunowi łatwiej”): plik spoza scope nie eskaluje do Opiekuna —
@@ -289,8 +310,11 @@ def step3_tests(state: State, task: dict, worktree: Path) -> None:
 
 
 def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> None:
-    """Krok 4 (Python + LLM): lokalny QG; przy błędzie max 3 próby fix (Krok 4b)."""
+    """Krok 4 (Python + LLM): PRE-FLIGHT samokonta + lokalny QG; przy błędzie max 3 próby fix (Krok 4b)."""
     t0 = time.time()
+    # v2.7.27 — PRE-FLIGHT: wykonawca łapie swoje błędy SAM (składnia/JSON/nowe testy),
+    # zanim padnie QG i kosztuje pełny cykl. Naprawa na miejscu (LLM, max 2 próby).
+    _run_preflight(state, task, worktree)
     for attempt in range(1, MAX_LOCAL_FIXES + 2):
         results = quality_gates.local_gates(worktree)
         failed = [r for r in results if not r["ok"]]
@@ -318,6 +342,45 @@ def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> N
             _safe_transition(state, task["id"], FAILED, review_notes="LLM niedostępny w kroku 4b")
             return
     _safe_transition(state, task["id"], FAILED, review_notes="QG nieprzechodzony po lokalnych poprawkach")
+
+
+def _run_preflight(state: State, task: dict, worktree: Path) -> None:
+    """v2.7.27: pre-flight (tanie deterministyczne kontrole) + LLM-naprawa na miejscu.
+    Błąd tu NIE odbija zadania — wykonawca domyka go sam (zasada: sam wychwytaj swoje błędy)."""
+    from engine import preflight
+    for attempt in range(1, 4):  # 1 przejście + 2 naprawy LLM
+        report = preflight.run(worktree)
+        state.record_metric("preflight", {"attempt": attempt, "ok": report["ok"],
+                                          "n_problems": len(report["problems"])}, task["id"])
+        if report["ok"]:
+            return
+        # szybkie i pewne rozwiązanie bez LLM: niepoprawna składnia/JSON — LLM dostaje
+        # dokładny problem i poprawia plik; zawartość zmian pilnuje wyłącznie scope
+        digest = preflight.problems_digest(report)
+        state.add_comment_report(task["id"], f"worker({task['role']})",
+                                 "sprawdzić własną pracę samemu (pre-flight: składnia/JSON/testy)",
+                                 f"pre-flight wyłapał {len(report['problems'])} problem(ów) — naprawiam od razu, "
+                                 f"przed review i QG (próba {attempt}/3)")
+        try:
+            fix = _llm_step(task, "4a_PREFLIGHT",
+                            json.dumps({"problems": report["problems"],
+                                        "changed_files": report["changed"],
+                                        "scope_paths": task["scope_paths"],
+                                        "SCHEMA": 'Popraw wskazane pliki i zwróć wyłącznie JSON: '
+                                                  '{"files": {"<path ze scope_paths>": "<poprawiona pełna treść>"}}. '
+                                                  'Żadnego innego klucza.'},
+                                       ensure_ascii=False),
+                            model=skill_compiler.model_for_role(task["role"], kind="fast"))
+            for rel, content in (fix.get("files") or {}).items():
+                if task["scope_paths"] and rel not in task["scope_paths"]:
+                    continue
+                if (worktree / rel).is_dir():
+                    continue
+                (worktree / rel).write_text(content, encoding="utf-8")
+            state.record_metric("preflight_fix", {"attempt": attempt}, task["id"])
+        except RuntimeError:
+            return  # LLM niedostępny — Zwykłe QG wyłapi to dalej
+    # po 2 naprawach nie blokujemy — QG da ostateczny wyrok (pełne testy, nie tylko zmienione)
 
 
 def step45_simplify(state: State, task: dict, worktree: Path, base: str) -> None:
