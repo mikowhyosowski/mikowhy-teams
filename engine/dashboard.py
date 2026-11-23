@@ -255,6 +255,14 @@ async function refreshInner(){
     `<span class="stat-badge ${st.overdue?'bad':'ok'}">⚠️ spóźnione/stare (&gt;1h w kolejce): <b>${st.overdue||0}</b></span>`+
     `<span class="stat-badge ${st.running_long?'warn':''}">🐌 długo biegną (&gt;1h): <b>${st.running_long||0}</b></span>`+
     (d.sys?`<span class="stat-badge" title="load / CPU / RAM laptopa">🖥️ load <b>${d.sys.load1}</b>/${d.sys.cpus} · 🧠 RAM <b>${d.sys.mem_used_pct}%</b> (wolne ${d.sys.mem_avail_gb}GB)</span>`:'');
+  // kolorowe filtry projektów (stan w localStorage — przeżywa odświeżenia); visTasks MUSI być przed użyciem (TDZ!)
+  const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)'));
+  const allProjs = [...new Set(d.projects.map(p=>p.project_id).concat(d.tasks.map(t=>t.project_id||'(brak)')))];
+  document.getElementById('projFilters').innerHTML = allProjs.map(pid => {
+    const off = hiddenProjs.has(pid);
+    const n = d.tasks.filter(t=>(t.project_id||'(brak)')===pid).length;
+    return `<button class="pchip ${off?'off':''}" style="--c:${projColor(pid)}" onclick="toggleProj('${esc(pid)}')"><span class="dot" style="background:${projColor(pid)}"></span>${esc(pid)} <span class="muted">${n}</span></button>`;
+  }).join('') + `<button class="pchip reset" onclick="resetProjs()">✖ wszystkie</button>`;
   const alerts = visTasks.filter(t=>t.status==='AWAITING_APPROVAL');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
@@ -266,14 +274,6 @@ async function refreshInner(){
   document.getElementById('projects').innerHTML = d.projects.map(p =>
     `<span class="muted">🗂</span> <b>${esc(p.project_id)}</b> policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
   const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
-  // kolorowe filtry projektów (stan w localStorage — przeżywa odświeżenia)
-  const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)'));
-  const allProjs = [...new Set(d.projects.map(p=>p.project_id).concat(d.tasks.map(t=>t.project_id||'(brak)')))];
-  document.getElementById('projFilters').innerHTML = allProjs.map(pid => {
-    const off = hiddenProjs.has(pid);
-    const n = d.tasks.filter(t=>(t.project_id||'(brak)')===pid).length;
-    return `<button class="pchip ${off?'off':''}" style="--c:${projColor(pid)}" onclick="toggleProj('${esc(pid)}')"><span class="dot" style="background:${projColor(pid)}"></span>${esc(pid)} <span class="muted">${n}</span></button>`;
-  }).join('') + `<button class="pchip reset" onclick="resetProjs()">✖ wszystkie</button>`;
   // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
   const FLOW = ['AWAITING_APPROVAL','READY','RUNNING','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
   const byStatus = {}; for(const t of visTasks){ (byStatus[t.status] = byStatus[t.status]||[]).push(t); }
