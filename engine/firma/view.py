@@ -76,6 +76,35 @@ def _proj_color(pid: str) -> str:
     return f"hsl({h % 360},70%,45%)"
 
 
+def _by_status(tasks: list[dict]) -> dict:
+    """Liczba zadań per status (do chipsów na karcie pracownika / w pokoju)."""
+    out: dict[str, int] = {}
+    for t in tasks:
+        st = t.get("status") or "?"
+        out[st] = out.get(st, 0) + 1
+    return out
+
+
+def _conversations(state, team: dict, now: float, window_s: int = 150) -> list[dict]:
+    """Aktywne rozmowy „live” do dymków na mapie: wątki sponsor↔agent, których ostatnia
+    wiadomość jest świeższa niż window_s. Zwraca [{a_role, b_role, text, ts, thread_id}]."""
+    out = []
+    if state is None:
+        return out
+    try:
+        from engine import team_threads
+        for th in team_threads.list_threads(state, limit=30):
+            last = th.get("last") or {}
+            ts = last.get("ts") or 0
+            if th.get("open") and ts and now - ts < window_s:
+                out.append({"a_role": th["role"], "b_role": "sponsor",
+                            "text": (last.get("text") or "")[:80], "ts": ts,
+                            "thread_id": th["id"], "author": last.get("author")})
+    except Exception:
+        pass
+    return sorted(out, key=lambda c: -c["ts"])[:6]
+
+
 def build_world(snapshot: dict, state=None) -> dict:
     """Buduje model świata z snapshotu dashboardu (/api/state).
 
@@ -101,19 +130,27 @@ def build_world(snapshot: dict, state=None) -> dict:
             roles.setdefault(t.get("role") or "worker", []).append(t)
         rooms = []
         for role, ts in sorted(roles.items(), key=lambda kv: -len(kv[1])):
+            from engine import personas as _pers
+            pf = _pers.persona_full(role)
             m = team.get(role, {})
             cur = next((t for t in ts if t.get("status") == "RUNNING"), None)
             rooms.append({
                 "role": role,
-                "name": m.get("name") or role,
-                "position": m.get("position") or role,
-                "avatar": m.get("avatar") or "🧑‍💻",
-                "gender": m.get("gender") or "",
+                "name": pf.get("name") or m.get("name") or role,
+                "position": pf.get("position") or m.get("position") or role,
+                "avatar": pf.get("icon") or m.get("avatar") or "🧑‍💻",
+                "color": pf.get("color") or "#8b949e",
+                "color_soft": pf.get("color_soft") or "#21262d",
+                "gender": pf.get("gender") or "",
+                "tenure_s": m.get("tenure_s") or 0,
                 "res": (cur or {}).get("res"),
                 "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority")} if cur else None),
                 "taskCount": len(ts),
+                "by_status": _by_status(ts),
                 "threadCount": 0,
             })
+        # sortowanie pokoi wg stażu pracy (najstarsi pracownicy pierwsi)
+        rooms.sort(key=lambda r: -(r.get("tenure_s") or 0))
         # agenci, którzy odpowiadali w wątkach (nie mają zadań, ale "brali udział") — lądują w biurze fabryki
         if pid == "mikowhy-teams" and state is not None:
             try:
@@ -133,11 +170,14 @@ def build_world(snapshot: dict, state=None) -> dict:
                                       "res": None, "current": None, "taskCount": 0, "threadCount": row["n"]})
             except Exception:
                 pass
+        from engine import personas as _pers2
         desks = [{
             "id": t.get("id"), "title": t.get("title") or "", "title_sponsor": t.get("title_sponsor") or "",
             "status": t.get("status"), "zone": ZONE.get(t.get("status"), "tray"),
             "priority": t.get("priority") or "P2", "substep": t.get("substep") or "",
             "role": t.get("role") or "worker", "persona": t.get("persona") or "",
+            "persona_color": _pers2.persona_for_role(t.get("role") or "worker").get("color") or "#8b949e",
+            "persona_icon": _pers2.persona_for_role(t.get("role") or "worker").get("icon") or "🧑",
             "parent_task": t.get("parent_task"), "pr": t.get("pr"),
             "started_at": t.get("started_at"), "elapsed": t.get("elapsed"), "res": t.get("res"),
             "updated_at": t.get("updated_at"), "age": t.get("age"),
@@ -153,9 +193,11 @@ def build_world(snapshot: dict, state=None) -> dict:
             "rooms": rooms,
             "desks": desks,
         })
+    now = time.time()
     return {
         "config": cfg,
         "estate": {"name": cfg.get("meta", {}).get("name", "Osiedle"), "host": snapshot.get("host"),
-                   "sys": snapshot.get("sys"), "ts": time.time()},
+                   "sys": snapshot.get("sys"), "ts": now},
         "offices": offices,
+        "conversations": _conversations(state, team, now),
     }

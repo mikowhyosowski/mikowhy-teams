@@ -5,19 +5,19 @@
     "lang": "pl"
   },
   "colors": {
-    "bg": "#0b0f14",
-    "plot": "#111823",
-    "road": "#1c2128",
-    "office": "#161b22",
-    "officeStroke": "#30363d",
-    "room": "#0d1117",
-    "roomStroke": "#21262d",
-    "roof": "#21262d",
-    "text": "#c9d1d9",
-    "muted": "#8b949e",
-    "gate": "#1f6feb",
-    "tape": "#d29922",
-    "alarm": "#f85149"
+    "bg": "#f3ead8",
+    "plot": "#fbf5e9",
+    "road": "#e6d7bd",
+    "office": "#fffdf6",
+    "officeStroke": "#d9c8a9",
+    "room": "#f7efdf",
+    "roomStroke": "#d9c8a9",
+    "roof": "#e8b04b",
+    "text": "#4a3b2c",
+    "muted": "#9b8a70",
+    "gate": "#e07a5f",
+    "tape": "#e9c46a",
+    "alarm": "#d64545"
   },
   "estate": {
     "grid": {
@@ -197,8 +197,8 @@
     "pulseMs": 1200
   },
   "stage2": {
-    "gradients": true,
-    "shadows": true,
+    "gradients": false,
+    "shadows": false,
     "trees": true,
     "roadDashes": true,
     "door": true,

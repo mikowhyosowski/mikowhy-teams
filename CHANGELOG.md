@@ -1,5 +1,22 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.3.0] — 2026-11-23
+- 🎨 Każdy pracownik ma własny kolor + ikonę „charakteru” (deterministycznie z roli, personas.color/icon) — na kartach
+  zespołu, pokojach na mapie Firma i dymkach rozmów; zespół sortowany wg STAŻU (najstarsi pierwsi)
+- 📊 Karta pracownika: liczba zadań PER STATUS (kolorowe chipsy) zamiast „zadania: X zmergowane: Y”
+- 📋 Zakładka **Obowiązki** per pracownik (📋 na karcie): zadania cykliczne (recurring_tasks, domyślnie P3 — niżej niż
+  bieżące sprawy), dodawanie/włączanie/wyłączanie; API /api/recurring
+- 🏢 Firma: agregacja artefaktów — gdy w strefie więcej niż capacity, pokazuje zbiorczy kafelek `[+N]` (klik rozwija wszystkie)
+- ✨ Firma animacje live: pracujący agent „miga” (blink avataru), aktywne wątki = dymki w kolorze rozmówcy + animowany
+  łuk do rozmówcy (Sponsor = brama recepcji), strefa alarmu mocno miga gdy są FAILED/ESCALATED
+- ⛶ Fullscreen widoku biura (przycisk ⛶ + requestFullscreen)
+- 🌿 Firma redesign: płaska CIEPŁA paleta (krem/terakota, stage2 gradients/shadows off), roślinki tylko poza biurami
+  (pasy góra/dół + wzdłuż dróg) — zadanie FIRMA-010 (P0) z rozbiciem na etapy
+- 🔀 NAPRAWA licznika merge'ów: czyta też `git log --merges` (direct merge Sponsora „no PR” nie przechodziły przez
+  metryki flow) — teraz widać wszystkie merge z git log
+- ♻️ Ciągłość przepływu: watchdog kolejki (READY >8h → P1; BLOCKED/ESCALATED >48h → auto-recovery do READY)
+  + więcej równoległych workerów (cap 8) i 2 lekkie sloty dla zadań read_only/llm
+
 ## [2.2.0] — 2026-11-23
 - 🌊 Zakładka **Flow**: diagram przepływu pracy zespołu (SVG, 3 tory: decyzje Sponsora / pipeline / wyjątki,
   strzałki przejść z configu, kafelki zadań z akcjami, SLA/overdue, hot-pulsowanie) — klik kafelek = szczegóły,

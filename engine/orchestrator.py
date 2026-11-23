@@ -183,7 +183,7 @@ class Orchestrator:
         base = max(1, cpu - 2)                       # zostawiamy cores na system/UI
         ram_cap = max(1, int(free_gb / 1.2))         # ~1.2 GB na proces vibe
         load_cap = max(1, int(base * cpu / max(load1, 1.0)))  # load > cpu -> mniej workerów
-        cap = max(1, min(4, base, ram_cap, load_cap))  # hard cap: 4 LLM naraz na współdzielonym laptopie
+        cap = max(1, min(8, base, ram_cap, load_cap))  # hard cap: 8 LLM naraz na współdzielonym laptopie
         return cap
 
     def _launch_workers(self) -> None:
@@ -192,16 +192,23 @@ class Orchestrator:
                  if projects.is_active(t.get("project_id") or "mikowhy-teams")]
         cap = self._max_workers_now()
         free = cap - len([t for t in self.running])  # wspólna pula też z review
+        light_free = 2  # lekkie zadania (read_only / tryb llm) dostają 2 dodatkowe sloty — zużywają mniej zasobów
         for task in tasks:
-            if free <= 0:
+            if task["id"] in self.running:
+                continue
+            if free > 0:
+                self._spawn("worker_lifecycle", task["id"])
+                free -= 1
+            elif (task.get("read_only") or task.get("mode") == "llm") and light_free > 0:
+                # równoległy lekki proces ponad głównym capem — nie rusza repo, mało RAM/CPU
+                light_free -= 1
+                self.state.record_metric("light_worker", {"task": task["id"], "mode": task.get("mode")}, task["id"])
+                self._spawn("worker_lifecycle", task["id"])
+            else:
                 if len(tasks) > 0:
                     self.state.record_metric("throttled", {"waiting": len(tasks), "cap": cap,
                                                            "running": len(self.running)}, None)
                 break
-            if task["id"] in self.running:
-                continue
-            self._spawn("worker_lifecycle", task["id"])
-            free -= 1
 
     # --- faza 5: code review + circuit breaker ----------------------------------
     def _launch_reviews(self) -> None:
@@ -502,6 +509,30 @@ class Orchestrator:
             self.state.record_metric("task_event", {"event": "branch_deleted", "branch": br}, t["id"])
             print(f"[orchestrator] 🧹 usunięto zmergowany branch {br} (zadanie {t['id']})", flush=True)
 
+    # --- watchdog kolejki: żeby przepływ nie utknął na starych zadaniach ------------
+    def _stale_queue_watchdog(self) -> None:
+        """Ciągłość pracy: READY wiszące > 8h dostają priorytet P1 + komentarz;
+        BLOCKED/ESCALATED starsze niż 48h (i retry_count < 6) wracają automatycznie do READY —
+        fabryka sama wraca do przepływu zamiast czekać bez końca na człowieka."""
+        now = time.time()
+        for task in self.state.list_tasks():
+            age = now - (task.get("updated_at") or now)
+            st = task["status"]
+            if st == "READY" and age > 8 * 3600 and task.get("priority") in ("P2", "P3"):
+                self.state.set_priority(task["id"], "P1")
+                self.state.add_comment(task["id"], "orchestrator",
+                                       f"⏳ watchdog kolejki: READY od {age/3600:.0f}h bez przejęcia → priorytet P1")
+                self.state.record_metric("stale_ready_boost", {"task": task["id"], "age_h": round(age/3600, 1)}, task["id"])
+            elif st in ("BLOCKED", "ESCALATED") and age > 48 * 3600 and (task.get("retry_count") or 0) < 6:
+                self.state.transition(task["id"], READY, substep="1/5_PLAN",
+                                      retry_count=(task.get("retry_count") or 0) + 1,
+                                      review_notes=(task.get("review_notes") or "") +
+                                      f" | watchdog: auto-recovery po {age/3600:.0f}h w {st}")
+                self.state.record_metric("watchdog_recovery", {"task": task["id"], "from": st,
+                                                               "age_h": round(age/3600, 1)}, task["id"])
+                self.state.add_comment(task["id"], "orchestrator",
+                                       f"♻️ watchdog: zadanie w {st} od {age/3600:.0f}h → wraca do READY (przepływ idzie dalej)")
+
     # --- telegram menu w ticku (run --poll 1 odbiera wiadomości użytkownika) ---------
     def _poll_telegram(self) -> None:
         try:
@@ -517,6 +548,7 @@ class Orchestrator:
         self._launch_workers()
         self._launch_reviews()
         self._circuit_breakers()
+        self._stale_queue_watchdog()
         self._handle_merges()
         self._cleanup_merged_branches()
         self._handle_milestones()

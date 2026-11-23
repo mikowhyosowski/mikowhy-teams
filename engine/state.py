@@ -115,6 +115,19 @@ CREATE TABLE IF NOT EXISTS thread_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_threads_role ON threads(role, updated_at);
 CREATE INDEX IF NOT EXISTS idx_tm_thread ON thread_messages(thread_id, ts);
+-- obowiązki cykliczne per rola (zakładka „Obowiązki”); domyślnie niski priorytet P3,
+-- żeby zawsze ustępowały bieżącym sprawom (P0..P2) w kolejce
+CREATE TABLE IF NOT EXISTS recurring_tasks (
+  id          TEXT PRIMARY KEY,
+  role        TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  schedule    TEXT NOT NULL DEFAULT 'daily',   -- hourly | daily | weekly
+  priority    TEXT NOT NULL DEFAULT 'P3',
+  last_run    REAL,
+  created_at  REAL NOT NULL,
+  active      INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_role ON recurring_tasks(role, active);
 """
 
 
@@ -262,6 +275,48 @@ class State:
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         row = self._conn().execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         return self._row_to_task(row) if row else None
+
+    # --- obowiązki cykliczne (recurring) per rola --------------------------------
+    def add_recurring(self, recurring_id: str, role: str, title: str,
+                      schedule: str = "daily", priority: str = "P3") -> str:
+        """Zadanie cykliczne. Priorytet domyślnie P3 — niższy niż bieżące sprawy (P0..P2)."""
+        if schedule not in ("hourly", "daily", "weekly"):
+            raise StateError(f"zły schedule: {schedule} (hourly|daily|weekly)")
+        if priority not in ("P0", "P1", "P2", "P3"):
+            raise StateError(f"zły priorytet: {priority}")
+        now = time.time()
+        self._conn().execute(
+            "INSERT OR REPLACE INTO recurring_tasks(id, role, title, schedule, priority, last_run, created_at, active) "
+            "VALUES(?,?,?,?,?,?,?,1)",
+            (recurring_id, role, title, schedule, priority, None, now))
+        self.record_metric("recurring_add", {"role": role, "title": title[:120], "schedule": schedule}, None)
+        return recurring_id
+
+    def list_recurring(self, role: str | None = None, active_only: bool = True) -> list[dict[str, Any]]:
+        q = "SELECT * FROM recurring_tasks"
+        cond, params = [], []
+        if role:
+            cond.append("role=?"); params.append(role)
+        if active_only:
+            cond.append("active=1")
+        if cond:
+            q += " WHERE " + " AND ".join(cond)
+        q += " ORDER BY role, created_at"
+        return [dict(r) for r in self._conn().execute(q, params).fetchall()]
+
+    def set_recurring_active(self, recurring_id: str, active: bool) -> None:
+        self._conn().execute("UPDATE recurring_tasks SET active=? WHERE id=?",
+                             (1 if active else 0, recurring_id))
+
+    def recurring_due(self, now: float | None = None) -> list[dict[str, Any]]:
+        """Obowiązki, które powinny już wygenerować zadanie (wg schedule od last_run)."""
+        now = now or time.time()
+        span = {"hourly": 3600, "daily": 86400, "weekly": 604800}
+        out = []
+        for r in self.list_recurring(active_only=True):
+            if r["last_run"] is None or now - r["last_run"] >= span.get(r["schedule"], 86400):
+                out.append(r)
+        return out
 
     def list_tasks(self, milestone: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
         q, params = "SELECT * FROM tasks", []

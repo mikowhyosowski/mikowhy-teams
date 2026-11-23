@@ -15,17 +15,29 @@ POSITIONS = ["Backend Developer", "Frontend Developer", "DevOps Engineer", "QA E
              "Product Analyst", "UX Designer", "Data Engineer", "Security Engineer",
              "Tech Lead", "Data Scientist"]
 
+# dedykowana ikonka „charakteru” per rola — deterministycznie z hasha roli
+CHARACTER_ICONS = ["🦊", "🐼", "🐸", "🦁", "🐙", "🦉", "🐝", "🦄",
+                   "🐯", "🐨", "🦔", "🐺", "🦩", "🐳", "🦜", "🐰"]
+
 
 def persona_for_role(role: str) -> dict[str, str]:
-    """Zwraca {role, name, gender, position} — deterministycznie z nazwy roli."""
+    """Zwraca {role, name, gender, position, color, icon} — deterministycznie z nazwy roli.
+
+    color = ciepły, żywy kolor osoby (HSL z hasha roli) — używany na kartach zespołu,
+    w pokojach na mapie Firma i w dymkach rozmów. icon = „charakter” osoby (zwierzątko).
+    """
     h = hashlib.sha256((role or "agent").encode("utf-8")).hexdigest()
     gender = "kobieta" if int(h[0], 16) % 2 == 0 else "mężczyzna"
     names = NAMES_F if gender == "kobieta" else NAMES_M
+    hue = int(h[7:11], 16) % 360
     return {
         "role": role or "agent",
         "name": names[int(h[1:3], 16) % len(names)],
         "gender": gender,
         "position": POSITIONS[int(h[3:5], 16) % len(POSITIONS)],
+        "color": f"hsl({hue}, 62%, 52%)",
+        "color_soft": f"hsl({hue}, 70%, 88%)",
+        "icon": CHARACTER_ICONS[int(h[11:13], 16) % len(CHARACTER_ICONS)],
     }
 
 
@@ -56,5 +68,6 @@ def backstory(role: str) -> str:
 def persona_full(role: str) -> dict[str, str]:
     p = persona_for_role(role)
     p["backstory"] = backstory(role)
-    p["avatar"] = "👩‍💻" if p["gender"] == "kobieta" else "👨‍💻"
+    # avatar = ikona charakteru + płeć w tle (charakter jest unikalny per rola)
+    p["avatar"] = p["icon"]
     return p

@@ -34,7 +34,7 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 
 
 def _version_info() -> dict:
@@ -58,12 +58,36 @@ def _version_info() -> dict:
             "age_s": (time.time() - commit_ts) if commit_ts else None}
 
 
+def _git_merges(limit: int = 60) -> list[dict]:
+    """Merge z git log (--merges) — źródło prawdy także dla direct merge Sponsora
+    („sponsor: direct merge, no PR”), które NIE przechodzą przez metryki flow."""
+    import subprocess
+    out_list: list[dict] = []
+    try:
+        out = subprocess.run(["git", "log", "--merges", f"--format=%ct|%h|%s", f"-{limit}"],
+                             capture_output=True, text=True, cwd=ROOT)
+        if out.returncode == 0:
+            for line in out.stdout.strip().splitlines():
+                parts = line.split("|", 2)
+                if len(parts) == 3:
+                    ts, h, subj = float(parts[0]), parts[1], parts[2]
+                    task_id = ""
+                    m = re.search(r"([A-Z]+-\d+[a-z]?)", subj)
+                    if m:
+                        task_id = m.group(1)
+                    out_list.append({"ts": ts, "hash": h, "subject": subj[:120],
+                                     "task_id": task_id, "kind": "git_merge"})
+    except Exception:
+        pass
+    return out_list
+
+
 def _merges_info(s: State) -> dict:
-    """Ostatnie merge'e: ile w ostatniej dobie, kiedy ostatni, lista ostatnich."""
+    """Ostatnie merge'e: ile w ostatniej dobie, kiedy ostatni, lista ostatnich.
+    Źródła: metryki flow (merge/auto_merge/MERGED) + git log --merges (direct merge)."""
     now = time.time()
-    recent: list[dict] = []
-    count_24h = 0
-    last_ts = None
+    seen: set = set()
+    all_m: list[dict] = []
     try:
         rows = s._conn().execute(
             "SELECT ts, task_id, kind, payload FROM metrics WHERE kind IN ('merge','auto_merge','task_event') "
@@ -75,14 +99,24 @@ def _merges_info(s: State) -> dict:
                 p = {}
             st = str((p.get("changes") or {}).get("status", ""))
             if kind in ("merge", "auto_merge") or "MERGED" in st:
-                if last_ts is None:
-                    last_ts = ts
-                if now - ts < 86400:
-                    count_24h += 1
-                if len(recent) < 10:
-                    recent.append({"ts": ts, "task_id": task_id or (p.get("task") or ""), "kind": kind})
+                key = (round(ts, 1), task_id or kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_m.append({"ts": ts, "task_id": task_id or (p.get("task") or ""),
+                              "kind": kind, "source": "flow"})
     except Exception:
         pass
+    for g in _git_merges():
+        key = (round(g["ts"], 1), g.get("hash") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        all_m.append({**g, "source": "git"})
+    all_m.sort(key=lambda m: -m["ts"])
+    recent = all_m[:10]
+    count_24h = sum(1 for m in all_m if now - m["ts"] < 86400)
+    last_ts = all_m[0]["ts"] if all_m else None
     return {"last_ts": last_ts, "last_ago_s": (now - last_ts) if last_ts else None,
             "count_24h": count_24h, "recent": recent}
 
@@ -265,8 +299,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 .flowErr{color:#f85149;font-size:11px;white-space:pre-wrap;background:#3d1215;border:1px solid #f85149;border-radius:6px;padding:6px;margin:6px 0}
 .flowOk{color:#3fb950;font-size:11px}
 /* widok FIRMA (osiedle z góry) */
- #estateWrap{width:100%;overflow:hidden;border:1px solid #21262d;border-radius:10px}
- #estate{width:100%;height:72vh;display:block;cursor:grab;background:#0b0f14;touch-action:none}
+ #estateWrap{width:100%;overflow:hidden;border:1px solid #d9c8a9;border-radius:10px}
+ #estate{width:100%;height:72vh;display:block;cursor:grab;background:#f3ead8;touch-action:none}
  #estate:active{cursor:grabbing}
  #estate .desk{will-change:transform}
  #estate .desk rect{filter:drop-shadow(0 1px 2px #0009)}
@@ -276,7 +310,22 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #estate g.room:hover rect{stroke:#58a6ff}
  #estate text{user-select:none}
  #estate .room.busy{animation:pulseIco 2s infinite}
- #estate .alarmzone{animation:pulseIco 1.2s infinite}
+ /* przy standardowej pracy agent tylko „miga” (blink avataru) */
+ #estate .room.busy .ava{animation:avaBlink 1.1s infinite}
+ @keyframes avaBlink{0%,100%{opacity:1}50%{opacity:.15}}
+ /* alarm — mocne czerwone miganie strefy, gdy są zadania FAILED/ESCALATED */
+ #estate .alarmzone rect{animation:alarmFlash .9s infinite}
+ @keyframes alarmFlash{0%,100%{fill-opacity:.3;stroke:#f85149;stroke-width:1.5}50%{fill-opacity:.95;stroke:#ff7b72;stroke-width:3}}
+ /* dymki rozmów live między agentami (kolor rozmówcy) */
+ #estate .bubble{animation:bubblePop .25s ease-out}
+ @keyframes bubblePop{from{opacity:0}to{opacity:1}}
+ #estate .bubble rect{filter:drop-shadow(0 2px 5px #0009)}
+ #estate .convLink{stroke-dasharray:5 6;animation:convDash 1.1s linear infinite;fill:none}
+ @keyframes convDash{to{stroke-dashoffset:-22}}
+ /* fullscreen widoku biura */
+ #tab-firma.fs{position:fixed;inset:0;z-index:60;background:#0d1117;padding:12px;overflow:auto}
+ #tab-firma.fs #estate{height:calc(100vh - 170px)}
+ #tab-firma.fs #estateWrap{height:auto}
  #firmaLegend{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
  @media (max-width:720px){ #estate{height:60vh} }
  /* zakładki w panelu szczegółów + świeżość + scroll-boksy */
@@ -356,6 +405,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <section class="tabpage" id="tab-firma">
 <h2>🏢 Firma — mapka osiedla <span class="muted">(biuro=projekt · pokój=agent · biurko=zadanie · 🏆=milestone; klik biurko=szczegóły zadania, klik pokój=wątek z osobą, klik biuro=filtr projektu, klik legendę=podświetl status; kółko=zoom, drag=przesuwaj)</span>
 <button onclick="renderFirma()" style="background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:4px 12px;cursor:pointer">🔄 odśwież mapę</button>
+<button id="fsBtn" onclick="toggleFirmaFs()" style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px 12px;cursor:pointer">⛶ pełny ekran</button>
 <span class="muted" style="font-size:11px">na mapie auto-refresh rzadszy (co 10s) — nie wiesza widoku</span></h2>
 <div id="firmaLegend"></div>
 <div id="estateWrap"><svg id="estate" preserveAspectRatio="xMidYMid meet"></svg></div>
@@ -508,16 +558,21 @@ async function refreshInner(){
   const navA = document.getElementById('navAlert');
   if(navA) navA.textContent = awaiting ? ' 🚨'+awaiting : '';
   document.getElementById('team').innerHTML = (d.team||[]).map(m => {
+    const col = m.color || '#8b949e';
     const curRes = m.current && m.current.res ? ` <span class="muted" title="pid ${m.current.res.pid}">⚙️${m.current.res.cpu}% 🧠${m.current.res.rss_mb}MB</span>` : '';
     const cur = m.current ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span>${curRes}</div>` : '<div class="cur muted">— wolny/a —</div>';
-    return `<div class="pcard ${m.current?'busy':''}" title="rola: ${m.role}">
-      <span class="ava">${m.avatar||'🧑‍💻'}</span> <span class="nm">${esc(m.name)}</span>
-      <button class="tbtn" style="float:right" onclick="event.stopPropagation();startThread('${esc(m.role)}')" title="nowy wątek z ${esc(m.name)}">💬</button>
-      <div class="pos">${esc(m.position)} · rola: ${esc(m.role)} · ${esc(m.gender)}</div>
+    // liczba zadań per status (kolorowe chipsy) zamiast „zadania: X zmergowane: Y”
+    const chips = Object.entries(m.by_status||{}).sort((a,b)=>b[1]-a[1]).map(([st,n]) =>
+      `<span class="sbadge" style="background:${ST_COLOR[st]||'#6e7681'};font-size:9px;padding:0 6px;margin:0 3px 2px 0" title="${esc(st)}: ${n}">${d.icons[st]||''} ${n}</span>`).join('');
+    return `<div class="pcard ${m.current?'busy':''}" style="border-top:3px solid ${col}" title="rola: ${m.role} · kolor osoby: ${col}">
+      <span class="ava" style="color:${col};text-shadow:0 0 8px ${col}66">${m.avatar||'🧑‍💻'}</span> <span class="nm">${esc(m.name)}</span>
+      <button class="tbtn" style="float:right" onclick="event.stopPropagation();startThread('${esc(m.role)}')" title="rozmowa z ${esc(m.name)}">💬</button>
+      <button class="tbtn" style="float:right;margin-right:4px" onclick="event.stopPropagation();openDuties('${esc(m.role)}')" title="obowiązki cykliczne ${esc(m.name)}">📋</button>
+      <div class="pos" style="color:${col}">${esc(m.position)} · rola: ${esc(m.role)}</div>
       <div class="story">„${esc(m.backstory)}”</div>
       ${cur}
-      <div class="stats">zadania: ${m.tasks} · zmergowane: ${m.merged}</div>
-      <div class="tenure" title="czas w firmie / przepracowany czas">🏅 w firmie ${fmtDur(m.tenure_s||0)} · ⏱ przepracowane ${fmtDur(m.work_s||0)}</div>
+      <div class="stats">${chips || '<span class="muted">brak zadań</span>'}</div>
+      <div class="tenure" title="czas w firmie / przepracowany czas">🏅 staż ${fmtDur(m.tenure_s||0)} · ⏱ przepracowane ${fmtDur(m.work_s||0)}</div>
     </div>`;
   }).join('');
   document.getElementById('threads').innerHTML = (d.threads||[]).map(th =>
@@ -862,11 +917,62 @@ async function resetFlowCfg(){
   await fetch('/api/flow/config/reset', {method:'POST', body:'{}'});
   openFlowCfg(); renderFlow(); refresh();
 }
+// ===== 📋 Obowiązki cykliczne (recurring) per pracownik — priorytet P3 (niżej niż bieżące) =====
+async function openDuties(role){
+  curTask = null; curThread = null;
+  let list = [];
+  try{ const r = await fetch('/api/recurring?role=' + encodeURIComponent(role)); list = await r.json(); }catch(e){}
+  const m = (lastState && lastState.team || []).find(x => x.role === role) || {name: role, icon: '🧑', color: '#8b949e'};
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'duties|' + role + '|' + list.length + '|' + (lastState ? lastState.ts || 0 : 0);
+  const rows = list.map(x => `<div class="ask">
+    <b>${x.active ? '✅' : '⏸️'}</b> <span class="prio prio-${x.priority||'P3'}">${x.priority||'P3'}</span> <b>${esc(x.title)}</b>
+    <div class="muted">${esc(x.schedule)} · ${esc(x.id)}${x.last_run ? ' · ostatnio ' + new Date(x.last_run*1000).toLocaleString() : ' · jeszcze nie wykonywane'}</div>
+    <button class="tbtn" onclick="toggleRecurring('${esc(x.id)}', ${x.active ? 0 : 1})">${x.active ? '⏸ wyłącz' : '▶ włącz'}</button>
+  </div>`).join('') || '<span class="muted">brak obowiązków cyklicznych</span>';
+  document.getElementById('detailBody').innerHTML = `<h3>📋 Obowiązki ${m.icon || ''} ${esc(m.name)} <span class="muted" style="color:${m.color||'#8b949e'}">(${esc(role)})</span></h3>
+    <div class="kv muted" style="font-size:11px">Zadania cykliczne mają priorytet <b>P3</b> — zawsze po bieżących sprawach (P0–P2) w kolejce.</div>
+    ${rows}
+    <h2>➕ Dodaj obowiązek</h2>
+    <textarea id="recTitle" style="width:100%;height:44px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit;border-radius:6px;padding:6px" placeholder="np. cotygodniowy przegląd health-reportu…"></textarea>
+    <div style="margin:6px 0">
+      <select id="recSched" style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px">
+        <option value="daily">codziennie</option><option value="weekly" selected>co tydzień</option><option value="hourly">co godzinę</option>
+      </select>
+      <button onclick="addRecurring('${esc(role)}')">➕ Dodaj (P3)</button>
+    </div>`;
+}
+async function addRecurring(role){
+  const t = (document.getElementById('recTitle')||{}).value || '';
+  const txt = t.trim(); if(!txt) return;
+  const sch = (document.getElementById('recSched')||{}).value || 'weekly';
+  await fetch('/api/recurring', {method:'POST', body: JSON.stringify({role: role, title: txt, schedule: sch, priority: 'P3'})});
+  openDuties(role); refresh();
+}
+async function toggleRecurring(id, active){
+  await fetch('/api/recurring/' + id + '/toggle', {method:'POST', body: JSON.stringify({active: !!active})});
+  refresh();
+  const key = (document.getElementById('detailBody').dataset.key || '');
+  const m = key.match(/^duties\\|([^|]+)\\|/);
+  if(m) openDuties(m[1]);
+}
 // ===== FIRMA: widok świata (osiedle biur, SVG top-down, animacje przepływu) =====
 const SVGNS = 'http://www.w3.org/2000/svg';
 let firmaWorld = null;       // ostatni /api/firma
 let firmaView = null;        // {x,y,w,h} viewBox (pan/zoom)
 let deskEls = {};            // taskId -> <g> (persistent — żeby CSS transition animował przejazd)
+let firmaGate = null;        // {x,y} brama recepcji (= Sponsor) — do dymków rozmów
+let roomByRole = {};         // role -> room (kolor osoby + pozycja pokoju)
+const expandedZones = new Set();  // klucze office:zone rozwinięte po kliknięciu zbiorczego [+N]
+function toggleFirmaFs(){
+  const sec = document.getElementById('tab-firma');
+  const on = sec.classList.toggle('fs');
+  const b = document.getElementById('fsBtn');
+  if(b) b.textContent = on ? '🗗 wyjdź z pełnego ekranu' : '⛶ pełny ekran';
+  if(on && document.documentElement.requestFullscreen){ try{ document.documentElement.requestFullscreen().catch(()=>{}); }catch(e){} }
+  if(!on && document.fullscreenElement){ try{ document.exitFullscreen().catch(()=>{}); }catch(e){} }
+  setTimeout(() => { const svg = document.getElementById('estate'); if(firmaView && svg) svg.setAttribute('viewBox', firmaView.x + ' ' + firmaView.y + ' ' + firmaView.w + ' ' + firmaView.h); }, 60);
+}
 function svgEl(name, attrs, parent){
   const e = document.createElementNS(SVGNS, name);
   for(const k in attrs) e.setAttribute(k, attrs[k]);
@@ -881,6 +987,7 @@ async function renderFirma(){
     const r = await fetch('/api/firma'); firmaWorld = await r.json();
   }catch(e){ return; }
   const W = firmaWorld, cfg = W.config, C = cfg.colors, s2 = cfg.stage2 || {};
+  roomByRole = {};
   const g = cfg.estate.grid, off = cfg.office, R = cfg.rooms, D = cfg.desks;
   const cols = Math.max(1, g.cols|0), gap = g.gap, margin = g.margin + 26; // +26 na ogrodzenie
   const ow = off.w;
@@ -904,7 +1011,7 @@ async function renderFirma(){
     staticKey = key;
     let s = '';
     // tło osiedla (trawa) + droga wokół
-    s += `<rect x="-26" y="-26" width="${Wsvg+52}" height="${Hsvg+52}" rx="18" fill="#0e1a12"/>`;
+    s += `<rect x="-26" y="-26" width="${Wsvg+52}" height="${Hsvg+52}" rx="18" fill="#dccdab"/>`;
     s += `<rect x="0" y="0" width="${Wsvg}" height="${Hsvg}" fill="${C.bg}"/>`;
     // OGRODZENIE osiedla (zamknięte) — słupki + 2 poziome belki
     const fence = (x1,y1,x2,y2) => {
@@ -919,6 +1026,7 @@ async function renderFirma(){
     // brama (przerwa w ogrodzeniu na dole) + szyld osiedla
     s += `<rect x="${Wsvg/2-90}" y="${Hsvg+6}" width="180" height="14" fill="${C.bg}"/>`;
     const gate = cfg.estate.gate, gx = Wsvg/2 - gate.w/2, gy = Hsvg + 18;
+    firmaGate = {x: gx + gate.w/2, y: gy + gate.h/2};
     s += `<g><rect x="${gx-8}" y="${gy-10}" width="${gate.w+16}" height="${gate.h+20}" rx="10" fill="#3a2f1d" stroke="#8b6b3d" stroke-width="3"/>
       <rect x="${gx}" y="${gy}" width="${gate.w}" height="${gate.h}" rx="8" fill="${C.gate}" opacity="0.95"/>
       <text x="${gx+gate.w/2}" y="${gy+17}" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">🚪 ${esc(cfg.meta.name||'Osiedle')}</text>
@@ -930,14 +1038,21 @@ async function renderFirma(){
       if(s2.roadDashes){ const cx = x + cfg.estate.road/2;
         for(let y=10; y<Hsvg; y+=28) s += `<line x1="${cx}" y1="${y}" x2="${cx}" y2="${y+14}" stroke="#8b949e" stroke-width="2" opacity="0.5"/>`; }
     }
-    // rośliny: drzewa + kwiaty + krzaki (deterministycznie)
+    // rośliny: drzewa + kwiaty TYLKO poza biurami (pas góra/dół osiedla + wzdłuż dróg)
     const flora = s2.flora || {};
     for(let i=0;i<(s2.treeCount||6);i++){
-      const tx = 20 + ((i*97) % Math.max(1, Wsvg-40)), ty = 20 + ((i*61) % Math.max(1, Hsvg-140));
+      const tx = 30 + ((i*97) % Math.max(1, Wsvg-60));
+      const ty = (i % 2 === 0) ? (14 + ((i*31) % 22)) : (Hsvg - 16 - ((i*29) % 42));
       s += `<text x="${tx}" y="${ty}" font-size="20">${i%3===0?'🌲':'🌳'}</text>`;
     }
+    for(let i=1;i<cols;i++){  // drzewka przy drogach pionowych między działkami
+      const x = margin + i*ow + (i-0.5)*gap + cfg.estate.road/2;
+      const y = 60 + ((i*53) % Math.max(1, Hsvg-160));
+      s += `<text x="${x-8}" y="${y}" font-size="18">🌳</text>`;
+    }
     for(let i=0;i<(flora.flowers||8);i++){
-      const fx = 24 + ((i*53) % Math.max(1, Wsvg-48)), fy = Hsvg - 30 - ((i*29) % 60);
+      const fx = 24 + ((i*53) % Math.max(1, Wsvg-48));
+      const fy = (i % 2 === 0) ? (34 + ((i*29) % 26)) : (Hsvg - 10 - ((i*37) % 46));
       s += `<text x="${fx}" y="${fy}" font-size="12">${['🌷','🌼','🌻'][i%3]}</text>`;
     }
     // biura — kreskówkowe budynki: korpus z gradientem, dach (trójkąt), komin, drzwi, okna, szyld
@@ -947,19 +1062,19 @@ async function renderFirma(){
       const oh = ohArr[oi];                       // wysokość TEGO biura
       const zoneOff = oh - off.h;                // strefy „przyklejone” do dołu biura
       const gid = 'grad-' + String(o.project_id).replace(/[^a-z0-9_-]/gi, '_');
-      s += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      if(s2.gradients) s += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="${o.color}" stop-opacity="0.65"/><stop offset="100%" stop-color="${C.plot}" stop-opacity="1"/></linearGradient></defs>`;
       s += `<g class="office" data-pid="${esc(o.project_id)}" style="cursor:pointer">`;
-      // cień + korpus
-      s += `<rect x="${ox+4}" y="${oy+6}" width="${ow}" height="${oh}" rx="12" fill="#000" opacity="0.35"/>`;
-      s += `<rect class="plot" x="${ox}" y="${oy}" width="${ow}" height="${oh}" rx="12" fill="url(#${gid})" stroke="${o.color}" stroke-width="3"/>`;
+      // cień + korpus (flat design: cień/gradient tylko gdy włączone w stage2)
+      if(s2.shadows) s += `<rect x="${ox+4}" y="${oy+6}" width="${ow}" height="${oh}" rx="12" fill="#000" opacity="0.35"/>`;
+      s += `<rect class="plot" x="${ox}" y="${oy}" width="${ow}" height="${oh}" rx="12" fill="${s2.gradients ? 'url(#' + gid + ')' : C.office}" stroke="${o.color}" stroke-width="3"/>`;
       // dach (trójkąt) + komin
       s += `<polygon points="${ox-8},${oy+4} ${ox+ow/2},${oy-26} ${ox+ow+8},${oy+4}" fill="${o.color}" opacity="0.9" stroke="#0d1117" stroke-width="2"/>`;
       s += `<rect x="${ox+ow-46}" y="${oy-24}" width="16" height="22" fill="#6e7681" stroke="#30363d"/>`;
       // szyld z nazwą projektu
       s += `<rect x="${ox+10}" y="${oy+8}" width="${Math.min(ow-20, 14*o.project_id.length+70)}" height="22" rx="6" fill="#0d1117" opacity="0.85" stroke="${o.color}"/>`;
       s += `<text x="${ox+18}" y="${oy+24}" font-size="12" font-weight="bold" fill="#fff">🏢 ${esc(o.project_id)}</text>`;
-      s += `<text x="${ox+ow-12}" y="${oy+24}" text-anchor="end" font-size="10" fill="#c9d1d9">${o.read_only?'🚧 read-only':'🔓 '+esc(o.policy||'')}</text>`;
+      s += `<text x="${ox+ow-12}" y="${oy+24}" text-anchor="end" font-size="10" fill="${C.muted}">${o.read_only?'🚧 read-only':'🔓 '+esc(o.policy||'')}</text>`;
       if(o.read_only) for(let t=0;t<8;t++)
         s += `<line x1="${ox+8+t*28}" y1="${oy+34}" x2="${ox+26+t*28}" y2="${oy+50}" stroke="${C.tape}" stroke-width="3" opacity="0.75"/>`;
       // okna + drzwi (front budynku)
@@ -983,14 +1098,16 @@ async function renderFirma(){
         const ry = oy + R.y0 + 40 + Math.floor(ri / R.perRow) * (R.h + R.gap);
         // wszystkie pokoje mieszczą się — wysokość biura liczona wyżej
         const busy = !!room.current;
-        s += `<g class="room" data-role="${esc(room.role)}" style="cursor:pointer">
-          <rect x="${rx}" y="${ry}" width="${R.w}" height="${R.h}" rx="8" fill="${C.room}" stroke="${busy?'#1f6feb':C.roomStroke}" stroke-width="${busy?2.5:1.5}"/>
-          <text x="${rx+8}" y="${ry+16}" font-size="14">${room.avatar}</text>
-          <text x="${rx+26}" y="${ry+15}" font-size="10" font-weight="bold" fill="${C.text}">${esc(room.name)}</text>
+        const rcol = room.color || '#1f6feb';
+        roomByRole[room.role] = room;
+        s += `<g class="room ${busy?'busy':''}" data-role="${esc(room.role)}" style="cursor:pointer">
+          <rect x="${rx}" y="${ry}" width="${R.w}" height="${R.h}" rx="8" fill="${C.room}" stroke="${busy?rcol:(room.color_soft||C.roomStroke)}" stroke-width="${busy?2.5:1.5}"/>
+          <text class="ava" x="${rx+8}" y="${ry+17}" font-size="15">${room.avatar||'🧑'}</text>
+          <text x="${rx+27}" y="${ry+15}" font-size="10" font-weight="bold" fill="${rcol}">${esc(room.name)}</text>
           <text x="${rx+8}" y="${ry+26}" font-size="8" fill="${C.muted}">${esc(room.position)}</text>
           ${room.res?`<text x="${rx+R.w-8}" y="${ry+15}" text-anchor="end" font-size="8" fill="${C.muted}">⚙️${room.res.cpu}% 🧠${room.res.rss_mb}MB</text>`:''}
-          <text x="${rx+8}" y="${ry+R.h-8}" font-size="9" fill="${busy?'#58a6ff':C.muted}">${busy?('🔨 '+esc(room.current.id)):('wolny/a · zadań: '+room.taskCount+(room.threadCount?' · 💬'+room.threadCount:''))}</text>
-          <title>klik = rozmowa z ${esc(room.name)} (${esc(room.role)})</title></g>`;
+          <text x="${rx+8}" y="${ry+R.h-8}" font-size="9" fill="${busy?rcol:C.muted}">${busy?('🔨 '+esc(room.current.id)):('wolny/a · zadań: '+room.taskCount+(room.threadCount?' · 💬'+room.threadCount:''))}</text>
+          <title>klik = rozmowa z ${esc(room.name)} (${esc(room.role)}) · zadania: ${esc(JSON.stringify(room.by_status||{}))} · staż ${fmtDur(room.tenure_s||0)}</title></g>`;
         room._x = rx; room._y = ry;
       });
       // strefy biura (półki na teczki)
@@ -1031,9 +1148,19 @@ async function renderFirma(){
     const byZone = {};
     for(const d of o.desks){ (byZone[d.zone] = byZone[d.zone]||[]).push(d); }
     for(const [zone, list] of Object.entries(byZone)){
-      list.forEach((d, i) => {
-        seen.add(d.id);
-        const sty = stCfg[d.status] || stCfg.READY;
+      // agregacja artefaktów: gdy w strefie jest więcej biurek niż miejsc — pokaż capacity-1 + zbiorczy [+N]
+      const z = cfg.zones[zone];
+      let capacity = 999;
+      if(zone === 'desk'){
+        capacity = Math.max(1, Math.floor((R.w-12)/(D.w+D.gap))) * Math.max(1, Math.floor((R.h - R.headerH - 8)/(D.h+D.gap)));
+      } else if(z){
+        capacity = Math.max(1, Math.floor((z.rect[2]-10)/(D.w+D.gap))) * Math.max(1, Math.floor((z.rect[3]-16)/(D.h+D.gap)));
+      }
+      const zkey = o.project_id + ':' + zone;
+      const expanded = expandedZones.has(zkey);
+      let show = list, hiddenN = 0;
+      if(list.length > capacity && !expanded){ show = list.slice(0, Math.max(1, capacity-1)); hiddenN = list.length - show.length; }
+      const deskPos = (d, i) => {
         const scale = ps[d.priority] || 1;
         const dw = D.w*scale, dh = D.h*scale;
         let x, y;
@@ -1045,13 +1172,21 @@ async function renderFirma(){
             y = room._y + R.headerH + 4 + Math.floor(i/perRow)*(D.h+D.gap);
           } else { x = ox+20; y = oy+70; }
         } else {
-          const z = cfg.zones[zone]; if(!z) return;
+          if(!z) return null;
           const zx = ox+z.rect[0], zy = oy+z.rect[1]+(o._zoneOff||0);
           const perRow = Math.max(1, Math.floor((z.rect[2]-10)/(D.w+D.gap)));
           x = zx + 5 + (i % perRow)*(D.w+D.gap);
           y = zy + 16 + Math.floor(i/perRow)*(D.h+D.gap);
         }
         x += (D.w-dw)/2; y += (D.h-dh)/2;
+        return {x:x, y:y, dw:dw, dh:dh};
+      };
+      show.forEach((d, i) => {
+        seen.add(d.id);
+        const p = deskPos(d, i); if(!p) return;
+        const sty = stCfg[d.status] || stCfg.READY;
+        const scale = ps[d.priority] || 1;
+        const x = p.x, y = p.y, dw = p.dw, dh = p.dh;
         let gEl = deskEls[d.id];
         const dim = dimStatus && d.status !== dimStatus;
         if(!gEl){
@@ -1070,11 +1205,46 @@ async function renderFirma(){
         }
         gEl.style.opacity = dim ? '0.12' : '1';
       });
+      if(hiddenN > 0){
+        // zbiorczy kafelek [+N] — klik rozwija wszystkie zadania strefy
+        const d0 = list[show.length] || list[0];
+        const p = deskPos(d0, show.length) || {x: ox+20, y: oy+120, dw: D.w, dh: D.h};
+        const g = svgEl('g', {class:'desk more', cursor:'pointer', transform:'translate(' + p.x + 'px,' + p.y + 'px)'}, deskLayer);
+        svgEl('rect', {width:p.dw, height:p.dh, rx:4, fill:'#161b22', stroke:'#d29922', 'stroke-width':2, 'stroke-dasharray':'4 3'}, g);
+        const t = svgEl('text', {x:p.dw/2, y:p.dh/2+4, 'text-anchor':'middle', 'font-size':11, fill:'#d29922', 'font-weight':'bold', 'pointer-events':'none'}, g);
+        t.textContent = '[+' + hiddenN + ']';
+        const ti = svgEl('title', {}, g);
+        ti.textContent = 'klik = rozwiń wszystkie zadania tej strefy (' + list.length + ')';
+        g.addEventListener('click', (ev) => { ev.stopPropagation(); expandedZones.add(zkey); renderFirma(); });
+      }
     }
   }
   for(const id of Object.keys(deskEls)){
     if(!seen.has(id)){ deskEls[id].remove(); delete deskEls[id]; }
   }
+  // ===== dymki rozmów live (wątki sponsor↔agent świeższe niż 150s) — kolor rozmówcy =====
+  let convLayer = document.getElementById('convLayer');
+  if(!convLayer){ convLayer = svgEl('g', {id:'convLayer'}, svg); }
+  let cs = '';
+  const roomPos = {};
+  for(const o of visOffices) for(const r of o.rooms) if(r._x !== undefined) roomPos[r.role] = {x: r._x + R.w/2, y: r._y + R.h/2};
+  const gatePos = firmaGate || {x: Wsvg/2, y: Hsvg + 40};
+  for(const c of (W.conversations || [])){
+    const a = roomPos[c.a_role];
+    if(!a) continue;
+    const rm = roomByRole[c.a_role] || {};
+    const col = rm.color || '#58a6ff';
+    const b = (c.b_role === 'sponsor') ? gatePos : (roomPos[c.b_role] || gatePos);
+    cs += '<path class="convLink" d="M ' + a.x + ' ' + (a.y-12) + ' C ' + a.x + ' ' + (a.y-70) + ', ' + b.x + ' ' + (b.y-70) + ', ' + b.x + ' ' + (b.y-8) + '" stroke="' + col + '" stroke-width="2" opacity="0.85"/>';
+    const txt = (c.text || '…');
+    const bw = Math.min(200, 34 + txt.length*5.4), bh = 36;
+    const bx = Math.max(4, Math.min(Wsvg-4-bw, a.x - bw/2)), by = Math.max(4, a.y - 84);
+    cs += '<g class="bubble"><rect x="' + bx + '" y="' + by + '" width="' + bw + '" height="' + bh + '" rx="10" fill="' + col + '"/>' +
+      '<polygon points="' + (a.x-6) + ',' + (by+bh) + ' ' + (a.x+6) + ',' + (by+bh) + ' ' + a.x + ',' + (by+bh+8) + '" fill="' + col + '"/>' +
+      '<text x="' + (bx+8) + '" y="' + (by+15) + '" font-size="10" fill="#fff" font-weight="bold">' + (c.author === 'sponsor' ? '🧑‍💼→ ' : (rm.avatar||'') + ' ') + esc(txt.slice(0, 26)) + '</text>' +
+      '<text x="' + (bx+8) + '" y="' + (by+29) + '" font-size="8" fill="#ffffffd9">💬 live · ' + esc(c.a_role) + (c.b_role === 'sponsor' ? ' ↔ Sponsor' : ' ↔ ' + esc(c.b_role)) + '</text></g>';
+  }
+  convLayer.innerHTML = cs;
 }
 // pan/zoom mapy osiedla (wheel = zoom wokół kursora, drag = przesuwaj)
 function initFirmaPanZoom(){
@@ -1266,14 +1436,25 @@ def _snapshot(s: State) -> dict:
         if t.get("status") == "RUNNING":
             roles[t.get("role") or "worker"]["current"] = t
     team = []
+    now_t = time.time()
     for r in roles.values():
         p = _pers.persona_full(r["role"])
         cur = r["current"]
-        team.append({**p, "tasks": r["tasks"], "merged": r["merged"],
+        rtasks = [t for t in raw if (t.get("role") or "worker") == r["role"]]
+        by_status: dict[str, int] = {}
+        for t in rtasks:
+            by_status[t["status"]] = by_status.get(t["status"], 0) + 1
+        first_seen = min((t.get("created_at") or now_t) for t in rtasks) if rtasks else now_t
+        work_s = float(s.get_kv(f"work_s:{r['role']}", 0) or 0)
+        if cur and cur.get("started_at"):
+            work_s += max(0.0, now_t - float(cur["started_at"]))
+        team.append({**p, "tasks": r["tasks"], "merged": r["merged"], "by_status": by_status,
+                     "tenure_s": max(0.0, now_t - first_seen), "work_s": work_s,
                      "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority"),
                                   "res": _proc_stats(cur.get("claimed_by"))}
                                  if cur else None)})
-    team.sort(key=lambda x: (x["current"] is None, x["role"]))
+    # kolejność wg STAŻU pracy (najstarsi pracownicy pierwsi); pracujący mają osobny badge
+    team.sort(key=lambda x: (-(x.get("tenure_s") or 0), x["role"]))
     # bezpośrednie zapytania do Vibe (formularz, bez taska) — ostatnie 10 + odpowiedzi z kv
     asks = []
     for r in s._conn().execute(
@@ -1307,17 +1488,7 @@ def _snapshot(s: State) -> dict:
         for f in sorted(logs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
             st = f.stat()
             logs.append({"name": f.name, "size": st.st_size, "age": int(time.time() - st.st_mtime)})
-        # badge „czas w firmie / przepracowane” per rola
-        now = time.time()
-        for m in team:
-            role = m["role"]
-            rtasks = [t for t in raw if (t.get("role") or "worker") == role]
-            first_seen = min((t.get("created_at") or now) for t in rtasks) if rtasks else now
-            work_s = float(s.get_kv(f"work_s:{role}", 0) or 0)
-            if m.get("current") and m["current"].get("started_at"):
-                work_s += max(0.0, now - float(m["current"]["started_at"]))
-            m["tenure_s"] = max(0.0, now - first_seen)
-            m["work_s"] = work_s
+        # (staż tenure_s / przepracowany work_s są już policzone przy budowaniu team — sort wg stażu)
         from engine import team_threads
         return {"icons": ICON, "projects": projs, "tasks": tasks, "events": events, "team": team, "asks": asks,
                 "stats": stats,
@@ -1458,6 +1629,11 @@ class Handler(BaseHTTPRequestHandler):
                 "override_active": flowmod.OVERRIDE_CFG.exists(),
                 "errors": flowmod.validate_config(cfg),
             }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path == "/api/recurring":
+            # obowiązki cykliczne per rola (zakładka „Obowiązki” na karcie pracownika)
+            role = parse_qs(u.query).get("role", [None])[0]
+            self._send(200, json.dumps(State().list_recurring(role=role), ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
         elif u.path.startswith("/api/task/"):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),
@@ -1521,6 +1697,22 @@ class Handler(BaseHTTPRequestHandler):
             s.record_metric("direct_ask", {"qid": qid, "q": text[:500], "status": "running"}, None)
             threading.Thread(target=_run_ask, args=(qid, text), daemon=True).start()
             self._send(200, json.dumps({"ok": True, "qid": qid}).encode(), "application/json")
+            return
+        if u.path == "/api/recurring":
+            # dodaj obowiązek cykliczny (domyślnie priorytet P3 — niżej niż bieżące sprawy)
+            role = str(body.get("role") or "")
+            title = str(body.get("title") or "").strip()
+            if not role or not title:
+                self._send(400, b'{"error":"role i title wymagane"}', "application/json")
+                return
+            rid = "REC-" + uuid.uuid4().hex[:6].upper()
+            State().add_recurring(rid, role, title, schedule=str(body.get("schedule") or "daily"),
+                                  priority=str(body.get("priority") or "P3"))
+            self._send(200, json.dumps({"ok": True, "id": rid}).encode(), "application/json")
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "recurring"] and parts[3] == "toggle":
+            State().set_recurring_active(parts[2], bool(body.get("active", True)))
+            self._send(200, b'{"ok":true}', "application/json")
             return
         if u.path == "/api/flow/action":
             # FLOW: akcja Sponsora zdefiniowana w configu (approve/decline/retry/comment/set_priority)
