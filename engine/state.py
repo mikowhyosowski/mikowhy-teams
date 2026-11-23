@@ -31,7 +31,7 @@ AWAITING_APPROVAL = "AWAITING_APPROVAL"  # zadania migracyjne czekają na ręczn
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
     READY: {RUNNING, BLOCKED, ESCALATED},
-    RUNNING: {IN_REVIEW, READY, FAILED, BLOCKED, ESCALATED},
+    RUNNING: {IN_REVIEW, READY, FAILED, BLOCKED, ESCALATED, AWAITING_APPROVAL},  # AWAITING_APPROVAL = ASK_SPONSOR (pytanie, nie decyzja)
     IN_REVIEW: {READY_TO_MERGE, READY, ESCALATED},
     READY_TO_MERGE: {MERGED, READY, ESCALATED},
     MERGED: set(),
@@ -106,13 +106,18 @@ class InvalidTransition(StateError):
     pass
 
 
+_CONNS: dict[str, sqlite3.Connection] = {}
+_CONNS_LOCK = threading.Lock()
+
+
 class State:
-    """Thread-safe (per-thread connection) wrapper nad SQLite WAL."""
+    """Wrapper nad SQLite WAL. Jedno współdzielone połączenie na proces i db_path
+    (check_same_thread=False — sqlite w trybie serialized jest bezpieczny wątkowo),
+    dzięki czemu mnożenie instancji State() nie leakuje deskryptorów."""
 
     def __init__(self, db_path: Path | str = DB_PATH):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._local = threading.local()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             # migracje: pola Telegram + multi-project (project_id, repo)
@@ -122,6 +127,10 @@ class State:
                 ("tasks", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
                 ("tasks", "repo", "TEXT"),  # 'factory' = katalog silnika, NULL = target_repo_path projektu
                 ("tasks", "read_only", "INTEGER NOT NULL DEFAULT 0"),  # zadanie nic nie commituje (audyt/decyzja/plan)
+                ("tasks", "mode", "TEXT DEFAULT 'pipeline'"),  # 'pipeline' (domyślny) | 'llm' — wykonuje sam LLM (vibe z narzędziami)
+                ("tasks", "started_at", "REAL"),  # kiedy worker przejął zadanie (do liczenia czasu pracy)
+                ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
+                ("tasks", "title_sponsor", "TEXT"),  # tytuł wyświetlany Sponsorowi — krótko, prostymi słowami
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
             ):
                 cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -138,15 +147,30 @@ class State:
             (thread_id, summary_msg_id, time.time(), task_id))
 
     def _conn(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "conn", None)
+        key = str(self.db_path)
+        conn = _CONNS.get(key)
         if conn is None:
-            conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=30000")
-            conn.execute("PRAGMA foreign_keys=ON")
-            self._local.conn = conn
+            with _CONNS_LOCK:
+                conn = _CONNS.get(key)
+                if conn is None:
+                    conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None,
+                                           check_same_thread=False)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=30000")
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    _CONNS[key] = conn
         return conn
+
+    def close(self) -> None:
+        """Zamyka współdzielone połączenie procesu — tylko przy wyjściu procesu."""
+        with _CONNS_LOCK:
+            conn = _CONNS.pop(str(self.db_path), None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     # --- milestones ---------------------------------------------------------
     def add_milestone(self, milestone_id: str, goal: str, branch: str, title: str = "",
@@ -190,19 +214,30 @@ class State:
         status: str = READY,
         repo: str | None = None,
         read_only: bool = False,
+        mode: str = "pipeline",
+        priority: str = "P2",
+        title_sponsor: str | None = None,
     ) -> str:
         now = time.time()
         self._conn().execute(
             """INSERT INTO tasks(id,milestone,phase,title,role,status,parallel_group,scope_paths,
-               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only)
-               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only,mode,priority,title_sponsor)
+               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task_id, milestone, phase, title, role, status, parallel_group,
                 json.dumps(scope_paths or []), json.dumps(depends_on or []),
-                acceptance_criteria, 0, split_depth, parent_task, now, now, project_id, repo, int(read_only),
+                acceptance_criteria, 0, split_depth, parent_task, now, now, project_id, repo, int(read_only), mode,
+                priority, title_sponsor or title,
             ),
         )
         return task_id
+
+    def set_priority(self, task_id: str, priority: str) -> None:
+        if priority not in ("P0", "P1", "P2", "P3"):
+            raise StateError(f"Zły priorytet: {priority} (dozwolone P0..P3)")
+        self._conn().execute("UPDATE tasks SET priority=?, updated_at=? WHERE id=?",
+                             (priority, time.time(), task_id))
+        self.record_metric("task_event", {"event": "priority", "to": priority}, task_id)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         row = self._conn().execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -228,20 +263,29 @@ class State:
         return t
 
     def ready_tasks(self) -> list[dict[str, Any]]:
-        """Zadania READY, których wszystkie zależności są MERGED."""
+        """Zadania READY, których wszystkie zależności są MERGED — sortowane po priorytecie (P0 pierwsze)."""
         tasks = self.list_tasks(status=READY)
         merged = {t["id"] for t in self.list_tasks(status=MERGED)}
-        return [t for t in tasks if set(t["depends_on"]) <= merged]
+        ok = [t for t in tasks if set(t["depends_on"]) <= merged]
+        order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+        ok.sort(key=lambda t: (order.get(t.get("priority") or "P2", 2), t.get("created_at") or 0))
+        return ok
 
     def claim_task(self, task_id: str, claimed_by: str) -> dict[str, Any] | None:
         """Atomowe przejęcie: tylko jeśli status nadal READY (ACID, bez fcntl)."""
+        now = time.time()
         cur = self._conn().execute(
-            """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?
+            """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?, started_at=?
                WHERE id=? AND status='READY'
                RETURNING *""",
-            (claimed_by, time.time(), task_id),
+            (claimed_by, now, now, task_id),
         )
         row = cur.fetchone()
+        if row:
+            from engine import personas as _p
+            by = _p.persona_label(row["role"] or "worker") + f" ({claimed_by})"
+            self.record_metric("task_event", {"from": "READY", "to": "RUNNING", "by": by,
+                                              "changes": {"status": "READY → RUNNING", "claimed_by": claimed_by}}, task_id)
         return self._row_to_task(row) if row else None
 
     def transition(self, task_id: str, new_status: str, **fields: Any) -> dict[str, Any]:
@@ -260,10 +304,26 @@ class State:
             params.append(value)
         params.append(task_id)
         self._conn().execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", params)
+        # historia zmian / live feed: CO się zmieniło (pole: stare → nowe) + KTO (imię nazwisko rola)
+        from engine import personas as _p
+        changes: dict[str, str] = {}
+        if new_status != current:
+            changes["status"] = f"{current} → {new_status}"
+        for key, value in fields.items():
+            old = task.get(key)
+            if str(old) != str(value):
+                changes[key] = f"{str(old)[:40]} → {str(value)[:40]}"
+        by = _p.persona_label(task.get("role") or "system")
+        if fields.get("claimed_by"):
+            by += f" ({fields['claimed_by']})"
+        self.record_metric("task_event", {"from": current, "to": new_status, "changes": changes, "by": by}, task_id)
         return self.get_task(task_id)  # type: ignore[return-value]
 
+    MAX_SUBTASKS = 3  # więcej zmian w jednym commicie, mniej podzadań/commitów
+
     def split_task(self, task_id: str, subtask_specs: list[dict[str, Any]], max_split_depth: int = 1) -> list[str]:
-        """Zmiana #7: SPLIT_TASK dozwolony tylko do głębokości max_split_depth."""
+        """Zmiana #7: SPLIT_TASK dozwolony tylko do głębokości max_split_depth.
+        Dodatkowo: max MAX_SUBTASKS podzadań (reszta odpada — anty-fragmentacja)."""
         task = self.get_task(task_id)
         if task is None:
             raise StateError(task_id)
@@ -271,6 +331,8 @@ class State:
             raise StateError(
                 f"Osiągnięto max_split_depth={max_split_depth} dla {task_id} — brak dalszych podziałów"
             )
+        if len(subtask_specs) > self.MAX_SUBTASKS:
+            subtask_specs = subtask_specs[: self.MAX_SUBTASKS]
         ids: list[str] = []
         for i, spec in enumerate(subtask_specs):
             child_id = f"{task_id}{chr(ord('a') + i)}"
@@ -312,6 +374,18 @@ class State:
 
     def recent_comments(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
         q = "SELECT ts, task_id, payload FROM metrics WHERE kind='agent_comment'"
+        params: list = []
+        if task_id:
+            q += " AND task_id=?"
+            params.append(task_id)
+        q += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn().execute(q, params).fetchall()
+        return [{"ts": r[0], "task_id": r[1], **json.loads(r[2])} for r in rows]
+
+    def recent_events(self, limit: int = 40, task_id: str | None = None) -> list[dict]:
+        """Ostatnie zmiany statusów/zadań (task_event) — live feed + historia na dashboardzie."""
+        q = "SELECT ts, task_id, payload FROM metrics WHERE kind='task_event'"
         params: list = []
         if task_id:
             q += " AND task_id=?"

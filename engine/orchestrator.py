@@ -21,12 +21,14 @@ Użycie:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -125,6 +127,8 @@ class Orchestrator:
         'auto' = wszystkie zadania; 'auto_readonly' = tylko read_only (zero commitów);
         'manual' (domyślnie) = wszystko czeka na klik Sponsora."""
         for task in self.state.list_tasks(status=AWAITING_APPROVAL):
+            if task.get("substep") == "ASK_SPONSOR":
+                continue  # pytanie do Sponsora NIGDY nie leci auto — tylko człowiek odpowiada
             pid = task.get("project_id") or "mikowhy-teams"
             policy = projects.approval_policy(pid)
             if policy == "auto" or (policy == "auto_readonly" and task.get("read_only")):
@@ -154,17 +158,58 @@ class Orchestrator:
             self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
 
     # --- faza 4: workery -------------------------------------------------------
+    def _max_workers_now(self) -> int:
+        """Ile workerów (LLM) można bezpiecznie odpalić RÓWNOLEGLE na tym laptopie:
+        bierzemy pod uwagę CPU, wolny RAM i aktualny load — dzielimy maszynę ze wszystkimi.
+        Nadpisanie ręczne: kv max_workers (orchestrator: set via state kv)."""
+        override = self.state.get_kv("max_workers", 0)
+        if override:
+            return max(1, int(override))
+        cpu = os.cpu_count() or 4
+        try:
+            load1 = float(open("/proc/loadavg").read().split()[0])
+        except OSError:
+            load1 = float(cpu)
+        free_gb = 4.0
+        try:
+            for line in open("/proc/meminfo"):
+                if line.startswith("MemAvailable"):
+                    free_gb = int(line.split()[1]) / 1024 / 1024
+                    break
+        except OSError:
+            pass
+        base = max(1, cpu - 2)                       # zostawiamy cores na system/UI
+        ram_cap = max(1, int(free_gb / 1.2))         # ~1.2 GB na proces vibe
+        load_cap = max(1, int(base * cpu / max(load1, 1.0)))  # load > cpu -> mniej workerów
+        cap = max(1, min(4, base, ram_cap, load_cap))  # hard cap: 4 LLM naraz na współdzielonym laptopie
+        return cap
+
     def _launch_workers(self) -> None:
-        for task in self.state.ready_tasks():
+        tasks = self.state.ready_tasks()
+        cap = self._max_workers_now()
+        free = cap - len([t for t in self.running])  # wspólna pula też z review
+        for task in tasks:
+            if free <= 0:
+                if len(tasks) > 0:
+                    self.state.record_metric("throttled", {"waiting": len(tasks), "cap": cap,
+                                                           "running": len(self.running)}, None)
+                break
             if task["id"] in self.running:
                 continue
             self._spawn("worker_lifecycle", task["id"])
+            free -= 1
 
     # --- faza 5: code review + circuit breaker ----------------------------------
     def _launch_reviews(self) -> None:
+        cap = min(2, self._max_workers_now())
+        n = 0
         for task in self.state.list_tasks(status=IN_REVIEW):
-            if task["id"] not in self.running:
-                self._spawn("code_review", task["id"])
+            if task["id"] in self.running:
+                continue
+            if n >= cap:
+                break
+            self._spawn("code_review", task["id"])
+            n += 1
 
     def _circuit_breakers(self) -> None:
         for task in self.state.list_tasks(status=READY):
@@ -198,6 +243,8 @@ class Orchestrator:
             ns = task.get("project_id") or "mikowhy-teams"
             try:
                 git_guard.run_git(["fetch", "origin"], cwd=repo, check=False)
+                # gałąź milestonu mogła nie powstać (team_chat) — utwórz z HEAD, inaczej worktree add leci w GitError co tick
+                git_guard.run_git(["branch", base, "HEAD"], cwd=repo, check=False)
                 wt = git_guard.integration_worktree(base, repo=repo, ns=f"{ns}/_integration".strip("/"))
                 git_guard.rebase_onto(wt, task["branch"])  # konflikt -> mikro-bot
                 reg = quality_gates.regression(wt)
@@ -205,7 +252,19 @@ class Orchestrator:
                     self.state.transition(task["id"], READY,
                                           review_notes=f"Regresja po rebase: {reg.get('output', '')[-500:]}")
                     continue
-                git_guard.merge_no_ff(wt, task["branch"], f"Merge {task['id']} into {base}")
+                if task.get("parent_task"):
+                    # subtask: squash do JEDNEGO commita pod rodzicem (mniej commitów na milestone)
+                    parent = self.state.get_task(task["parent_task"]) or task
+                    git_guard.run_git(["merge", "--squash", task["branch"]], cwd=wt, check=False)
+                    staged = git_guard.run_git(["diff", "--cached", "--quiet"], cwd=wt, check=False).returncode != 0
+                    if staged:
+                        git_guard.run_git(["commit", "-m",
+                                           f"feat({parent['id'].lower()}): {parent['title'][:60]} [{task['id']}]"],
+                                          cwd=wt)
+                    else:
+                        self.state.record_metric("squash_empty", {"task": task["id"]}, task["id"])
+                else:
+                    git_guard.merge_no_ff(wt, task["branch"], f"Merge {task['id']} into {base}")
                 git_guard.run_git(["push", "origin", base], cwd=wt, check=False)
                 self.state.transition(task["id"], MERGED)
                 self.state.record_metric("merge", {"milestone": task["milestone"]}, task["id"])
@@ -222,14 +281,29 @@ class Orchestrator:
             except git_guard.MergeConflict as exc:
                 self.state.transition(task["id"], READY, review_notes=f"Konflikt: {exc}")
                 self.state.record_metric("merge_conflict", {"task": task["id"]}, task["id"])
+            except Exception as exc:
+                # dowolny inny błąd merge nie może blokować reszty ticka (telegram/health/milestony)
+                self.state.record_metric("merge_error", {"task": task["id"], "error": repr(exc)}, task["id"])
+                print(f"[orchestrator] błąd merge {task['id']}: {exc!r}", flush=True)
 
     # --- QG-3 + zamknięcie milestonu + faza 7 -------------------------------------
     def _handle_milestones(self) -> None:
         for ms in self.state.list_milestones():
             if ms["status"] != "OPEN" or not self.state.milestone_complete(ms["id"]):
                 continue
+            try:
+                self._process_milestone(ms)
+            except Exception as e:
+                # Jeden zepsuty mileston NIE może blokować reszty ticka
+                # (telegram/health/approvals leżą za _handle_milestones w tick()).
+                self.state.record_metric("milestone_error", {"error": repr(e)}, task_id=ms["id"])
+                print(f"[orchestrator] błąd milestonu {ms['id']}: {e!r}", flush=True)
+
+    def _process_milestone(self, ms: dict) -> None:
             pid = ms.get("project_id") or "mikowhy-teams"
             repo = Path(projects.project_config(pid)["target_repo_path"]) if pid != "mikowhy-teams" else ROOT
+            # mileston mógł powstać bez gałęzi (np. team_chat) — utwórz ją z HEAD, inaczej worktree add leci w GitError co tick
+            git_guard.run_git(["branch", ms["branch"], "HEAD"], cwd=repo, check=False)
             wt = git_guard.integration_worktree(ms["branch"], repo=repo, ns=f"{pid}/_integration".strip("/"))
             qg3 = quality_gates.qg3_integration_e2e(ms["branch"], wt)  # zmiana #3
             if not qg3["ok"]:
@@ -237,7 +311,7 @@ class Orchestrator:
                 msg = f"❌ *QG-3 nie przeszło* dla `{ms['id']}`: {'; '.join(qg3['problems'][:3])}"
                 _push(msg)
                 telegram_reporter.post_milestone(f"🧪 *QG-3* `{ms['id']}`: ❌ {'; '.join(qg3['problems'][:2])}")
-                continue
+                return
             # merge milestone/* -> main
             git_guard.run_git(["checkout", git_guard.default_branch(repo)], cwd=wt, check=False)
             git_guard.run_git(["pull", "--ff-only", "origin", git_guard.default_branch(repo)], cwd=wt, check=False)
@@ -331,14 +405,79 @@ class Orchestrator:
 
     # --- health monitor co HEALTH_INTERVAL ------------------------------------------
     def _maybe_health(self) -> None:
+        # health w osobnym wątku — NIGDY nie blokuje ticka (a tym samym Telegramu)
         last = self.state.get_kv("last_health_ts", 0)
         if time.time() - last >= health_monitor.HEALTH_INTERVAL:
             self.state.set_kv("last_health_ts", time.time())
-            try:
-                report = health_monitor.run(self.state, create_tasks=True)
-                self.state.record_metric("health_check", {"ok": report["ok"], "anomalies": len(report["anomalies"])})
-            except Exception as exc:
-                self.state.record_metric("health_error", {"error": repr(exc)})
+            threading.Thread(target=self._health_bg, daemon=True).start()
+
+    def _health_bg(self) -> None:
+        try:
+            report = health_monitor.run(self.state, create_tasks=True)
+            self.state.record_metric("health_check", {"ok": report["ok"], "anomalies": len(report["anomalies"])})
+        except Exception as exc:
+            self.state.record_metric("health_error", {"error": repr(exc)})
+
+    def _watchdog(self) -> None:
+        """Sprawdza usługi systemd; jak któraś nieaktywna -> restart, a jak dalej nie żyje
+        -> prośba do LLM (zadanie mode='llm') o naprawę."""
+        last = self.state.get_kv("last_watchdog_ts", 0)
+        if time.time() - last < 15:
+            return
+        self.state.set_kv("last_watchdog_ts", time.time())
+        for svc in ("mikowhy-teams", "mikowhy-teams-dashboard"):
+            state_now = subprocess.run(["systemctl", "--user", "is-active", svc],
+                                       capture_output=True, text=True).stdout.strip()
+            if state_now == "active":
+                continue
+            self.state.record_metric("watchdog", {"service": svc, "state": state_now}, None)
+            subprocess.run(["systemctl", "--user", "restart", svc], capture_output=True)
+            time.sleep(2)
+            state2 = subprocess.run(["systemctl", "--user", "is-active", svc],
+                                    capture_output=True, text=True).stdout.strip()
+            if state2 == "active":
+                self.state.record_metric("watchdog", {"service": svc, "action": "restarted", "state": state2}, None)
+                continue
+            # nadal martwa — eskalacja do LLM
+            open_tasks = (self.state.list_tasks(status="AWAITING_APPROVAL")
+                          + self.state.list_tasks(status="READY") + self.state.list_tasks(status="RUNNING"))
+            if any(svc in (t.get("title") or "") for t in open_tasks):
+                continue
+            n = self.state.get_kv("watchdog_seq", 0) + 1
+            self.state.set_kv("watchdog_seq", n)
+            tid = f"FIX-{n:04d}"
+            self.state.add_task(tid, milestone="CHAT-OPS", phase=9, title=f"Napraw usługę {svc} (systemd --user): nieaktywna mimo restartu",
+                                role="principal-debugger", scope_paths=[], depends_on=[],
+                                acceptance_criteria=f"Usługa {svc} aktywna (systemctl --user is-active = active) i przyczyna awarii opisana w raporcie",
+                                project_id="mikowhy-teams-self", repo="factory",
+                                status="AWAITING_APPROVAL", read_only=False, mode="llm")
+            self.state.set_kv(f"llm_desc:{tid}",
+                              f"Usługa systemd --user '{svc}' ma stan '{state2}' mimo restartu. "
+                              f"Zdiagnozuj (systemctl --user status {svc}, journalctl --user -u {svc} -n 100, "
+                              f"logi w .agents/logs/) i napraw tak, żeby była aktywna. "
+                              f"Na końcu zostaw raport docs/llm-reports/{tid}.md.")
+            self.state.record_metric("watchdog_escalation", {"service": svc, "task": tid}, tid)
+            print(f"[orchestrator] 🚨 watchdog: {svc} nieaktywna -> zadanie {tid} dla LLM", flush=True)
+
+    def _cleanup_merged_branches(self) -> None:
+        """Usuwa branche feature/* zmergowane do default branch (zadanie MERGED = zamknięte w pełni)."""
+        for t in self.state.list_tasks(status=MERGED):
+            br = t.get("branch")
+            if not br or not br.startswith("feature/"):
+                continue
+            if self.state.get_kv(f"branch_deleted:{br}"):
+                continue
+            repo = projects.repo_for_task(t, self.state)
+            git_guard.run_git(["fetch", "origin", "--prune"], cwd=repo, check=False)
+            default = git_guard.default_branch(repo)
+            merged = git_guard.run_git(["branch", "--merged", default], cwd=repo, check=False).stdout
+            if br not in merged.split():
+                continue
+            git_guard.run_git(["branch", "-D", br], cwd=repo, check=False)
+            git_guard.run_git(["push", "origin", "--delete", br], cwd=repo, check=False)
+            self.state.set_kv(f"branch_deleted:{br}", time.time())
+            self.state.record_metric("task_event", {"event": "branch_deleted", "branch": br}, t["id"])
+            print(f"[orchestrator] 🧹 usunięto zmergowany branch {br} (zadanie {t['id']})", flush=True)
 
     # --- telegram menu w ticku (run --poll 1 odbiera wiadomości użytkownika) ---------
     def _poll_telegram(self) -> None:
@@ -356,12 +495,26 @@ class Orchestrator:
         self._launch_reviews()
         self._circuit_breakers()
         self._handle_merges()
+        self._cleanup_merged_branches()
         self._handle_milestones()
         self._notify_approvals()
+        self._watchdog()
         self._maybe_health()
         self._poll_telegram()
 
     def run(self, once: bool = False) -> None:
+        # lock pojedynczej instancji — ręczny `run` gdy działa usługa systemd wychodzi od razu
+        # (dwie instancje walczą o worktree/state i jedna z nich kończy "Unicestwiony")
+        lock_path = ROOT / ".agents" / "orchestrator.lock"
+        self._lock_f = open(lock_path, "w")
+        try:
+            fcntl.flock(self._lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_f.write(f"{os.getpid()}\n")
+            self._lock_f.flush()
+        except BlockingIOError:
+            print(f"⚠️ Orkiestrator już działa (lock: {lock_path}). "
+                  f"Kanoniczny runner to usługa: systemctl --user status mikowhy-teams. Wychodzę.", flush=True)
+            sys.exit(0)
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
         self._recover_zombies()
         rounds = 2 if once else None  # --once: dwa cykle (worker + CR), potem wyjście
@@ -758,6 +911,9 @@ def main() -> None:
     ap5 = sub.add_parser("note", help="rada Sponsora: ALL (do każdego promptu) lub <task_id>")
     ap6 = sub.add_parser("retry", help="requeue: FAILED/BLOCKED/ESCALATED -> READY")
     ap6.add_argument("task_id")
+    ap7 = sub.add_parser("priority", help="ustaw priorytet zadania: P0 (najwyższy) .. P3")
+    ap7.add_argument("task_id")
+    ap7.add_argument("value", choices=["P0", "P1", "P2", "P3"])
     db = sub.add_parser("dashboard", help="live UI zadań w przeglądarce (read-only), http://127.0.0.1:8765")
     sub.add_parser("scan", help="pre-push review: sekrety/klucze w plikach i historii git + higiena .gitignore")
     sub.add_parser("watch", help="live tail: .agents/runtime (surowe odpowiedzi LLM) + .agents/logs/* w terminalu")
@@ -833,6 +989,9 @@ def main() -> None:
         cmd_decline(args.task_id, args.reason)
     elif args.cmd == "retry":
         cmd_retry(args.task_id)
+    elif args.cmd == "priority":
+        State().set_priority(args.task_id, args.value)
+        print(f"🎯 {args.task_id} -> priorytet {args.value}")
     elif args.cmd == "scan":
         raise SystemExit(cmd_scan())
     elif args.cmd == "watch":

@@ -1,0 +1,1 @@
+"""Pakiet workera zadań."""
