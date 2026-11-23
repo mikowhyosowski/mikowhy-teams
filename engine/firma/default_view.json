@@ -40,5 +40,10 @@
   },
   "prioScale": { "P0": 1.6, "P1": 1.3, "P2": 1.0, "P3": 0.8 },
   "anim": { "moveMs": 900, "fadeMs": 350, "pulseMs": 1200 },
+  "stage2": {
+    "gradients": true, "shadows": true, "trees": true, "roadDashes": true,
+    "door": true, "windows": true, "hoverGlow": true,
+    "treeCount": 6, "treeEmoji": "🌳"
+  },
   "emojiFallback": true
 }

@@ -244,6 +244,12 @@ def main() -> int:
     history.append({"author": role, "text": answer[:2000]})
     state.set_kv(key, {"role": role, "history": history[-20:], "model": model})
     state.record_metric("team_chat", {"role": role, "model": model, "how": how, "q": text[:150]}, None)
+    # wątek agenta w DB — widoczny i kontynuowalny też z dashboardu (zakładka Zespół)
+    try:
+        from engine import team_threads
+        team_threads.record_exchange(state, role, text[:80], text, answer, chat_id=chat_id)
+    except Exception:
+        pass
     return 0
 
 

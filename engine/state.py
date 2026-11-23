@@ -95,6 +95,26 @@ CREATE TABLE IF NOT EXISTS kv (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+-- wątki rozmów Sponsora z agentami (widoczne też na dashboardzie w zakładce Zespół)
+CREATE TABLE IF NOT EXISTS threads (
+  id         TEXT PRIMARY KEY,
+  role       TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  chat_id    TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  open       INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS thread_messages (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id TEXT NOT NULL,
+  ts        REAL NOT NULL,
+  author    TEXT NOT NULL,          -- 'sponsor' | rola agenta | 'system'
+  text      TEXT NOT NULL,
+  kind      TEXT NOT NULL DEFAULT 'msg'  -- msg | reply | sys
+);
+CREATE INDEX IF NOT EXISTS idx_threads_role ON threads(role, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tm_thread ON thread_messages(thread_id, ts);
 """
 
 
@@ -317,6 +337,13 @@ class State:
         if fields.get("claimed_by"):
             by += f" ({fields['claimed_by']})"
         self.record_metric("task_event", {"from": current, "to": new_status, "changes": changes, "by": by}, task_id)
+        # akumulacja czasu pracy per rola (badge „przepracowane” w zakładce Zespół):
+        # RUNNING -> cokolwiek: elapsed leci do kv work_s:<role>
+        if current == RUNNING and new_status != RUNNING and task.get("started_at"):
+            el = max(0.0, time.time() - float(task["started_at"]))
+            role = task.get("role") or "worker"
+            cur = float(self.get_kv(f"work_s:{role}", 0) or 0)
+            self.set_kv(f"work_s:{role}", cur + el)
         return self.get_task(task_id)  # type: ignore[return-value]
 
     MAX_SUBTASKS = 3  # więcej zmian w jednym commicie, mniej podzadań/commitów
