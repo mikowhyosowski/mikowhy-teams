@@ -59,6 +59,33 @@ def step0_prepare(state: State, task: dict) -> Path:
     return worktree
 
 
+SECRET_NAME_HINTS = (".env", "secret", "credential", "token", "id_rsa", ".pem", ".key", "password", "api_key", "apikey")
+SCOPE_AUTOEXTEND_MAX = 5  # max automatycznych poszerzeń scope na zadanie (potem wymaga człowieka)
+
+
+def _scope_autoextend(state: State, task: dict, rel: str) -> bool:
+    """Auto-poszerzenie scope_paths o `rel` (zasada „Opiekunowi łatwiej” — rutynowy przypadek,
+    nie eskalujemy). Zwraca False gdy plik wygląda na sekret albo limit poszerzeń wyczerpany."""
+    low = rel.lower()
+    if any(h in low for h in SECRET_NAME_HINTS):
+        return False  # sekrety nigdy automatycznie
+    cur = list(task.get("scope_paths") or [])
+    if rel in cur:
+        return True  # już w scope
+    key = f"scope_autoext_count:{task['id']}"
+    used = int(state.get_kv(key, 0) or 0)
+    if used >= SCOPE_AUTOEXTEND_MAX:
+        return False
+    import json as _json
+    state._conn().execute("UPDATE tasks SET scope_paths=?, updated_at=? WHERE id=?",
+                          (_json.dumps(sorted(set(cur + [rel]))), time.time(), task["id"]))
+    state.set_kv(key, used + 1)
+    state.add_comment(task["id"], "worker(auto-heal)",
+                      f"🔧 auto-poszerzenie scope_paths o `{rel}` (rutynowy przypadek — bez eskalacji do Opiekuna; {used + 1}/{SCOPE_AUTOEXTEND_MAX})")
+    state.record_metric("scope_autoextend", {"path": rel, "used": used + 1}, task["id"])
+    return True
+
+
 def _llm_step(task: dict, step: str, user_payload: str, model: str) -> dict:
     gw = get_gateway()
     system = skill_compiler.compile_system_prompt(task["role"], stack=None, task=task)
@@ -154,10 +181,19 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
                 files[a["path"]] = a.get("content", "")
     for rel, content in files.items():
         if task["scope_paths"] and rel not in task["scope_paths"]:
-            raise PermissionError(f"Plik spoza scope_paths: {rel}")
+            # AUTO-HEAL (zasada „Opiekunowi łatwiej”): plik spoza scope nie eskaluje do Opiekuna —
+            # poszerzamy scope automatycznie (limit + ochrona sekretów), logujemy i kontynuujemy.
+            if _scope_autoextend(state, task, rel):
+                task = state.get_task(task["id"])  # odśwież scope_paths
+            else:
+                raise PermissionError(f"Plik spoza scope_paths (zablokowany sekret/limit): {rel}")
         target = worktree / rel
         if target.exists() and target.is_dir():
-            raise RuntimeError(f"LLM zwrócił katalog zamiast pliku: {rel}")
+            # LLM zwrócił katalog zamiast pliku — nie failujemy całego zadania, pomijamy z logiem
+            state.add_comment(task["id"], f"worker({task['role']})",
+                              f"⚠️ LLM zwrócił katalog zamiast pliku: `{rel}` — pomijam (auto-heal)")
+            state.record_metric("llm_dir_instead_of_file", {"path": rel}, task["id"])
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     state.record_metric("step_time", {"step": "2/5_IMPL", "seconds": round(time.time() - t0, 2)}, task["id"])

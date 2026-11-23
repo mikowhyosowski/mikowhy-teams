@@ -147,6 +147,26 @@ class Orchestrator:
                                          task["id"])
 
     # --- utknięte zadania (retry_count >= STUCK_RETRY) -> AWAITING_OWNER --------------
+    def _recent_errors(self, task_id: str, n: int = 3) -> str:
+        """Ostatnie błędy/zdarzenia zadania z metryk — pakiet dla Opiekuna ma zawierać historię,
+        żeby nie musiał grzebać: co automat już próbował."""
+        import json as _json
+        out = []
+        rows = self.state._conn().execute(
+            "SELECT ts, kind, payload FROM metrics WHERE task_id=? AND kind IN ('task_event','agent_comment') "
+            "ORDER BY ts DESC LIMIT 12", (task_id,)).fetchall()
+        for r in rows:
+            try:
+                p = _json.loads(r[2])
+            except Exception:
+                continue
+            txt = p.get("text") or str(p.get("changes") or p.get("error") or "")[:160]
+            if any(k in txt.lower() for k in ("error", "failed", "exception", "traceback", "permission", "timeout")):
+                out.append(f"- {txt[:160]}")
+            if len(out) >= n:
+                break
+        return "\n".join(out) if out else "(brak zarejestrowanych błędów w metrykach)"
+
     def _escalate_stuck_tasks(self) -> None:
         """Zadania, które mimo prób utknęły (retry_count >= STUCK_RETRY) w READY/RUNNING/FAILED,
         nie mają przechodzić całego etapu w kółko (READY->RUNNING->FAILED->READY) — idą do
@@ -157,10 +177,10 @@ class Orchestrator:
             if (task.get("retry_count") or 0) < STUCK_RETRY:
                 continue
             packet = (
-                f" | AWAITING_OWNER: zadanie utknęło mimo {task.get('retry_count')} prób "
-                f"(ostatni błąd: {str(task.get('review_notes') or '')[-200:]}). "
-                "PAKIET dla Opiekuna — co utknęło i dlaczego automat nie może tego bezpiecznie rozstrzygnąć; "
-                "opcje: [A] rekomendowane — puścić dalej do READY z inną rolą/zakresem, "
+                f" | AWAITING_OWNER: zadanie utknęło mimo {task.get('retry_count')} prób. "
+                f"CO AUTOMAT JUŻ PRÓBOWAŁ (ostatnie błędy):\n{self._recent_errors(task['id'])}\n"
+                "DLACZEGO automat nie może tego bezpiecznie rozstrzygnąć sam: powtarzający się błąd wykonania. "
+                "OPCJE dla Opiekuna: [A] rekomendowane — puścić dalej do READY z inną rolą/zakresem, "
                 "[B] zamknąć jako BLOCKED (odrzucone), [C] zdekomponować na mniejsze zadanie."
             )
             try:

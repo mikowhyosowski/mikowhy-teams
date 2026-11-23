@@ -1,5 +1,19 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.5] — 2026-11-23 — zasada „Opiekunowi łatwiej”: auto-heal scope, lepsze pakiety, analiza AWAITING_OWNER
+- ⭐ **TWARDA REGUŁA w sponsor-notes.md + anti-slop.md** (wstrzykiwane do KAŻDEGO promptu): „ZAWSZE działamy w myśl zasady,
+  żeby OPIEKUNOWI żyło się łatwiej” — rutynowe błędy (timeout, brak pliku, plik spoza scope, test) rozwiązujemy automatyczną
+  pętlą naprawczą, NIE eskalujemy do AWAITING_OWNER; Opiekun tylko przy realnym rozjeździe/ryzyku/wyczerpanych retry —
+  i dostaje pakiet: sedno + 2–3 opcje + rekomendacja + co automat już próbował
+- 🔧 **Auto-heal scope_paths** (`worker_lifecycle._scope_autoextend`): plik spoza scope NIE failuje zadania —
+  worker sam poszerza scope (limit 5/zadanie, sekrety `.env`/`*.pem`/`*key*`/`*token*` blokowane na sztywno), loguje komentarz;
+  „LLM zwrócił katalog zamiast pliku” → pomija z logiem zamiast RuntimeError
+- 📦 **Pakiet OWNER_PACKET wzbogacony** o historię ostatnich błędów z metryk (`_recent_errors`) — Opiekun widzi root cause od razu
+- 📝 **Analiza 4 zadań w AWAITING_OWNER + komentarz Sponsora (Mikołaj Osowski) na każdym** z wyjaśnieniem dlaczego trafiły
+  i rekomendacją A/B/C: BRAND-001 (pusty scope → FileNotFoundError ×3), FIRMA-010 + FIRMA-010c (PermissionError scope_paths ×3),
+  CHAT-0022a (auto-retry loop ×2, CI/scope)
+- ✅ Testy: auto-heal scope (sekrety/limit), pakiet z historią błędów — 60 passed
+
 ## [2.7.4] — 2026-11-23 — porządki OPS: zamknięcie OPS-LLM-ROOTCAUSE, utknięte zadania → AWAITING_OWNER (nie cały flow w kółko)
 - 🧑‍💼 **Utknięte zadania nie przechodzą już całego etapu w kółko**: nowa faza `_escalate_stuck_tasks` w ticku —
   zadanie z `retry_count >= STUCK_RETRY (2)` w READY/RUNNING/FAILED → `AWAITING_OWNER` + `substep=OWNER_PACKET`

@@ -1,6 +1,9 @@
 # anti-slop.md — twarde reguły jakości
 Wstrzykiwane w KAŻDY mikro-etap (plan/kod/testy/fix/CR). Priorytet wyższy niż instrukcja zadania.
 
+## Zasada nadrzędna (2026-11-23, Sponsor)
+- **ZAWSZE działamy w myśl zasady, żeby OPIEKUNOWI żyło się łatwiej** (szczegóły w sponsor-notes.md): rutynowe błędy (timeout, brak pliku, plik spoza scope, test) rozwiązuj automatyczną pętlą naprawczą — NIE eskaluj do AWAITING_OWNER. Do Opiekuna tylko realny rozjeźdź/ryzyko/wyczerpane retry, z pakietem: sedno + opcje + rekomendacja.
+
 ## Zakazy absolutne
 - Zakaz `TODO`, `FIXME`, `XXX`, `HACK` w kodzie produkcyjnym i w testach.
 - Zakaz mocków/stubów/placeholderów poza katalogiem testów (fixtures).

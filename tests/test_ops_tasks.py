@@ -39,7 +39,7 @@ def test_ops_tasks_in_live_state():
     assert t1 and t1["status"] in ("READY", "RUNNING", "IN_REVIEW", "BLOCKED") and t1["priority"] == "P0"
     assert t1["role"] == "principal-debugger"
     t2 = s.get_task("OPS-GUARDIAN-SETUP")
-    assert t2 and t2["status"] in ("READY", "RUNNING", "IN_REVIEW") and t2["priority"] == "P1"
+    assert t2 and t2["status"] in ("READY", "RUNNING", "IN_REVIEW", "AWAITING_OWNER", "BLOCKED") and t2["priority"] == "P1"
     assert t2["role"] == "workload-guardian"
 
 
@@ -94,3 +94,39 @@ def test_escalate_stuck_tasks_phase():
     # READY -> AWAITING_OWNER dozwolone w modelu
     from engine.state import VALID_TRANSITIONS
     assert "AWAITING_OWNER" in VALID_TRANSITIONS["READY"]
+
+
+def test_scope_autoextend_autoheal():
+    """Zasada „Opiekunowi łatwiej”: plik spoza scope_paths nie eskaluje do Opiekuna —
+    worker sam poszerza scope (limit, sekrety blokowane)."""
+    from engine.worker_lifecycle import _scope_autoextend, SCOPE_AUTOEXTEND_MAX
+    s = _tmp_state()
+    s.add_task("T-SCOPE", "FACTORY-OPS", 9, "test scope", "backend-dev", scope_paths=["engine/"])
+    t = s.get_task("T-SCOPE")
+    assert _scope_autoextend(s, t, "docs/nowy.md") is True
+    assert "docs/nowy.md" in s.get_task("T-SCOPE")["scope_paths"]
+    # sekrety nigdy automatycznie
+    assert _scope_autoextend(s, s.get_task("T-SCOPE"), ".env") is False
+    assert _scope_autoextend(s, s.get_task("T-SCOPE"), "keys/api_key.pem") is False
+    # limit poszerzeń
+    for i in range(SCOPE_AUTOEXTEND_MAX + 2):
+        ok = _scope_autoextend(s, s.get_task("T-SCOPE"), f"docs/p{i}.md")
+    assert ok is False
+    # już w scope -> True bez zmiany
+    assert _scope_autoextend(s, s.get_task("T-SCOPE"), "engine/") is True
+
+
+def test_owner_packet_has_error_history():
+    """Pakiet OWNER_PACKET zawiera ostatnie błędy z metryk — Opiekun widzi co automat próbował."""
+    from engine.orchestrator import Orchestrator, STUCK_RETRY
+    from engine.state import AWAITING_OWNER
+    s = _tmp_state()
+    s.add_task("T-PKT", "FACTORY-OPS", 9, "pakiet", "backend-dev", status="READY")
+    s._conn().execute("UPDATE tasks SET retry_count=? WHERE id=?", (STUCK_RETRY, "T-PKT"))
+    s.record_metric("agent_comment", {"author": "worker", "text": "❌ próba nieudana (PermissionError: plik spoza scope)"}, "T-PKT")
+    o = Orchestrator.__new__(Orchestrator)
+    o.state = s
+    o._escalate_stuck_tasks()
+    t = s.get_task("T-PKT")
+    assert t["status"] == AWAITING_OWNER
+    assert "PermissionError" in (t["review_notes"] or "")  # historia błędów w pakiecie
