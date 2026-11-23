@@ -8,15 +8,45 @@ do repozytorium tylko na koniec kamienia milowego (lub po każdym mergu).
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
+
+def _detect_root() -> Path:
+    """Katalog główny fabryki (v2.7.26).
+
+    Priorytet: DARK_FACTORY_ROOT (env) > główne repo (gdy kod jedzie z worktree
+    .agents/worktrees/<...> — stan żyje w repo macierzystym) > katalog modułu.
+    Root cause: w worktree Path(__file__) wskazuje na kopię silnika, więc State()
+    tworzył ŚWIEŻĄ, pustą .agents/state.db w worktree — testy integracyjne i skrypty
+    odpalane z worktree widziały fabrykę „na czysto” i notorycznie walały QG.
+    """
+    here = Path(__file__).resolve().parent.parent
+    env = os.environ.get("DARK_FACTORY_ROOT", "")
+    if env:
+        return Path(env)
+    if "/.agents/worktrees/" in str(here):
+        try:
+            common = subprocess.run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=here, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if common:
+                return Path(common).parent
+        except Exception:
+            pass  # nie mamy gita — zostań przy katalogu modułu (stare zachowanie)
+    return here
+
+
+ROOT = _detect_root()
+
 DB_PATH = ROOT / ".agents" / "state.db"
 SNAPSHOT_PATH = ROOT / ".agents" / "pipeline.json"
 

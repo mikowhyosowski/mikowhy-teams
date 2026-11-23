@@ -248,6 +248,23 @@ class Orchestrator:
                                   review_notes=note)
             self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
 
+    # --- obchód workload-guardian (hourly, kv-trottlowany) ---------------------
+    def _workload_guardian_tick(self) -> None:
+        """v2.7.26: co godzinę sprawdza, czy każda rola ma pracę; bezczynne >30 min
+        dostają zadanie-plan wg obowiązków stanowiska (engine/workload_guardian.py)."""
+        last = float(self.state.get_kv("guardian_last_run", 0) or 0)
+        now = time.time()
+        if now - last < 3600:
+            return
+        self.state.set_kv("guardian_last_run", now)
+        try:
+            from engine import workload_guardian as WG
+            rep = WG.run_idle_check(self.state)
+            print(f"[orchestrator] 🕵️ workload-guardian: bezczynne={len(rep['idle_roles'])} "
+                  f"utworzone={len(rep['created'])}", flush=True)
+        except Exception as e:
+            print(f"[orchestrator] workload-guardian błąd: {e!r}", flush=True)
+
     # --- obowiązki cykliczne (recurring_tasks) -> zadania READY dla roli -----------
     def _launch_recurring(self) -> None:
         """recurring_due() generuje zadanie READY dla roli, gdy obowiązek jest due.
@@ -721,6 +738,7 @@ class Orchestrator:
         self._escalate_stuck_tasks()
         self._auto_approve()
         self._auto_retry_failed()
+        self._workload_guardian_tick()
         self._launch_recurring()
         self._dispatch_llm_queue()
         self._launch_workers()
