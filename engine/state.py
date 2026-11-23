@@ -57,6 +57,16 @@ def substep_progress(substep: str | None) -> float:
     return 0.0
 
 
+def estimate_eta_s(title: str = "", scope_paths: list | None = None, read_only: bool = False,
+                   mode: str = "pipeline", priority: str = "P2") -> float:
+    """v2.7.19: heurystyczny ETA (sekundy) przy tworzeniu zadania — baza + per scope path; agent doprecyzuje w planie."""
+    base = 300.0 if (read_only or mode == "llm") else 600.0  # lekkie zadanie 5 min, normalne 10 min
+    est = base + 240.0 * len(scope_paths or [])                # +4 min na każdy plik/z katalog w scope
+    if priority == "P0":
+        est *= 0.7
+    return float(min(est, 4 * 3600))
+
+
 def resume_substep(task: dict | None) -> str:
     """v2.7.9 + v2.7.16 — kontynuacja od NAJDALEJ wypracowanego sub-etapu przy powrocie do READY.
     Bierzemy max_substep (rekord postępu z całej historii), gdy jest dalej niż bieżący substep.
@@ -257,6 +267,7 @@ class State:
                 ("tasks", "started_at", "REAL"),  # kiedy worker przejął zadanie (do liczenia czasu pracy)
                 ("tasks", "substep_since", "REAL NOT NULL DEFAULT 0"),  # v2.7.11: kiedy zaczął się bieżący sub-etap (live timer na kafelku)
                 ("tasks", "max_substep", "TEXT"),  # v2.7.16: NAJDALEJ wypracowany sub-etap w całej historii — przy powrocie do READY wznawiamy od niego
+                ("tasks", "eta_s", "REAL NOT NULL DEFAULT 0"),  # v2.7.19: szacowany czas zadania (s) — ETA, raport „za ile będzie”
                 ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
                 ("tasks", "title_sponsor", "TEXT"),  # tytuł wyświetlany Sponsorowi — krótko, prostymi słowami
                 ("milestones", "project_id", "TEXT DEFAULT 'mikowhy-teams'"),
@@ -352,20 +363,28 @@ class State:
         mode: str = "pipeline",
         priority: str = "P2",
         title_sponsor: str | None = None,
+        eta_s: float = 0,
     ) -> str:
         now = time.time()
+        if not eta_s:
+            eta_s = estimate_eta_s(title, scope_paths, read_only, mode, priority)  # v2.7.19: domyślny ETA
         self._conn().execute(
             """INSERT INTO tasks(id,milestone,phase,title,role,status,parallel_group,scope_paths,
-               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only,mode,priority,title_sponsor)
-               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               depends_on,acceptance_criteria,retry_count,split_depth,parent_task,created_at,updated_at,project_id,repo,read_only,mode,priority,title_sponsor,eta_s)
+               VALUES(?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task_id, milestone, phase, title, role, status, parallel_group,
                 json.dumps(scope_paths or []), json.dumps(depends_on or []),
                 acceptance_criteria, 0, split_depth, parent_task, now, now, project_id, repo, int(read_only), mode,
-                priority, title_sponsor or title,
+                priority, title_sponsor or title, float(eta_s),
             ),
         )
         return task_id
+
+    def set_eta(self, task_id: str, eta_s: float) -> None:
+        """v2.7.19: agent doprecyzowuje ETA po planie (skill szacowania)."""
+        self._conn().execute("UPDATE tasks SET eta_s=?, updated_at=? WHERE id=?",
+                             (max(30.0, float(eta_s)), time.time(), task_id))
 
     def set_priority(self, task_id: str, priority: str) -> None:
         if priority not in ("P0", "P1", "P2", "P3"):

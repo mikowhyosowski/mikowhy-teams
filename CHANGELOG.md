@@ -1,5 +1,14 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.19] — 2026-11-23 — ETA zadań i raport „za ile będzie” + skill szacowania dla agentów
+- ⏱️ `tasks.eta_s`: heurystyka przy `add_task` (`estimate_eta_s`: baza 5/10 min + 4 min/scope-path, P0 ×0.7, max 4h),
+  backfill 95 zadań; `State.set_eta()` do doprecyzowania
+- 🧠 Skill **estimation.md** w `_global` (trafia do promptu każdego agenta): w `1/5_PLAN` JSON musi mieć `"eta_s"`
+  (całe zadanie, kalibracja wg metryk step_time, bufor review +20%, retry +10%/próbę) — worker zapisuje przez `set_eta`
+- 📊 Dashboard: kafelki „Teraz pracują” pokazują `🔮 ETA … · zostało ~… · będzie ~HH:MM:SS`; kolejka ma kolumnę ETA
+  + nagłówek z raportem: „bieżące RUNNING skończą się ~HH:MM · kolejka razem ~Xh Ym” (`stats.eta_running_at`, `eta_queue_s`)
+- ✅ test `test_eta_estimate_and_snapshot` — 76 passed
+
 ## [2.7.18] — 2026-11-23 — fix TDZ: `Cannot access 'lastState' before initialization`
 - 🐛 `let lastState` było deklarowane na końcu skryptu (po boot `showTab(...)`) — startowy `showTab('sys')` → `renderSys()`
   i klik 🔔 → `toggleBell()` wpadały w temporal dead zone. Deklaracja przeniesiona na górę skryptu (obok `curTask`);

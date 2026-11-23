@@ -135,8 +135,8 @@ def step1_plan(state: State, task: dict) -> None:
                     "max_split_depth": MAX_SPLIT_DEPTH,
                     "review_notes": task.get("review_notes") or "",
                     "sponsor_comments": notes_txt,
-                    "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"plan": "<krótki plan kroków>"} '
-                              'lub TYLKO GDY zadanie jest naprawdę za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ...}]}. '
+                    "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"plan": "<krótki plan kroków>", "eta_s": <szacunek CAŁEGO zadania w sekundach — patrz skill estimation.md>} '
+                              'lub TYLKO GDY zadanie jest naprawdę za duże: {"signal": "SPLIT_TASK", "subtasks": [{"title": ..., "scope_paths": [...], "role": ..., "eta_s": ...}]}. '
                               'REGUŁA ANTY-SPLIT: NIE dziel, gdy zadanie dotyczy <=3 plików, szacunkowo <=150 linii diffu '
                               'i ma <3 punktów AC — wtedy wolisz jeden solidny plan i jedna paczka zmian (więcej zmian, mniej commitów). '
                               'Split max 3 podzadania, tylko gdy to osobne, niezależne części. '
@@ -161,6 +161,14 @@ def step1_plan(state: State, task: dict) -> None:
             state.add_comment_report(task["id"], f"worker({task['role']})",
                                      f"rozbić {task['id']} na części",
                                      f"podział odrzucony ({exc}) — realizuję jako całość, żeby nie mnożyć podzadań")
+    # v2.7.19: agent szacuje ETA całego zadania (skill estimation) — doprecyzowanie heurystyki z add_task
+    try:
+        eta = float(result.get("eta_s") or 0)
+        if eta > 0:
+            state.set_eta(task["id"], eta)
+            state.record_metric("eta_estimated", {"eta_s": round(eta), "via": "plan"}, task["id"])
+    except Exception:
+        pass
     plan = result.get("plan", "")
     plan_rel = f".agents/runtime/{task['id']}.plan.md"
     Path(ROOT / plan_rel).write_text(plan, encoding="utf-8")

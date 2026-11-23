@@ -494,7 +494,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
   <button data-sview="notifs" onclick="showSysView('notifs')">🔔 Powiadomienia (<span id="nCount"></span>)</button>
 </div>
 <div id="sysQueue">
-<h3>📥 Kolejka zadań <span class="muted">(kolejność pobierania przez agentów: priorytet → kara za 3+ retry → wyższy postęp → najstarsze · klik wiersz = szczegóły)</span></h3>
+<h3>📥 Kolejka zadań <span class="muted">(kolejność pobierania przez agentów: priorytet → kara za 3+ retry → wyższy postęp → najstarsze · klik wiersz = szczegóły)</span> <span id="queueHead" class="muted" style="color:#d29922"></span></h3>
 <div id="queueBox" class="qbox"></div>
 </div>
 <div id="sysLogs" style="display:none">
@@ -837,6 +837,7 @@ async function refreshInner(){
      <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
      <div class="teraz"><span class="spin">🌀</span> 🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}
        <span class="subclk" data-subsince="${t.substep_since||0}">${t.substep_since?fmtDur(Date.now()/1000 - t.substep_since):''}</span></div>
+     ${t.eta_s?`<div class="teraz" style="color:#8b949e">🔮 ETA ${fmtDur(t.eta_s)}${t.eta_left_s!=null?` · zostało ~${fmtDur(t.eta_left_s)} · będzie ~<b>${new Date((t.eta_at||0)*1000).toLocaleTimeString()}</b>`:''}</div>`:''}
      ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
      <span class="who">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)}</span></div>`).join('')
     : '<span class="muted">nikt teraz nie pracuje</span>';
@@ -1102,12 +1103,16 @@ function renderSys(){
   const d = lastState; if(!d) return;
   document.getElementById('qCount').textContent = (d.queue||[]).length;
   document.getElementById('nCount').textContent = d.notif_unread||0;
+  // v2.7.19: raport „za ile będzie” nad kolejką
+  const etaRun = d.stats && d.stats.eta_running_at ? `🔮 bieżące RUNNING skończą się ~<b>${new Date(d.stats.eta_running_at*1000).toLocaleTimeString()}</b>` : '';
+  const etaQ = d.stats && d.stats.eta_queue_s ? ` · kolejka razem ~${fmtDur(d.stats.eta_queue_s)}` : '';
+  const qh = document.getElementById('queueHead'); if(qh) qh.innerHTML = (etaRun + etaQ) || '';
   document.getElementById('queueBox').innerHTML = (d.queue||[]).length ? (d.queue||[]).map(q =>
     `<div class="qrow" onclick="openTask('${esc(q.id)}')">
        <span class="qpos">#${q.pos}</span> <span class="prio prio-${q.priority}">${q.priority}</span>
        <b>${esc(q.id)}</b> <span class="muted">${esc((q.title_sponsor||q.title||'').slice(0,55))}</span>
        <span class="pbar sm" title="postęp ${Math.round((q.progress||0)*100)}%"><i style="width:${Math.round((q.progress||0)*100)}%"></i></span>
-       <span class="muted">${esc(q.substep||'—')} · retry ${q.retry_count}${q.retry_count>=3?' 🔚':''} · ${fmtDur(q.age)} temu · ${esc(q.persona||q.role)}${q.review_notes?` · 📝 ${esc(q.review_notes.slice(0,60))}`:''}</span>
+       <span class="muted">${esc(q.substep||'—')} · retry ${q.retry_count}${q.retry_count>=3?' 🔚':''} · ${fmtDur(q.age)} temu · ${esc(q.persona||q.role)}${q.eta_s?` · 🔮 ETA ${fmtDur(q.eta_s)}`:''}${q.review_notes?` · 📝 ${esc(q.review_notes.slice(0,60))}`:''}</span>
      </div>`).join('') : '<span class="muted">kolejka pusta ✅ (wszystko w pracy lub zmergowane)</span>';
   // logi grupowane: (kind|task|payload) -> {count, last, first} — czytelne mimo spamu
   const BAD = {'auto_retry':1,'stuck_requeued':1,'merge':1,'owner_packet':1,'ask_owner':1,'llm_job_failed':1,'llm_batch_fail':1,'orchestrator_error':1,'merge_error':1,'circuit_breaker_escalation':1,'watchdog_escalation':1,'sponsor_decline':1,'failed_parked':1,'milestone_error':1,'health_check':1,'throttled':1};
@@ -2167,7 +2172,7 @@ def _snapshot(s: State) -> dict:
         tasks.append({k: t.get(k) for k in ("id", "title", "status", "substep", "substep_since", "retry_count",
                                              "role", "project_id", "branch", "updated_at", "read_only",
                                              "mode", "parent_task", "started_at", "claimed_by", "priority",
-                                             "review_notes", "created_at", "title_sponsor")})
+                                             "review_notes", "created_at", "title_sponsor", "eta_s")})
         from engine.state import substep_progress
         tasks[-1]["progress"] = t.get("progress") if t.get("progress") is not None else substep_progress(t.get("substep"))
         tasks[-1]["age"] = max(0, time.time() - (t.get("updated_at") or t.get("created_at") or time.time()))
@@ -2177,6 +2182,12 @@ def _snapshot(s: State) -> dict:
         tasks[-1]["depth"] = depth(t)
         if t.get("status") == "RUNNING" and t.get("started_at"):
             tasks[-1]["elapsed"] = max(0, time.time() - t["started_at"])
+        # v2.7.19: ETA — ile zostało i kiedy skończy (dla RUNNING)
+        eta_s = float(t.get("eta_s") or 0)
+        if eta_s and t.get("status") == "RUNNING":
+            left = max(0.0, eta_s - (tasks[-1].get("elapsed") or 0))
+            tasks[-1]["eta_left_s"] = left
+            tasks[-1]["eta_at"] = time.time() + left
         if t.get("status") == "RUNNING":
             tasks[-1]["res"] = _proc_stats(t.get("claimed_by"))
     tasks.sort(key=lambda t: (t["status"] != "AWAITING_OWNER", t["status"] != "RUNNING", t["status"] != "CHANGES_REQUESTED", -(t["updated_at"] or 0)))
@@ -2188,6 +2199,9 @@ def _snapshot(s: State) -> dict:
         "running": sum(1 for t in tasks if t["status"] == "RUNNING"),
         "overdue": sum(1 for t in tasks if t["status"] in ("READY", "AWAITING_OWNER") and t.get("age", 0) > 3600),
         "running_long": sum(1 for t in tasks if t["status"] == "RUNNING" and (t.get("elapsed") or 0) > 3600),
+        # v2.7.19: raport „za ile będzie” — ETA bieżących RUNNING i całej kolejki
+        "eta_running_at": max((t.get("eta_at") for t in tasks if t.get("status") == "RUNNING" and t.get("eta_at")), default=None),
+        "eta_queue_s": sum(float(t.get("eta_s") or 0) for t in tasks if t["status"] in ("READY", "CHANGES_REQUESTED")),
     }
     # zespół: jedna karta per rola (persona + backstory + aktualne zadanie + liczniki)
     from engine import personas as _pers
@@ -2279,6 +2293,7 @@ def _snapshot(s: State) -> dict:
                           "retry_count": t.get("retry_count") or 0, "role": t.get("role") or "",
                           "persona": p.get("name") or "", "project_id": t.get("project_id"),
                           "age": max(0, time.time() - (t.get("created_at") or time.time())),
+                          "eta_s": float(t.get("eta_s") or 0),
                           "review_notes": (t.get("review_notes") or "")[:200]})
         applogs = []
         for r in s._conn().execute(

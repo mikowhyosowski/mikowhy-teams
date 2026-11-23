@@ -132,7 +132,7 @@ def compile_system_prompt(role: str, stack: list[str] | None, task: dict) -> str
     + rola + lessons-learned + kontrakty + JSON zadania."""
     parts: list[str] = []
     g = SKILLS / "_global"
-    for name in ("anti-slop.md", "git-contract.md", "lessons-learned.md", "sponsor-notes.md"):
+    for name in ("anti-slop.md", "git-contract.md", "lessons-learned.md", "sponsor-notes.md", "estimation.md"):  # v2.7.19: + skill szacowania (ETA)
         p = g / name
         if p.exists():
             parts.append(p.read_text(encoding="utf-8"))

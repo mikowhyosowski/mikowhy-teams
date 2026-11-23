@@ -433,3 +433,23 @@ def test_failed_parked_after_max_retries_for_team_audit():
     o._ensure_ops_recurring()
     rec = [r for r in s.list_recurring(active_only=False) if r["id"] == "AUDIT-FAILED-ROOTCAUSE"]
     assert rec and rec[0]["role"] == "systems-auditor" and rec[0]["schedule"] == "daily"
+
+
+def test_eta_estimate_and_snapshot():
+    """v2.7.19: ETA zadania — heurystyka przy add_task, set_eta z planu, snapshot ma eta_left/eta_at dla RUNNING."""
+    from engine.state import estimate_eta_s
+    s = _tmp_state()
+    s.add_task("T-E1", "FACTORY-OPS", 9, "małe", "backend-dev", status="READY", scope_paths=["engine/x.py"])
+    s.add_task("T-E2", "FACTORY-OPS", 9, "read_only raport", "health-monitor", status="READY", read_only=True, mode="llm")
+    assert s.get_task("T-E1")["eta_s"] == estimate_eta_s("małe", ["engine/x.py"], False, "pipeline", "P2")
+    assert s.get_task("T-E1")["eta_s"] > 0 and s.get_task("T-E2")["eta_s"] < s.get_task("T-E1")["eta_s"]
+    s.set_eta("T-E1", 1234)
+    assert s.get_task("T-E1")["eta_s"] == 1234
+    s.claim_task("T-E1", "w1")
+    s.transition("T-E1", "RUNNING", substep="2/5_IMPL")
+    from engine.dashboard import _snapshot
+    d = _snapshot(s)
+    t = [x for x in d["tasks"] if x["id"] == "T-E1"][0]
+    assert t["eta_s"] == 1234 and t.get("eta_left_s") is not None and t.get("eta_at")
+    assert d["stats"]["eta_queue_s"] >= 0
+    assert any(q["id"] == "T-E2" and "eta_s" in q for q in d["queue"])
