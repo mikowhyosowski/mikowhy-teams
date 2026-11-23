@@ -34,6 +34,58 @@ from engine.state import State
 ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "AWAITING_APPROVAL": "🕒",
         "READY_TO_MERGE": "📦", "MERGED": "✅", "FAILED": "❌", "BLOCKED": "⛔", "ESCALATED": "🚨"}
 
+VERSION = "2.0.0"
+
+
+def _version_info() -> dict:
+    """Wersja dashboardu + ostatni commit + changelog (do badge'a w nagłówku)."""
+    import subprocess
+    last_hash, commit_ts = "", None
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%h|%ct|%s"], capture_output=True, text=True, cwd=ROOT)
+        if out.returncode == 0:
+            last_hash, ts, subj = out.stdout.strip().split("|", 2)
+            commit_ts = float(ts)
+    except Exception:
+        pass
+    changelog = ""
+    try:
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")[:4000]
+    except OSError:
+        changelog = "(brak CHANGELOG.md)"
+    return {"version": VERSION, "last_commit": last_hash, "commit_ts": commit_ts,
+            "commit_subject": subj if last_hash else "", "changelog": changelog,
+            "age_s": (time.time() - commit_ts) if commit_ts else None}
+
+
+def _merges_info(s: State) -> dict:
+    """Ostatnie merge'e: ile w ostatniej dobie, kiedy ostatni, lista ostatnich."""
+    now = time.time()
+    recent: list[dict] = []
+    count_24h = 0
+    last_ts = None
+    try:
+        rows = s._conn().execute(
+            "SELECT ts, task_id, kind, payload FROM metrics WHERE kind IN ('merge','auto_merge','task_event') "
+            "ORDER BY ts DESC LIMIT 500").fetchall()
+        for ts, task_id, kind, payload in rows:
+            try:
+                p = json.loads(payload)
+            except Exception:
+                p = {}
+            st = str((p.get("changes") or {}).get("status", ""))
+            if kind in ("merge", "auto_merge") or "MERGED" in st:
+                if last_ts is None:
+                    last_ts = ts
+                if now - ts < 86400:
+                    count_24h += 1
+                if len(recent) < 10:
+                    recent.append({"ts": ts, "task_id": task_id or (p.get("task") or ""), "kind": kind})
+    except Exception:
+        pass
+    return {"last_ts": last_ts, "last_ago_s": (now - last_ts) if last_ts else None,
+            "count_24h": count_24h, "recent": recent}
+
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Dark Factory — live</title>
@@ -108,7 +160,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #detail.open{right:0}
  #detail h3{font-size:14px;margin:4px 0}
  #detail textarea{width:100%;height:70px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;font-family:inherit}
-#projFilters{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+#projFilters{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px;padding:5px 8px;background:#111823;border:1px solid #21262d;border-radius:10px;position:sticky;top:0;z-index:6}
+.lchip.on{background:#1f6feb!important;color:#fff!important;font-weight:bold}
+#ver:hover{border-color:#58a6ff;color:#58a6ff}
 .pchip{border:1px solid var(--c,#30363d);background:#161b22;color:#c9d1d9;border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
 .pchip .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
 .pchip.off{opacity:.35;text-decoration:line-through}
@@ -201,8 +255,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .tcard{border:1px solid #21262d;border-left:3px solid #1f6feb;border-radius:8px;padding:6px 10px;margin:4px 0;cursor:pointer;background:#111823}
  .tcard:hover{border-color:#58a6ff}
 </style></head><body>
-<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span></h1>
+<h1>🏭 Dark Factory <span class="live-dot">●</span> LIVE <span id="ts"></span> <span id="host" class="muted" style="font-size:11px"></span> <span id="pause" class="muted" style="font-size:11px;color:#f0b429"></span> <span id="ver" class="muted" style="font-size:11px;cursor:pointer;border:1px solid #30363d;border-radius:10px;padding:1px 8px" onclick="openChangelog()" title="wersja dashboardu — klik = changelog"></span></h1>
 <div id="stats"></div>
+<div id="projFilters" title="Filtry projektów — globalne (działają na wszystkich zakładkach i mapie Firma)"></div>
 <nav id="tabs">
   <button data-tab="overview" onclick="showTab('overview')">📊 Przegląd<span id="navAlert"></span></button>
   <button data-tab="tasks" onclick="showTab('tasks')">📋 Zadania</button>
@@ -221,8 +276,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <h2>Projekty</h2><div id="projects"></div>
 </section>
 <section class="tabpage" id="tab-tasks">
-<h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację)</span></h2>
-<div id="projFilters"></div>
+<h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację; filtry projektów są wyżej — globalne)</span></h2>
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 </section>
 <section class="tabpage" id="tab-team">
@@ -248,7 +302,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <pre id="viewer" style="background:#0d1117;border:1px solid #30363d;padding:8px;max-height:300px;overflow:auto;font-size:11px"></pre>
 </section>
 <section class="tabpage" id="tab-firma">
-<h2>🏢 Firma — osiedle biur <span class="muted">(z góry: biuro=projekt · pokój=agent · biurko=zadanie; kółko=zoom, drag=przesuwaj, klik biurko=szczegóły; klik biuro=filtr projektu)</span></h2>
+<h2>🏢 Firma — mapka osiedla <span class="muted">(biuro=projekt · pokój=agent · biurko=zadanie · 🏆=milestone; klik biurko=szczegóły zadania, klik pokój=wątek z osobą, klik biuro=filtr projektu, klik legendę=podświetl status; kółko=zoom, drag=przesuwaj)</span>
+<button onclick="renderFirma()" style="background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:4px 12px;cursor:pointer">🔄 odśwież mapę</button>
+<span class="muted" style="font-size:11px">na mapie auto-refresh rzadszy (co 10s) — nie wiesza widoku</span></h2>
 <div id="firmaLegend"></div>
 <div id="estateWrap"><svg id="estate" preserveAspectRatio="xMidYMid meet"></svg></div>
 </section>
@@ -259,8 +315,41 @@ let lastEventTs = 0;
 // kolorowe filtry projektów — hiddenProjs przechowywane w localStorage
 const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
 function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
-function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs])); refresh(); }
-function resetProjs(){ hiddenProjs.clear(); localStorage.setItem('hiddenProjs','[]'); refresh(); }
+function toggleProj(pid){ if(hiddenProjs.has(pid)) hiddenProjs.delete(pid); else hiddenProjs.add(pid); localStorage.setItem('hiddenProjs', JSON.stringify([...hiddenProjs])); refresh(); if(firmaWorld) renderFirma(); }
+function resetProjs(){ hiddenProjs.clear(); localStorage.setItem('hiddenProjs','[]'); refresh(); if(firmaWorld) renderFirma(); }
+let lastVersion = null;
+let _projFilterKey = '';
+function renderProjFilters(d, visTasks){
+  // cache: renderuj pasek filtrów tylko gdy zmieni się lista projektów lub liczby zadań
+  const allProjs = [...new Set(d.projects.map(p=>p.project_id).concat(d.tasks.map(t=>t.project_id||'(brak)')))];
+  const key = JSON.stringify(allProjs) + '|' + JSON.stringify(allProjs.map(pid => d.tasks.filter(t=>(t.project_id||'(brak)')===pid).length)) + '|' + JSON.stringify([...hiddenProjs]);
+  if(key === _projFilterKey) return;
+  _projFilterKey = key;
+  document.getElementById('projFilters').innerHTML = allProjs.map(pid => {
+    const off = hiddenProjs.has(pid);
+    const n = d.tasks.filter(t=>(t.project_id||'(brak)')===pid).length;
+    return `<button class="pchip ${off?'off':''}" style="--c:${projColor(pid)}" onclick="toggleProj('${esc(pid)}')"><span class="dot" style="background:${projColor(pid)}"></span>${esc(pid)} <span class="muted">${n}</span></button>`;
+  }).join('') + `<button class="pchip reset" onclick="resetProjs()">✖ wszystkie</button>`;
+}
+function openMerges(){
+  curTask = null; curThread = null;
+  const mg = (lastState && lastState.merges) || {recent: []};
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'merges';
+  document.getElementById('detailBody').innerHTML = `<h3>🔀 Merge'e</h3>
+    <div class="kv">w ostatnich 24h: <b>${mg.count_24h||0}</b>${mg.last_ago_s!=null?` · ostatni <b>${fmtDur(mg.last_ago_s)}</b> temu`:''}</div>
+    <h2>Ostatnie (max 10)</h2><div class="histbox">${(mg.recent||[]).map(m=>`<div><span class="muted">${new Date(m.ts*1000).toLocaleString()}</span> ${m.task_id?`<a href="#" onclick="openTask('${esc(m.task_id)}');return false" style="color:#58a6ff">${esc(m.task_id)}</a>`:'—'} <span class="muted">${esc(m.kind)}</span> <span class="muted">(${fmtDur(Date.now()/1000-m.ts)} temu)</span></div>`).join('')||'<span class="muted">brak merge\'ów</span>'}</div>`;
+}
+function openChangelog(){
+  curTask = null; curThread = null;
+  const v = lastVersion || {};
+  document.getElementById('detail').classList.add('open');
+  document.getElementById('detailBody').dataset.key = 'changelog';
+  document.getElementById('detailBody').innerHTML = `<h3>🏷️ Wersja dashboardu: <b>v${esc(v.version||'?')}</b></h3>
+    <div class="kv">ostatni commit: <b>${esc(v.last_commit||'?')}</b> ${v.commit_subject?`<span class="muted">— ${esc(v.commit_subject)}</span>`:''}</div>
+    <div class="kv">aktualizacja kodu: <b>${v.age_s!=null?fmtDur(v.age_s)+' temu':'?'}</b> (${v.commit_ts?new Date(v.commit_ts*1000).toLocaleString():''})</div>
+    <h2>📜 Changelog</h2><pre style="max-height:50vh;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px;font-size:11px;white-space:pre-wrap">${esc(v.changelog||'brak')}</pre>`;
+}
 // fallback: gdy strona otwarta przez 127.0.0.1/localhost — przekieruj przeglądarkę na adres LAN
 (async function redirectToLan(){
   try{
@@ -281,6 +370,7 @@ document.addEventListener('focusout', e => { if(e.target && e.target.matches && 
 async function refresh(){ if(refreshPaused) return; try{ await refreshInner(); }catch(e){ document.getElementById('ts').textContent = '⚠ błąd odświeżania: '+e; } }
 async function refreshInner(){
   const r = await fetch('/api/state'); const d = await r.json();
+  lastState = d;
   document.getElementById('ts').textContent = new Date().toLocaleTimeString();
   if(d.host){
     document.getElementById('host').innerHTML = d.host.dashboard_url
@@ -288,21 +378,25 @@ async function refreshInner(){
       : `📍 offline (brak IP LAN) · host: ${esc(d.host.hostname)}`;
   }
   const st = d.stats||{};
+  const mg = d.merges||{};
   document.getElementById('stats').innerHTML =
     `<span class="stat-badge ${st.awaiting?'warn':''}">🕒 czeka na Ciebie: <b>${st.awaiting||0}</b></span>`+
     `<span class="stat-badge">⏳ w kolejce (READY): <b>${st.waiting||0}</b></span>`+
     `<span class="stat-badge ok">🔄 pracują: <b>${st.running||0}</b></span>`+
     `<span class="stat-badge ${st.overdue?'bad':'ok'}">⚠️ spóźnione/stare (&gt;1h w kolejce): <b>${st.overdue||0}</b></span>`+
     `<span class="stat-badge ${st.running_long?'warn':''}">🐌 długo biegną (&gt;1h): <b>${st.running_long||0}</b></span>`+
-    (d.sys?`<span class="stat-badge" title="load / CPU / RAM laptopa">🖥️ load <b>${d.sys.load1}</b>/${d.sys.cpus} · 🧠 RAM <b>${d.sys.mem_used_pct}%</b> (wolne ${d.sys.mem_avail_gb}GB)</span>`:'');
-  // kolorowe filtry projektów (stan w localStorage — przeżywa odświeżenia); visTasks MUSI być przed użyciem (TDZ!)
+    (d.sys?`<span class="stat-badge" title="load / CPU / RAM laptopa">🖥️ load <b>${d.sys.load1}</b>/${d.sys.cpus} · 🧠 RAM <b>${d.sys.mem_used_pct}%</b> (wolne ${d.sys.mem_avail_gb}GB)</span>`:'')+
+    `<span class="stat-badge ${mg.count_24h?'ok':''}" style="cursor:pointer" onclick="openMerges()" title="klik = lista ostatnich merge'ów">🔀 mergi 24h: <b>${mg.count_24h||0}</b>${mg.last_ago_s!=null?` · ostatni <b>${fmtDur(mg.last_ago_s)}</b> temu`:''}</span>`;
+  // wersja dashboardu w nagłówku (klik = changelog)
+  if(d.version){
+    const v = d.version;
+    document.getElementById('ver').textContent = `v${v.version} · ${v.last_commit||''} · aktualizacja ${v.age_s!=null?fmtDur(v.age_s)+' temu':'?'}`;
+    document.getElementById('ver').title = (v.commit_subject||'') + '\nklik = changelog';
+    lastVersion = v;
+  }
+  // kolorowe filtry projektów — GLOBALNE (nad zakładkami), render tylko gdy zmieni się lista projektów (cache)
   const visTasks = d.tasks.filter(t => !hiddenProjs.has(t.project_id || '(brak)'));
-  const allProjs = [...new Set(d.projects.map(p=>p.project_id).concat(d.tasks.map(t=>t.project_id||'(brak)')))];
-  document.getElementById('projFilters').innerHTML = allProjs.map(pid => {
-    const off = hiddenProjs.has(pid);
-    const n = d.tasks.filter(t=>(t.project_id||'(brak)')===pid).length;
-    return `<button class="pchip ${off?'off':''}" style="--c:${projColor(pid)}" onclick="toggleProj('${esc(pid)}')"><span class="dot" style="background:${projColor(pid)}"></span>${esc(pid)} <span class="muted">${n}</span></button>`;
-  }).join('') + `<button class="pchip reset" onclick="resetProjs()">✖ wszystkie</button>`;
+  renderProjFilters(d, visTasks);
   const alerts = visTasks.filter(t=>t.status==='AWAITING_APPROVAL');
   document.getElementById('alerts').innerHTML = alerts.length ? alerts.map(t =>
     `<div class="alert-card ${t.substep==='ASK_SPONSOR'?'ask':''}" onclick="openTask('${t.id}')">
@@ -544,145 +638,150 @@ function svgEl(name, attrs, parent){
   return e;
 }
 function escXml(s){ return esc(s); }
+let dimStatus = null;         // klik legendy -> podświetl tylko ten status (reszta przyciemniona)
+let staticKey = null;         // cache warstwy statycznej mapy
 async function renderFirma(){
   try{
     const r = await fetch('/api/firma'); firmaWorld = await r.json();
   }catch(e){ return; }
-  const W = firmaWorld, cfg = W.config, C = cfg.colors;
+  const W = firmaWorld, cfg = W.config, C = cfg.colors, s2 = cfg.stage2 || {};
   const g = cfg.estate.grid, off = cfg.office, R = cfg.rooms, D = cfg.desks;
-  const cols = Math.max(1, g.cols|0), gap = g.gap, margin = g.margin;
+  const cols = Math.max(1, g.cols|0), gap = g.gap, margin = g.margin + 26; // +26 na ogrodzenie
   const ow = off.w, oh = off.h;
   const visOffices = W.offices.filter(o => !hiddenProjs.has(o.project_id));
   const rows = Math.max(1, Math.ceil(visOffices.length / cols));
   const Wsvg = margin*2 + cols*ow + (cols-1)*gap;
-  const Hsvg = margin*2 + rows*oh + (rows-1)*gap + 90;
-  if(!firmaView) firmaView = {x:0, y:0, w:Wsvg, h:Hsvg};
+  const Hsvg = margin*2 + rows*oh + (rows-1)*gap + 110;
+  if(!firmaView) firmaView = {x:-10, y:-10, w:Wsvg+20, h:Hsvg+20};
   const svg = document.getElementById('estate');
   svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
-  // warstwa statyczna (tło, działki, biura, pokoje, strefy, recepcja)
-  const stLayer = svgEl('g', {}, svg); stLayer.id = 'estateStatic';
-  svgEl('rect', {x:0, y:0, width:Wsvg, height:Hsvg, fill:C.bg}, stLayer);
-  // etap 2: defs — gradienty per biuro + cień
-  const s2 = cfg.stage2 || {};
-  const defs = svgEl('defs', {}, stLayer);
-  if(s2.gradients){
-    for(const o of visOffices){
-      const gid = 'grad-' + String(o.project_id).replace(/[^a-z0-9_-]/gi, '_');
-      const lg = svgEl('linearGradient', {id: gid, x1: '0', y1: '0', x2: '0', y2: '1'}, defs);
-      svgEl('stop', {offset: '0%', 'stop-color': o.color, 'stop-opacity': 0.55}, lg);
-      svgEl('stop', {offset: '100%', 'stop-color': C.plot, 'stop-opacity': 1}, lg);
+  // ===== warstwa statyczna (cache'owana — przebuduj tylko gdy zmieni się świat/config) =====
+  const key = JSON.stringify([visOffices.map(o=>[o.project_id,o.read_only,o.milestones.length,o.rooms.length]), cfg.version, s2, W.estate.host&&W.estate.host.dashboard_url, W.estate.sys&&W.estate.sys.load1]);
+  let stLayer = document.getElementById('estateStatic');
+  if(!stLayer){ stLayer = svgEl('g', {id:'estateStatic'}, svg); }
+  if(key !== staticKey){
+    staticKey = key;
+    let s = '';
+    // tło osiedla (trawa) + droga wokół
+    s += `<rect x="-26" y="-26" width="${Wsvg+52}" height="${Hsvg+52}" rx="18" fill="#0e1a12"/>`;
+    s += `<rect x="0" y="0" width="${Wsvg}" height="${Hsvg}" fill="${C.bg}"/>`;
+    // OGRODZENIE osiedla (zamknięte) — słupki + 2 poziome belki
+    const fence = (x1,y1,x2,y2) => {
+      let f = `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#8b6b3d" stroke-width="4"/>`;
+      f += `<line x1="${x1}" y1="${y1-5}" x2="${x2}" y2="${y2-5}" stroke="#a8845c" stroke-width="3"/>`;
+      const len = Math.hypot(x2-x1, y2-y1), n = Math.max(2, Math.floor(len/34));
+      for(let i=0;i<=n;i++){ const px = x1+(x2-x1)*i/n, py = y1+(y2-y1)*i/n;
+        f += `<line x1="${px}" y1="${py-9}" x2="${px}" y2="${py+9}" stroke="#6e5433" stroke-width="5" stroke-linecap="round"/>`; }
+      return f;
+    };
+    s += fence(-14,-14, Wsvg+14,-14) + fence(-14,Hsvg+14, Wsvg+14,Hsvg+14) + fence(-14,-14,-14,Hsvg+14) + fence(Wsvg+14,-14,Wsvg+14,Hsvg+14);
+    // brama (przerwa w ogrodzeniu na dole) + szyld osiedla
+    s += `<rect x="${Wsvg/2-90}" y="${Hsvg+6}" width="180" height="14" fill="${C.bg}"/>`;
+    const gate = cfg.estate.gate, gx = Wsvg/2 - gate.w/2, gy = Hsvg + 18;
+    s += `<g><rect x="${gx-8}" y="${gy-10}" width="${gate.w+16}" height="${gate.h+20}" rx="10" fill="#3a2f1d" stroke="#8b6b3d" stroke-width="3"/>
+      <rect x="${gx}" y="${gy}" width="${gate.w}" height="${gate.h}" rx="8" fill="${C.gate}" opacity="0.95"/>
+      <text x="${gx+gate.w/2}" y="${gy+17}" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold">🚪 ${esc(cfg.meta.name||'Osiedle')}</text>
+      <text x="${gx+gate.w/2}" y="${gy+36}" text-anchor="middle" fill="#fff" font-size="11">${W.estate.host&&W.estate.host.dashboard_url?esc(W.estate.host.dashboard_url):'offline'}</text>
+      <text x="${gx+gate.w/2}" y="${gy+53}" text-anchor="middle" fill="#cfe3ff" font-size="10">${W.estate.sys?('load '+W.estate.sys.load1+'/'+W.estate.sys.cpus+' · 🧠'+W.estate.sys.mem_used_pct+'%'):''}</text></g>`;
+    // drogi między działkami + linie środkowe
+    for(let i=1;i<cols;i++){ const x = margin + i*ow + (i-0.5)*gap - cfg.estate.road/2;
+      s += `<rect x="${x}" y="0" width="${cfg.estate.road}" height="${Hsvg}" fill="${C.road}"/>`;
+      if(s2.roadDashes){ const cx = x + cfg.estate.road/2;
+        for(let y=10; y<Hsvg; y+=28) s += `<line x1="${cx}" y1="${y}" x2="${cx}" y2="${y+14}" stroke="#8b949e" stroke-width="2" opacity="0.5"/>`; }
     }
-  }
-  if(s2.shadows){
-    const f = svgEl('filter', {id: 'fshadow', x: '-20%', y: '-20%', width: '140%', height: '140%'}, defs);
-    svgEl('feDropShadow', {dx: 0, dy: 3, stdDeviation: 4, 'flood-color': '#000', 'flood-opacity': 0.5}, f);
-  }
-  // drogi z przerywaną linią środkową (etap 2)
-  for(let i=1;i<cols;i++){ const x = margin + i*ow + (i-0.5)*gap - cfg.estate.road/2;
-    svgEl('rect', {x, y:0, width:cfg.estate.road, height:Hsvg, fill:C.road}, stLayer);
-    if(s2.roadDashes){
-      const cx = x + cfg.estate.road/2;
-      for(let y=10; y<Hsvg; y+=28) svgEl('line', {x1:cx, y1:y, x2:cx, y2:y+14, stroke:'#8b949e', 'stroke-width':2, opacity:0.5}, stLayer);
-    }
-  }
-  // drzewa na osiedlu (etap 2) — deterministyczne pozycje
-  if(s2.trees){
+    // rośliny: drzewa + kwiaty + krzaki (deterministycznie)
+    const flora = s2.flora || {};
     for(let i=0;i<(s2.treeCount||6);i++){
-      const tx = margin/2 + ((i*97) % Math.max(1, Wsvg - margin));
-      const ty = margin/2 + ((i*61) % Math.max(1, Hsvg - margin));
-      const t = svgEl('text', {x:tx, y:ty, 'font-size':18, opacity:0.8}, stLayer);
-      t.textContent = s2.treeEmoji || '🌳';
+      const tx = 20 + ((i*97) % Math.max(1, Wsvg-40)), ty = 20 + ((i*61) % Math.max(1, Hsvg-140));
+      s += `<text x="${tx}" y="${ty}" font-size="20">${i%3===0?'🌲':'🌳'}</text>`;
     }
-  }
-  // recepcja (brama osiedla) = host/LAN
-  const gate = cfg.estate.gate, gx = Wsvg/2 - gate.w/2, gy = Hsvg - margin - gate.h + 16;
-  const gg = svgEl('g', {}, stLayer);
-  svgEl('rect', {x:gx, y:gy, width:gate.w, height:gate.h, rx:8, fill:C.gate, opacity:0.92}, gg);
-  const t1 = svgEl('text', {x:gx+gate.w/2, y:gy+17, 'text-anchor':'middle', fill:'#fff', 'font-size':12}, gg);
-  t1.textContent = '🚪 ' + gate.label;
-  const t2 = svgEl('text', {x:gx+gate.w/2, y:gy+36, 'text-anchor':'middle', fill:'#fff', 'font-size':11}, gg);
-  t2.textContent = (W.estate.host && W.estate.host.dashboard_url) || 'offline';
-  const t3 = svgEl('text', {x:gx+gate.w/2, y:gy+53, 'text-anchor':'middle', fill:'#cfe3ff', 'font-size':10}, gg);
-  t3.textContent = W.estate.sys ? `load ${W.estate.sys.load1}/${W.estate.sys.cpus} · 🧠 ${W.estate.sys.mem_used_pct}%` : '';
-  // pogoda nad osiedlem = sys
-  const wth = svgEl('text', {x:cfg.estate.weather.x, y:cfg.estate.weather.y, 'font-size':12, fill:C.muted}, stLayer);
-  wth.textContent = `🌥️ ${cfg.estate.weather.label}: load ${W.estate.sys?W.estate.sys.load1:'?'} · RAM ${W.estate.sys?W.estate.sys.mem_used_pct+'%':'?'}`;
-  // biura
-  visOffices.forEach((o, oi) => {
-    const col = oi % cols, row = Math.floor(oi / cols);
-    const ox = margin + col*(ow+gap), oy = margin + row*(oh+gap);
-    const og = svgEl('g', {cursor:'pointer', class:'office'}, stLayer);
-    og.addEventListener('click', () => toggleProj(o.project_id));
-    const gid = 'grad-' + String(o.project_id).replace(/[^a-z0-9_-]/gi, '_');
-    svgEl('rect', {x:ox, y:oy, width:ow, height:oh, rx:10, class:'plot',
-                   fill: (s2.gradients ? `url(#${gid})` : C.plot),
-                   stroke:o.color, 'stroke-width':2.5,
-                   filter: s2.shadows ? 'url(#fshadow)' : null}, og);
-    svgEl('rect', {x:ox, y:oy, width:ow, height:off.roofH, rx:10, fill:C.roof, stroke:o.color}, og);
-    // etap 2: okna w dachu + drzwi od frontu
-    if(s2.windows){
+    for(let i=0;i<(flora.flowers||8);i++){
+      const fx = 24 + ((i*53) % Math.max(1, Wsvg-48)), fy = Hsvg - 30 - ((i*29) % 60);
+      s += `<text x="${fx}" y="${fy}" font-size="12">${['🌷','🌼','🌻'][i%3]}</text>`;
+    }
+    // biura — kreskówkowe budynki: korpus z gradientem, dach (trójkąt), komin, drzwi, okna, szyld
+    visOffices.forEach((o, oi) => {
+      const col = oi % cols, row = Math.floor(oi / cols);
+      const ox = margin + col*(ow+gap), oy = margin + row*(oh+gap);
+      const gid = 'grad-' + String(o.project_id).replace(/[^a-z0-9_-]/gi, '_');
+      s += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${o.color}" stop-opacity="0.65"/><stop offset="100%" stop-color="${C.plot}" stop-opacity="1"/></linearGradient></defs>`;
+      s += `<g class="office" data-pid="${esc(o.project_id)}" style="cursor:pointer">`;
+      // cień + korpus
+      s += `<rect x="${ox+4}" y="${oy+6}" width="${ow}" height="${oh}" rx="12" fill="#000" opacity="0.35"/>`;
+      s += `<rect class="plot" x="${ox}" y="${oy}" width="${ow}" height="${oh}" rx="12" fill="url(#${gid})" stroke="${o.color}" stroke-width="3"/>`;
+      // dach (trójkąt) + komin
+      s += `<polygon points="${ox-8},${oy+4} ${ox+ow/2},${oy-26} ${ox+ow+8},${oy+4}" fill="${o.color}" opacity="0.9" stroke="#0d1117" stroke-width="2"/>`;
+      s += `<rect x="${ox+ow-46}" y="${oy-24}" width="16" height="22" fill="#6e7681" stroke="#30363d"/>`;
+      // szyld z nazwą projektu
+      s += `<rect x="${ox+10}" y="${oy+8}" width="${Math.min(ow-20, 14*o.project_id.length+70)}" height="22" rx="6" fill="#0d1117" opacity="0.85" stroke="${o.color}"/>`;
+      s += `<text x="${ox+18}" y="${oy+24}" font-size="12" font-weight="bold" fill="#fff">🏢 ${esc(o.project_id)}</text>`;
+      s += `<text x="${ox+ow-12}" y="${oy+24}" text-anchor="end" font-size="10" fill="#c9d1d9">${o.read_only?'🚧 read-only':'🔓 '+esc(o.policy||'')}</text>`;
+      if(o.read_only) for(let t=0;t<8;t++)
+        s += `<line x1="${ox+8+t*28}" y1="${oy+34}" x2="${ox+26+t*28}" y2="${oy+50}" stroke="${C.tape}" stroke-width="3" opacity="0.75"/>`;
+      // okna + drzwi (front budynku)
       for(let wi=0; wi<3; wi++)
-        svgEl('rect', {x:ox+off.w-70+wi*18, y:oy+10, width:12, height:14, rx:2, fill:'#0d1117', stroke:o.color, 'stroke-width':1, opacity:0.9}, og);
-    }
-    if(s2.door)
-      svgEl('rect', {x:ox+ow/2-12, y:oy+oh-14, width:24, height:14, rx:3, fill:o.color, opacity:0.85}, og);
-    svgEl('rect', {x:ox, y:oy+off.roofH-6, width:ow, height:6, fill:o.color}, og);
-    const rt = svgEl('text', {x:ox+10, y:oy+23, 'font-size':13, 'font-weight':'bold', fill:C.text}, og);
-    rt.textContent = '🏢 ' + o.project_id;
-    const rt2 = svgEl('text', {x:ox+ow-10, y:oy+23, 'text-anchor':'end', 'font-size':10, fill:C.muted}, og);
-    rt2.textContent = o.read_only ? '🚧 read-only' : '🔓 ' + (o.policy||'');
-    if(o.read_only) for(let t=0;t<8;t++)
-      svgEl('line', {x1:ox+8+t*28, y1:oy+off.roofH, x2:ox+26+t*28, y2:oy+off.roofH+16, stroke:C.tape, 'stroke-width':3, opacity:0.7}, og);
-    // gabinet kierownika + trofea (milestony)
-    const mz = cfg.zones.manager, mx = ox+mz.rect[0], my = oy+mz.rect[1];
-    const mg = svgEl('g', {}, og);
-    svgEl('rect', {x:mx, y:my, width:mz.rect[2], height:mz.rect[3], rx:6, fill:C.room, stroke:C.roomStroke}, mg);
-    const mt = svgEl('text', {x:mx+mz.rect[2]/2, y:my+12, 'text-anchor':'middle', 'font-size':9, fill:C.muted}, mg);
-    mt.textContent = '🏆 kierownik';
-    o.milestones.slice(0,4).forEach((m, mi) => {
-      const tx = mx+6+mi*(cfg.trophy.w+cfg.trophy.gap), ty = my+20;
-      const tg = svgEl('g', {}, mg);
-      const tt = svgEl('title', {}, tg); tt.textContent = `${m.id} — ${m.status}`;
-      svgEl('rect', {x:tx, y:ty, width:cfg.trophy.w, height:cfg.trophy.h, rx:4,
-                     fill: m.status==='CLOSED' ? '#d29922' : '#21262d', stroke:C.roomStroke}, tg);
-      const ti = svgEl('text', {x:tx+cfg.trophy.w/2, y:ty+19, 'text-anchor':'middle', 'font-size':13}, tg);
-      ti.textContent = m.status==='CLOSED' ? '🏆' : '🔨';
+        s += `<rect x="${ox+off.w-64+wi*18}" y="${oy+34}" width="12" height="14" rx="2" fill="#bfe3ff" opacity="0.9" stroke="#0d1117"/>`;
+      s += `<rect x="${ox+ow/2-12}" y="${oy+oh-16}" width="24" height="16" rx="3" fill="${o.color}" stroke="#0d1117"/>`;
+      // gabinet kierownika + trofea (milestony)
+      const mz = cfg.zones.manager, mx = ox+mz.rect[0], my = oy+mz.rect[1]+8;
+      s += `<g class="manager"><rect x="${mx}" y="${my}" width="${mz.rect[2]}" height="${mz.rect[3]}" rx="6" fill="${C.room}" stroke="${C.roomStroke}" stroke-width="1.5"/>
+        <text x="${mx+mz.rect[2]/2}" y="${my+12}" text-anchor="middle" font-size="9" fill="${C.muted}">🏆 kierownik</text>`;
+      o.milestones.slice(0,4).forEach((m, mi) => {
+        const tx = mx+6+mi*(cfg.trophy.w+cfg.trophy.gap), ty = my+20;
+        s += `<g class="trophy"><title>${esc(m.id+' — '+m.status)}</title>
+          <rect x="${tx}" y="${ty}" width="${cfg.trophy.w}" height="${cfg.trophy.h}" rx="4" fill="${m.status==='CLOSED'?'#d29922':'#21262d'}" stroke="${C.roomStroke}"/>
+          <text x="${tx+cfg.trophy.w/2}" y="${ty+19}" text-anchor="middle" font-size="13">${m.status==='CLOSED'?'🏆':'🔨'}</text></g>`;
+      });
+      s += `</g>`;
+      // pokoje agentów (klik = wątek rozmowy z osobą)
+      o.rooms.forEach((room, ri) => {
+        const rx = ox + R.x0 + (ri % R.perRow) * (R.w + R.gap);
+        const ry = oy + R.y0 + 40 + Math.floor(ri / R.perRow) * (R.h + R.gap);
+        if(ry + R.h > oy + cfg.zones.alarm.rect[1] - 8) return;
+        const busy = !!room.current;
+        s += `<g class="room" data-role="${esc(room.role)}" style="cursor:pointer">
+          <rect x="${rx}" y="${ry}" width="${R.w}" height="${R.h}" rx="8" fill="${C.room}" stroke="${busy?'#1f6feb':C.roomStroke}" stroke-width="${busy?2.5:1.5}"/>
+          <text x="${rx+8}" y="${ry+16}" font-size="14">${room.avatar}</text>
+          <text x="${rx+26}" y="${ry+15}" font-size="10" font-weight="bold" fill="${C.text}">${esc(room.name)}</text>
+          <text x="${rx+8}" y="${ry+26}" font-size="8" fill="${C.muted}">${esc(room.position)}</text>
+          ${room.res?`<text x="${rx+R.w-8}" y="${ry+15}" text-anchor="end" font-size="8" fill="${C.muted}">⚙️${room.res.cpu}% 🧠${room.res.rss_mb}MB</text>`:''}
+          <text x="${rx+8}" y="${ry+R.h-8}" font-size="9" fill="${busy?'#58a6ff':C.muted}">${busy?('🔨 '+esc(room.current.id)):('wolny/a · zadań: '+room.taskCount)}</text>
+          <title>klik = rozmowa z ${esc(room.name)} (${esc(room.role)})</title></g>`;
+        room._x = rx; room._y = ry;
+      });
+      // strefy biura (półki na teczki)
+      for(const [zk, z] of Object.entries(cfg.zones)){
+        if(zk === 'manager' || zk === 'desk') continue;
+        const zx = ox+z.rect[0], zy = oy+z.rect[1];
+        const hasAlarm = zk==='alarm' && o.desks.some(d=>d.zone==='alarm');
+        s += `<g class="zone ${hasAlarm?'alarmzone':''}"><rect x="${zx}" y="${zy}" width="${z.rect[2]}" height="${z.rect[3]}" rx="6" fill="${C.room}" fill-opacity="0.45" stroke="${C.roomStroke}" stroke-dasharray="4 3"/>
+          <text x="${zx+4}" y="${zy+11}" font-size="8" fill="${C.muted}">${esc(z.label)}</text></g>`;
+      }
+      s += `</g>`;
+      o._ox = ox; o._oy = oy;
     });
-    // pokoje agentów
-    o.rooms.forEach((room, ri) => {
-      const rx = ox + R.x0 + (ri % R.perRow) * (R.w + R.gap);
-      const ry = oy + R.y0 + Math.floor(ri / R.perRow) * (R.h + R.gap);
-      if(ry + R.h > oy + cfg.zones.alarm.rect[1] - 8) return; // nie wchodzimy w strefy
-      const busy = !!room.current;
-      const rg = svgEl('g', {}, og);
-      svgEl('rect', {x:rx, y:ry, width:R.w, height:R.h, rx:8, fill:C.room,
-                     stroke: busy ? '#1f6feb' : C.roomStroke, 'stroke-width': busy?2:1}, rg);
-      const a = svgEl('text', {x:rx+8, y:ry+16, 'font-size':14}, rg); a.textContent = room.avatar;
-      const n = svgEl('text', {x:rx+26, y:ry+15, 'font-size':10, 'font-weight':'bold', fill:C.text}, rg); n.textContent = room.name;
-      const p = svgEl('text', {x:rx+8, y:ry+26, 'font-size':8, fill:C.muted}, rg); p.textContent = room.position;
-      if(room.res){ const rr = svgEl('text', {x:rx+R.w-8, y:ry+15, 'text-anchor':'end', 'font-size':8, fill:C.muted}, rg);
-        rr.textContent = `⚙️${room.res.cpu}% 🧠${room.res.rss_mb}MB`; }
-      const b = svgEl('text', {x:rx+8, y:ry+R.h-8, 'font-size':9, fill: busy ? '#58a6ff' : C.muted}, rg);
-      b.textContent = busy ? `🔨 ${room.current.id} ⏱` : `wolny/a · zadań: ${room.taskCount}`;
-      room._x = rx; room._y = ry;
+    stLayer.innerHTML = s;
+    // klik: biuro=filtr projektu, pokój=wątek z osobą
+    stLayer.querySelectorAll('g.office').forEach(og => {
+      og.addEventListener('click', (e) => {
+        if(e.target.closest('g.room')) return;
+        toggleProj(og.dataset.pid);
+      });
     });
-    // strefy biura
-    for(const [zk, z] of Object.entries(cfg.zones)){
-      if(zk === 'manager' || zk === 'desk') continue;
-      const zx = ox+z.rect[0], zy = oy+z.rect[1];
-      const zg = svgEl('g', {class: zk==='alarm' && o.desks.some(d=>d.zone==='alarm') ? 'alarmzone' : ''}, og);
-      svgEl('rect', {x:zx, y:zy, width:z.rect[2], height:z.rect[3], rx:6, fill:'none', stroke:C.roomStroke, 'stroke-dasharray':'4 3'}, zg);
-      const zt = svgEl('text', {x:zx+4, y:zy+11, 'font-size':8, fill:C.muted}, zg); zt.textContent = z.label;
-    }
-    o._ox = ox; o._oy = oy;
-  });
-  // legenda statusów
+    stLayer.querySelectorAll('g.room').forEach(rg => {
+      rg.addEventListener('click', (e) => { e.stopPropagation(); startThread(rg.dataset.role); });
+    });
+  }
+  // ===== legenda (klik = podświetl status, dimStatus) =====
   document.getElementById('firmaLegend').innerHTML = Object.entries(cfg.statusStyle)
-    .map(([k,v]) => `<span class="stat-badge" style="border-color:${v.color}">${v.icon} ${k}</span>`).join('');
-  // warstwa biurek (persistent — animacje przejazdu)
+    .map(([k,v]) => `<button class="stat-badge lchip ${dimStatus===k?'on':''}" style="border-color:${v.color};cursor:pointer" onclick="dimStatus=${dimStatus===k?'null':JSON.stringify(k)};renderFirma()">${v.icon} ${k}</button>`).join('')
+    + `<span class="muted" style="font-size:11px;align-self:center">klik w legendę = pokaż tylko ten status · klik biurko = zadanie</span>`;
+  // ===== warstwa biurek (persistent; BEZ animacji przejazdu — od razu na miejscu) =====
   let deskLayer = document.getElementById('deskLayer');
   if(!deskLayer){ deskLayer = svgEl('g', {id:'deskLayer'}, svg); }
   const stCfg = cfg.statusStyle, ps = cfg.prioScale;
+  const moveMs = cfg.anim.moveMs || 0;
   const seen = new Set();
   for(const o of visOffices){
     const ox = o._ox, oy = o._oy;
@@ -701,7 +800,7 @@ async function renderFirma(){
             const perRow = Math.max(1, Math.floor((R.w-12)/(D.w+D.gap)));
             x = room._x + 6 + (i % perRow)*(D.w+D.gap);
             y = room._y + R.headerH + 4 + Math.floor(i/perRow)*(D.h+D.gap);
-          } else { x = ox+20; y = oy+60; }
+          } else { x = ox+20; y = oy+70; }
         } else {
           const z = cfg.zones[zone]; if(!z) return;
           const zx = ox+z.rect[0], zy = oy+z.rect[1];
@@ -711,76 +810,46 @@ async function renderFirma(){
         }
         x += (D.w-dw)/2; y += (D.h-dh)/2;
         let gEl = deskEls[d.id];
+        const dim = dimStatus && d.status !== dimStatus;
         if(!gEl){
           gEl = svgEl('g', {class:'desk', cursor:'pointer'}, deskLayer);
           const title = svgEl('title', {}, gEl);
           svgEl('rect', {width:dw, height:dh, rx:4, fill:sty.color, opacity:0.92, stroke:'#0d1117'}, gEl);
-          const ic = svgEl('text', {x:dw/2, y:dh/2+4, 'text-anchor':'middle', 'font-size':Math.round(10*scale)}, gEl);
+          const ic = svgEl('text', {x:dw/2, y:dh/2+4, 'text-anchor':'middle', 'font-size':Math.round(10*scale), 'pointer-events':'none'}, gEl);
           ic.textContent = sty.icon;
-          const lb = svgEl('text', {x:dw/2, y:dh+9, 'text-anchor':'middle', 'font-size':8, fill:C.text}, gEl);
+          const lb = svgEl('text', {x:dw/2, y:dh+9, 'text-anchor':'middle', 'font-size':8, fill:C.text, 'pointer-events':'none'}, gEl);
           lb.textContent = d.id;
           gEl.addEventListener('click', (ev) => { ev.stopPropagation(); openTask(d.id); });
           deskEls[d.id] = gEl;
-          // fade-in: start bez transition, pozycja początkowa, potem włącz transition
-          gEl.style.transition = 'none';
-          gEl.style.transform = `translate(${x}px,${y}px)`;
-          gEl.style.opacity = '0';
-          requestAnimationFrame(() => requestAnimationFrame(() => {
-            gEl.style.transition = `transform ${cfg.anim.moveMs}ms ease, opacity ${cfg.anim.fadeMs}ms`;
-            gEl.style.opacity = '1';
-          }));
+          gEl.style.transform = `translate(${x}px,${y}px)`; // bez transition — od razu na miejscu (szybko)
         } else {
-          title.textContent = `${d.id} · ${d.status} · ${d.title_sponsor||d.title||''}`;
-          gEl.style.transition = `transform ${cfg.anim.moveMs}ms ease, opacity ${cfg.anim.fadeMs}ms`;
-          gEl.style.transform = `translate(${x}px,${y}px)`;  // zmiana strefy -> płynny przejazd
+          gEl.style.transform = `translate(${x}px,${y}px)`;
         }
+        gEl.style.opacity = dim ? '0.12' : '1';
       });
     }
   }
-  // usuń biurka znikniętych zadań (fade-out)
   for(const id of Object.keys(deskEls)){
-    if(!seen.has(id)){
-      const gEl = deskEls[id];
-      gEl.style.transition = `opacity ${cfg.anim.fadeMs}ms`;
-      gEl.style.opacity = '0';
-      setTimeout(() => { gEl.remove(); }, cfg.anim.fadeMs + 50);
-      delete deskEls[id];
-    }
+    if(!seen.has(id)){ deskEls[id].remove(); delete deskEls[id]; }
   }
-}
-// pan/zoom mapy osiedla
-function initFirmaPanZoom(){
-  const svg = document.getElementById('estate');
-  if(svg.dataset.pz) return; svg.dataset.pz = '1';
-  let drag = null;
-  svg.addEventListener('wheel', (e) => {
-    if(!firmaView) return;
-    e.preventDefault();
-    const f = e.deltaY > 0 ? 1.15 : 1/1.15;
-    const r = svg.getBoundingClientRect();
-    const mx = firmaView.x + (e.clientX - r.left) / r.width * firmaView.w;
-    const my = firmaView.y + (e.clientY - r.top) / r.height * firmaView.h;
-    firmaView.w = Math.min(4000, Math.max(200, firmaView.w * f));
-    firmaView.h = firmaView.w * (r.height / r.width) * (firmaView.h/firmaView.w) * (firmaView.w/(firmaView.w*f)); // zachowaj proporcje
-    firmaView.h = firmaView.w * (r.height / r.width);
-    firmaView.x = mx - (e.clientX - r.left) / r.width * firmaView.w;
-    firmaView.y = my - (e.clientY - r.top) / r.height * firmaView.h;
-    svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
-  }, {passive:false});
-  svg.addEventListener('mousedown', (e) => { drag = {x:e.clientX, y:e.clientY, vx:firmaView.x, vy:firmaView.y}; });
-  window.addEventListener('mousemove', (e) => {
-    if(!drag || !firmaView) return;
-    const r = svg.getBoundingClientRect();
-    firmaView.x = drag.vx - (e.clientX - drag.x) / r.width * firmaView.w;
-    firmaView.y = drag.vy - (e.clientY - drag.y) / r.height * firmaView.h;
-    svg.setAttribute('viewBox', `${firmaView.x} ${firmaView.y} ${firmaView.w} ${firmaView.h}`);
-  });
-  window.addEventListener('mouseup', () => { drag = null; });
 }
 initFirmaPanZoom();
 window.addEventListener('hashchange', () => showTab(location.hash.slice(1)||'overview', false));
 showTab(location.hash.slice(1)||'overview', false);
-refresh(); setInterval(() => { if(!refreshPaused) refresh(); }, 2000);
+let lastState = null;
+let firmaSlowTick = 0;
+function firmaActive(){ return document.getElementById('tab-firma').classList.contains('on'); }
+refresh();
+setInterval(() => {
+  if(refreshPaused) return;
+  if(firmaActive()){
+    // na mapie Firma nie odświeżamy co 2s (wieszałoby widok) — tylko co 10s lekkie /api/firma + zegary osobno
+    firmaSlowTick++;
+    if(firmaSlowTick % 5 === 0) renderFirma();
+    return;
+  }
+  refresh();
+}, 2000);
 setInterval(() => { if (refreshPaused) return; const v = document.getElementById('viewer'); if (liveOn && v.dataset.url) view(v.dataset.url); }, 2000);
 // zegarki tykają co sekundę — widać że coś się dzieje
 setInterval(() => {
@@ -973,7 +1042,9 @@ def _snapshot(s: State) -> dict:
                 "comments": s.recent_comments(40), "metrics": metrics,
                 "runtime": runtime, "logs": logs,
                 "milestones": s.list_milestones(),
-                "threads": team_threads.list_threads(s, limit=15)}
+                "threads": team_threads.list_threads(s, limit=15),
+                "version": _version_info(),
+                "merges": _merges_info(s)}
 
 
 def _run_ask(qid: str, text: str) -> None:
