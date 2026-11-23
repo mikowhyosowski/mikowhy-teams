@@ -998,6 +998,27 @@ class State:
     def stop_requested(self, task_id: str) -> bool:
         return bool(self.get_kv(f"stop_req:{task_id}", 0))
 
+    # --- ❤️ Ulubione zadania (v2.7.27): śledzone przez Sponsora, niezależnie od statusu
+
+    def list_favorites(self) -> list[str]:
+        try:
+            return json.loads(self.get_kv("favorites:tasks", "[]") or "[]")
+        except Exception:
+            return []
+
+    def toggle_favorite(self, task_id: str) -> bool:
+        """Przełącza ❤️. Zwraca True gdy zadanie JEST teraz ulubione."""
+        cur = self.list_favorites()
+        if task_id in cur:
+            cur.remove(task_id)
+            is_fav = False
+        else:
+            cur.insert(0, task_id)
+            is_fav = True
+        self.set_kv("favorites:tasks", json.dumps(cur[:200]))
+        self.record_metric("favorite_toggle", {"task": task_id, "on": is_fav}, task_id)
+        return is_fav
+
     def wake_cooling(self) -> int:
         """❄️→▶️ v2.7.23: budzi zamrożone zadania (status COOLING), których sleep bezpieczeństwa minął -> READY."""
         cur = self._conn().execute(

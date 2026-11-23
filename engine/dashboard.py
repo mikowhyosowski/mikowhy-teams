@@ -166,6 +166,8 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
  .chip.st-READY{border-left-color:#484f58}
  /* ikony priorytetu — kolejka realizacji */
  .pico{font-size:13px;margin-right:2px}
+ .fav{cursor:pointer;margin-right:2px;font-size:12px;user-select:none}
+ .fav.on{filter:drop-shadow(0 0 4px rgba(248,81,73,.85))}
  .prio{font-weight:bold;border-radius:4px;padding:0 5px;font-size:10px}
  .prio-P0{background:#f85149;color:#fff;animation:pulseIco 1s infinite}
  .prio-P1{background:#d29922;color:#000}
@@ -516,7 +518,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 </div>
 </section>
 <section class="tabpage" id="tab-tasks">
-<h2>Zadania <span class="badge" id="awaitCount"></span> <span class="muted">(kliknij wiersz = szczegóły; żółte = czeka na Twoją akceptację; filtry projektów są wyżej — globalne)</span></h2>
+<h2>Zadania <span class="badge" id="awaitCount"></span> <span class="badge" id="favCount" title="Na górze tabeli"></span> <span class="muted">(kliknij wiersz = szczegóły; 🤍 klik = ❤️ śledź — ulubione zawsze na górze; filtry projektów są wyżej — globalne)</span></h2>
 <table id="tasks"><thead><tr><th></th><th>prio</th><th>id</th><th>tytuł</th><th>status</th><th>substep</th><th>postęp</th><th>retry</th><th>kto (rola)</th><th>projekt</th><th>pracuje</th><th>PR</th><th>updated</th></tr></thead><tbody></tbody></table>
 </section>
 <section class="tabpage" id="tab-flow">
@@ -582,6 +584,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 let curTask = null;
 let lastEventTs = 0;
 let lastState = null;  // v2.7.18: hoist — startowy showTab/refresh wołają renderSys/renderBell PRZED końcem skryptu (TDZ fix)
+let FAVS = new Set();  // v2.7.27: ❤️ ulubione zadania Sponsora (zustand z /api/state, wspólne między urządzeniami)
 // kolorowe filtry projektów — hiddenProjs: localStorage + URL hash + serwer (kv), żeby przeżyły odświeżenie/zmianę adresu
 const hiddenProjs = new Set(JSON.parse(localStorage.getItem('hiddenProjs')||'[]'));
 // filtry STATUSÓW — globalne; MERGED domyślnie UKRYTY (odznaczony na starcie)
@@ -728,6 +731,7 @@ async function refresh(){ if(refreshPaused) return; try{ await refreshInner(); }
 async function refreshInner(){
   const r = await fetch('/api/state'); const d = await r.json();
   lastState = d;
+  FAVS = new Set(d.favorites||[]);
   document.getElementById('ts').textContent = new Date().toLocaleTimeString();
   if(d.host){
     document.getElementById('host').innerHTML = d.host.dashboard_url
@@ -792,7 +796,7 @@ async function refreshInner(){
     const items = byStatus[st]||[];
     const hot = st==='AWAITING_OWNER' && items.length, run = st==='RUNNING';
     const chips = items.slice(0,8).map(t =>
-      `<span class="chip st-${st}" onclick="openTask('${t.id}')">${PIC[t.priority||'P2']||''}<b>${esc(t.id)}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
+      `<span class="chip st-${st}" onclick="openTask('${t.id}')">${favMark(t.id)}${PIC[t.priority||'P2']||''}<b>${esc(t.id)}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
        <span class="who">${esc(t.persona||t.role||'')}</span></span>`).join('') + (items.length>8?`<span class="chip muted">+${items.length-8} więcej…</span>`:'');
     const arrow = i < FLOW.length-1 ? '<span class="arrow">→</span>' : '';
     return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${sbadge(st)} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
@@ -800,7 +804,7 @@ async function refreshInner(){
   const tb = document.querySelector('#tasks tbody'); tb.innerHTML = '';
   let awaiting = 0;
   const PRIO = {'P0':0,'P1':1,'P2':2,'P3':3};
-  const sorted = [...visTasks].sort((a,b)=>(PRIO[b.priority||'P2']-PRIO[a.priority||'P2']) || ((b.status==='RUNNING')-(a.status==='RUNNING')) || ((b.updated_at||0)-(a.updated_at||0)));
+  const sorted = [...visTasks].sort((a,b)=>((FAVS.has(b.id)-FAVS.has(a.id))) || (PRIO[b.priority||'P2']-PRIO[a.priority||'P2']) || ((b.status==='RUNNING')-(a.status==='RUNNING')) || ((b.updated_at||0)-(a.updated_at||0)));
   const nowCards = [];
   let staleNow = 0;
   const NOW_WIN = 300;  // v2.7.25: RUNNING bez aktywności >5 min schodzi z panelu „Teraz pracują”
@@ -824,7 +828,7 @@ async function refreshInner(){
     const ic = `<span class="ic ic-${t.status}">${d.icons[t.status]||'?'}</span>`;
     const res = t.res ? ` <span class="muted" title="zużycie workera (pid ${t.res.pid})">⚙️${t.res.cpu}% 🧠${t.res.rss_mb}MB</span>` : '';
     const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>${res}` : '';
-    tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px"><b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
+    tr.innerHTML = `<td>${ic}</td><td>${prio}</td><td style="padding-left:${8+(t.depth||0)*16}px">${favMark(t.id)}<b>${indent}${t.id}</b></td><td title="tech: ${esc(t.title||'')}">${esc((t.title_sponsor||t.title||'').slice(0,70))}</td>
       <td class="st">${t.status==='AWAITING_OWNER'?(['ASK_OWNER','ASK_SPONSOR'].includes(t.substep)?'<span class="badge">❓ ODPOWIEDZ</span> ':'<span class="badge">TWÓJ RUCH</span> '):''}${sbadge(t.status)}</td>
       <td class="muted">${esc(t.substep||'')}</td><td style="min-width:90px">${pbarHtml(t,'sm')}</td><td>${t.retry_count}</td>
       <td class="muted">${esc(t.persona||t.role||'')}</td><td class="muted">${pbadge(t.project_id)}</td>
@@ -832,6 +836,8 @@ async function refreshInner(){
       <td class="muted">${t.pr?('!'+t.pr):''}</td><td class="muted">${ago}</td>`;
   }
   document.getElementById('awaitCount').textContent = awaiting ? awaiting+' czeka na Ciebie' : '';
+  const favCount = document.getElementById('favCount');
+  if(favCount) favCount.textContent = FAVS.size ? '❤️ ' + FAVS.size : '';
   const navA = document.getElementById('navAlert');
   if(navA) navA.textContent = awaiting ? ' 🚨'+awaiting : '';
   document.getElementById('team').innerHTML = (d.team||[]).map(m => {
@@ -859,7 +865,7 @@ async function refreshInner(){
        ${th.last?`<div class="muted" style="font-size:11px">${new Date(th.last.ts*1000).toLocaleTimeString()} <b>${esc(th.last.author)}</b>: ${esc((th.last.text||'').slice(0,90))}</div>`:''}
      </div>`).join('') || '<span class="muted">brak wątków — kliknij 💬 przy osobie lub napisz na Telegramie</span>';
   document.getElementById('now').innerHTML = nowCards.length ? nowCards.map(t =>
-    `<div class="nowcard" onclick="openTask('${t.id}')"><b>${d.icons.RUNNING} ${t.alive===false?"💀":(t.alive?"🟢":"❔")} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
+    `<div class="nowcard" onclick="openTask('${t.id}')">${favMark(t.id)}<b>${d.icons.RUNNING} ${t.alive===false?"💀":(t.alive?"🟢":"❔")} ${t.id}</b> <span class="pico">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <div class="clock" data-started="${t.started_at||0}">⏱ ${t.started_at?fmtDur(Date.now()/1000-t.started_at):''}</div>
      <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
      <div class="teraz"><span class="spin">🌀</span> 🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}
@@ -932,7 +938,7 @@ async function openTask(id, keep){
   // blok podsumowania — ZAWSZE widoczny (tytuł, status, czas, rola, projekt, branch/PR)
   const summary = `<div class="kv"><b>tytuł:</b> ${esc(d.title_sponsor||d.title||'')}</div>
     <div class="kv muted" style="font-size:10px">tech: ${esc(d.title||'')}</div>
-    <div class="kv"><b>status:</b> ${sbadge(d.status)} | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
+    <div class="kv"><b>status:</b> ${favMark(d.id)} ${sbadge(d.status)} | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
     <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${pbadge(d.project_id)} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
     <div class="kv"><b>przejął:</b> ${esc(d.claimed_by||'-')}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''} | <b>aktualizacja:</b> ${d.updated_at?new Date(d.updated_at*1000).toLocaleTimeString():'-'}</div>
     <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${esc(d.parent_task)}');return false" style="color:#58a6ff">${esc(d.parent_task)}</a>`:'— (zadanie główne)'} | <b>branch:</b> ${esc(d.branch||'-')} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>
@@ -1211,7 +1217,7 @@ function renderSys(){
   const qh = document.getElementById('queueHead'); if(qh) qh.innerHTML = (etaRun + etaQ) || '';
   document.getElementById('queueBox').innerHTML = (d.queue||[]).length ? (d.queue||[]).map(q =>
     `<div class="qrow" onclick="openTask('${esc(q.id)}')">
-       <span class="qpos">#${q.pos}</span> <span class="prio prio-${q.priority}">${q.priority}</span>
+       <span class="qpos">#${q.pos}</span> ${favMark(q.id)} <span class="prio prio-${q.priority}">${q.priority}</span>
        <b>${esc(q.id)}</b> <span class="muted">${esc((q.title_sponsor||q.title||'').slice(0,55))}</span>
        <span class="pbar sm" title="postęp ${Math.round((q.progress||0)*100)}%"><i style="width:${Math.round((q.progress||0)*100)}%"></i></span>
        <span class="muted">${esc(q.substep||'—')} · retry ${q.retry_count}${q.retry_count>=3?' 🔚':''} · ${fmtDur(q.age)} temu · ${esc(q.persona||q.role)}${q.eta_s?` · 🔮 ETA ${fmtDur(q.eta_s)}`:''}${q.review_notes?` · 📝 ${esc(q.review_notes.slice(0,60))}`:''}</span>
@@ -1266,6 +1272,17 @@ const ACTION_HELP = {
   comment: 'Tylko komentarz — bez zmiany statusu; leci do zadania i na PR na GitHubie',
   set_priority: 'Tylko priorytet P0–P3 — bez zmiany statusu; ustawia pozycję w kolejce'
 };
+// v2.7.27 — ❤️ ulubione zadania: serduszko przy KAŻDYM zadaniu (aktywnym i nieaktywnym);
+// ulubione lądują na szczycie tabeli zadań i są śledzone między urządzeniami (kv serwera)
+function favMark(id){
+  const on = FAVS.has(id);
+  return `<span class="fav ${on?'on':''}" title="${on?'Ulubione — kliknij, aby przestać śledzić':'Kliknij, aby śledzić (❤️)'}" onclick="event.stopPropagation();toggleFav('${esc(id)}')">${on?'❤️':'🤍'}</span>`;
+}
+async function toggleFav(id){
+  try{ const r = await fetch('/api/favorites', {method:'POST', body:JSON.stringify({task_id:id})}); const j = await r.json();
+       toast(j.favorite ? ('❤️ śledzisz: '+id) : ('🤍 przestałeś śledzić: '+id)); }catch(e){ toast('⚠ '+e); }
+  refresh();
+}
 // ===== 🎯 TEMATY — widok opiekuna (milestone'y + decyzje + zgody + backlog) =====
 let lastSponsor = null;
 async function renderSponsor(){
@@ -1277,7 +1294,7 @@ async function renderSponsor(){
     const btns = (t.available_actions||[]).map(a => { const ad = acts[a]||{};
       return `<button class="tbtn" title="${esc((typeof ACTION_HELP!=='undefined'&&ACTION_HELP[a])||ad.label||a)}" onclick="event.stopPropagation();flowAction('${esc(t.id)}','${esc(a)}')">${ad.icon||''} ${esc(ad.label||a)}</button>`; }).join('');
     return `<div class="dec-card ${t.status==='ESCALATED'?'esc':''}" onclick="openTask('${esc(t.id)}')">
-      <div><b>${esc(t.id)}</b> ${sbadge(t.status)} ${pbadge(t.project_id)} <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span></div>
+      <div>${favMark(t.id)}<b>${esc(t.id)}</b> ${sbadge(t.status)} ${pbadge(t.project_id)} <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span></div>
       <div style="font-size:12px;margin:3px 0">${esc((t.title_sponsor||t.title||'').slice(0,110))}</div>
       ${t.substep?`<div class="muted" style="font-size:11px">substep: ${esc(t.substep)}</div>`:''}
       ${t.review_notes?`<div class="muted" style="font-size:11px">📝 ${esc(t.review_notes.slice(0,140))}</div>`:''}
@@ -1308,7 +1325,7 @@ async function renderSponsor(){
     </div>`;
   }).join('') || '<span class="muted">brak tematów — dodaj pierwszy przyciskiem ➕ nowy temat</span>';
   document.getElementById('spBacklog').innerHTML = (d.backlog||[]).map(t =>
-    `<div class="brow" onclick="openTask('${esc(t.id)}')"><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
+    `<div class="brow" onclick="openTask('${esc(t.id)}')">${favMark(t.id)}<span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>
      <b>${esc(t.id)}</b> <span>${esc((t.title_sponsor||t.title||'').slice(0,90))}</span>
      <span class="muted">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)} · temat ${esc(t.milestone||'')} · ${fmtDur(t.age)}</span></div>`).join('')
     || '<span class="muted">pusty backlog</span>';
@@ -1328,7 +1345,7 @@ function openMilestone(mid){
     <div class="kv"><b>postęp:</b> ${m.merged}/${m.tasks_total} zmergowane (${Math.round((m.progress||0)*100)}%) · otwartych: ${m.open_tasks}</div>
     <h2>Zadania tematu (${(m.tasks||[]).length})</h2>
     <div class="histbox">${(m.tasks||[]).map(t=>`<div onclick="openTask('${esc(t.id)}')" style="cursor:pointer">
-      <b>${esc(t.id)}</b> ${sbadge(t.status)} <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span> ${esc((t.title_sponsor||t.title||'').slice(0,70))}<br>
+      ${favMark(t.id)}<b>${esc(t.id)}</b> ${sbadge(t.status)} <span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span> ${esc((t.title_sponsor||t.title||'').slice(0,70))}<br>
       <span class="muted">${esc(t.persona||t.role||'')} · ${esc(t.substep||'')}${t.review_notes?' · 📝 '+esc(t.review_notes.slice(0,80)):''} · ${fmtDur(t.age)}</span>
       ${t.acceptance_criteria?`<div class="muted" style="font-size:10px">AC: ${esc(t.acceptance_criteria.slice(0,150))}</div>`:''}
     </div>`).join('')||'<span class="muted">brak zadań</span>'}</div>
@@ -1496,7 +1513,7 @@ function openStageInfo(sid){
     '<div class="kv"><b>akcje w etapie:</b> ' + (st.actions||[]).map(a => { const ad = (f.actions||{})[a]||{}; return (ad.icon||'') + ' ' + esc(ad.label||a); }).join(' · ') + '</div>' +
     '<h2>Zadania w etapie (' + st.count + ')</h2>' +
     '<div class="histbox">' + (st.tasks.map(t =>
-      '<div onclick="openTask(\\'' + esc(t.id) + '\\')" style="cursor:pointer">' +
+      '<div onclick="openTask(\\'' + esc(t.id) + '\\')" style="cursor:pointer">' + favMark(t.id) +
       '<b style="color:' + st.color + '">' + esc(t.id) + '</b> ' + esc((t.title||'').slice(0,60)) + '<br>' +
       '<span class="muted">' + esc(t.status) + ' · ' + esc(t.priority||'P2') + ' · ' + esc(t.persona||t.role||'') + ' · ' + pbadge(t.project_id) + ' · ' + (t.overdue ? '<span style="color:#f85149">⚠</span> ' : '') + fmtDur(t.age) + '</span><br>' +
       (t.available_actions||[]).map(a => { const ad = (f.actions||{})[a]||{}; return '<button class="tbtn" onclick="event.stopPropagation();flowAction(\\'' + esc(t.id) + '\\',\\'' + esc(a) + '\\')">' + (ad.icon||'') + ' ' + esc(ad.label||a) + '</button>'; }).join('') +
@@ -2415,6 +2432,7 @@ def _snapshot(s: State) -> dict:
             "queue": queue, "applogs": applogs,
             "notifications": s.list_notifications(60), "notif_unread": s.unread_notifications(),
             "ops": s.recent_ops(100), "ops_stats": s.ops_stats(),  # v2.7.23: rejestr operacji
+            "favorites": s.list_favorites(),  # v2.7.27: ❤️ ulubione zadania Sponsora
                 "milestones": s.list_milestones(),
                 "threads": team_threads.list_threads(s, limit=15),
                 "version": _version_info(),
@@ -2938,6 +2956,15 @@ class Handler(BaseHTTPRequestHandler):
             sk = State().add_role_skill(role, name, description, source="sponsor/dashboard")
             self._send(200, json.dumps({"ok": True, "skill": sk, "findings": findings},
                                         ensure_ascii=False, default=str).encode(), "application/json")
+            return
+        if u.path == "/api/favorites":
+            # v2.7.27: ❤️ przełącz ulubione zadanie (body: {task_id}) — stan wspólny (kv), śledzenie przez Sponsora
+            tid = str(body.get("task_id") or "").strip()
+            if not tid:
+                self._send(400, b'{"error":"task_id wymagane"}', "application/json")
+                return
+            on = State().toggle_favorite(tid)
+            self._send(200, json.dumps({"ok": True, "task_id": tid, "favorite": on}).encode(), "application/json")
             return
         if u.path == "/api/notifications/read":
             # v2.7.15: oznacz wszystkie powiadomienia jako przeczytane (dzwonek)

@@ -577,3 +577,16 @@ def test_llm_queue_job_creates_op():
     assert [o for o in s.list_ops() if o["ref"] == jid2][0]["status"] == "QUEUED"  # retry -> znów czeka na wysłanie
     llm_queue.fail(s, jid2, "timeout", max_attempts=1)  # attempts(1) >= max(1) -> FAILED
     assert [o for o in s.list_ops() if o["ref"] == jid2][0]["status"] == "FAILED"
+
+
+def test_favorites_toggle_and_persist():
+    """v2.7.27: ❤️ ulubione zadania — toggle, stan wspólny (kv), profil Sponsora."""
+    from engine.state import State
+    s = State()
+    s.toggle_favorite("FAV-TEST-1")
+    assert "FAV-TEST-1" in s.list_favorites()
+    s.toggle_favorite("FAV-TEST-1")
+    assert "FAV-TEST-1" not in s.list_favorites()
+    # nieznane ID też można śledzić (widok „śledzę" jest niezależny od istnienia zadania)
+    assert s.toggle_favorite("NIE-MA-TAKIEGO") is True
+    s.toggle_favorite("NIE-MA-TAKIEGO")
