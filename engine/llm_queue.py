@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS llm_jobs (
   step        TEXT,
   priority    TEXT NOT NULL DEFAULT 'P2',       -- P0..P3 (v2: kolejka priorytetowa)
   dedup_key   TEXT,                             -- v2: hash payloadu — anty-duplikat
+  model       TEXT,                             -- v3: model z payloadu (grupowanie batchy)
   created_at  REAL NOT NULL,
   done_at     REAL
 );
@@ -62,6 +63,9 @@ LEASE_S = 480         # v2: lease > timeout subprocessu (fast 180s / strong 360s
 MIN_INTERVAL_S = 0.3  # v2: rate limit między startami (było 0.8)
 BACKOFF_BASE_S = 4    # v2: backoff 4s * 2^(attempts-1) (było 8s)
 CLEANUP_AFTER_S = 24 * 3600  # v2: housekeeping — DONE/FAILED starsze niż 24h
+CACHE_TTL_S = 3600    # v3: cache odpowiedzi LLM — identyczny payload (dedup_key) z DONE w TTL nie robi nowego requestu
+BATCH_MIN = 2         # v3: batch tylko gdy tyle+ jobów tego samego modelu czeka (1 request = wiele pytań)
+BATCH_DEFAULT = 3     # v3: domyślny rozmiar batcha (nadpisuje kv llm_batch_size)
 
 PRIO_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
@@ -103,7 +107,13 @@ CREATE INDEX IF NOT EXISTS idx_llm_jobs_status ON llm_jobs(status, created_at);
             s._conn().execute("ALTER TABLE llm_jobs ADD COLUMN dedup_key TEXT")
         except Exception:
             pass
+    if "model" not in cols:
+        try:
+            s._conn().execute("ALTER TABLE llm_jobs ADD COLUMN model TEXT")
+        except Exception:
+            pass
     s._conn().execute("CREATE INDEX IF NOT EXISTS idx_llm_jobs_claim ON llm_jobs(status, delay_until, priority, created_at)")
+    s._conn().execute("CREATE INDEX IF NOT EXISTS idx_llm_jobs_batch ON llm_jobs(kind, model, status, attempts)")
 
 
 def enabled(s: State | None = None) -> bool:
@@ -133,8 +143,10 @@ def _dedup_key(kind: str, payload: dict[str, Any]) -> str:
 
 def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", step: str = "",
             priority: str = "P2") -> str:
-    """Dodaje job do kolejki. v2: dedup — jeśli job z tym samym payloadem już czeka/pracuje,
-    zwraca jego id (zamiast dublować wywołanie LLM)."""
+    """Dodaje job do kolejki.
+    v2 dedup: job z tym samym payloadem już czeka/pracuje -> jego id (bez dublowania LLM).
+    v3 cache: job z tym samym payloadem zakończony DONE w ostatniej godzinie -> jego id
+    (wait_result od razu zwróci wynik z cache — zero nowych requestów LLM na powtórki)."""
     ensure_table(s)
     now = time.time()
     prio = priority if priority in PRIO_ORDER else "P2"
@@ -145,11 +157,19 @@ def enqueue(s: State, kind: str, payload: dict[str, Any], requester: str = "", s
     if row:
         s.record_metric("llm_job_dedup", {"job": row[0], "step": step, "requester": requester}, None)
         return row[0]
+    # v3: cache odpowiedzi (DONE w TTL)
+    row = s._conn().execute(
+        "SELECT id FROM llm_jobs WHERE dedup_key=? AND status='DONE' AND done_at>=? ORDER BY done_at DESC LIMIT 1",
+        (dk, now - CACHE_TTL_S)).fetchone()
+    if row:
+        s.record_metric("llm_cache_hit", {"job": row[0], "step": step, "requester": requester}, None)
+        return row[0]
     jid = "llmj-" + uuid.uuid4().hex[:12]
     s._conn().execute(
-        "INSERT INTO llm_jobs(id, kind, payload, status, attempts, delay_until, lease_until, requester, step, priority, dedup_key, created_at) "
-        "VALUES(?,?,?,'QUEUED',0,0,0,?,?,?,?,?)",
-        (jid, kind, json.dumps(payload, ensure_ascii=False), requester, step, prio, dk, now))
+        "INSERT INTO llm_jobs(id, kind, payload, status, attempts, delay_until, lease_until, requester, step, priority, dedup_key, model, created_at) "
+        "VALUES(?,?,?,'QUEUED',0,0,0,?,?,?,?,?,?)",
+        (jid, kind, json.dumps(payload, ensure_ascii=False), requester, step, prio, dk,
+         str(payload.get("model", "")), now))
     s.record_metric("llm_job_enqueued", {"job": jid, "kind": kind, "step": step, "requester": requester, "priority": prio}, None)
     return jid
 
@@ -171,6 +191,71 @@ def claim_next(s: State, lease_s: int = LEASE_S) -> dict | None:
         (now + lease_s, now, now))
     row = cur.fetchone()
     return dict(row) if row else None
+
+
+def claim_batch(s: State, model: str, n: int, lease_s: int = LEASE_S) -> list[dict]:
+    """v3: atomowy claim do `n` jobów (kind=complete, dany model, tylko pierwsza próba attempts=0)
+    — grupa do jednego requestu batchowego. Retry (attempts>0) idą pojedynczo, żeby nie zapętlić batcha."""
+    ensure_table(s)
+    now = time.time()
+    cur = s._conn().execute(
+        """UPDATE llm_jobs SET status='RUNNING', lease_until=?, attempts=attempts+1
+           WHERE id IN (SELECT id FROM llm_jobs
+                        WHERE kind='complete' AND model=? AND status='QUEUED' AND delay_until<=? AND attempts=0
+                        ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+                                 created_at
+                        LIMIT ?)
+           RETURNING *""",
+        (now + lease_s, model, now, n))
+    return [dict(r) for r in cur.fetchall()]
+
+
+def _run_batch(s: State, jobs: list[dict]) -> int:
+    """v3: wykonuje grupę jobów JEDNYM requestem LLM (batch): model dostaje listę pytań
+    {"items": [{step, system, user}...]} i ma zwrócić {"answers": [...]} w tej samej kolejności.
+    Wyniki rozdzielane per job (finish). Błąd parsowania/liczby odpowiedzi -> fail każdego joba
+    osobno (backoff; retrye pójdą pojedynczo)."""
+    from engine.llm_gateway import get_gateway, extract_json
+    model = str(jobs[0].get("model") or "strong-model")
+    payloads = []
+    timeout_s = 0
+    for j in jobs:
+        p = json.loads(j["payload"] or "{}")
+        payloads.append({"step": j.get("step") or p.get("step") or "", "system": p.get("system", ""),
+                         "user": p.get("user", "")})
+        try:
+            timeout_s = max(timeout_s, int(p.get("timeout_s") or 0))
+        except Exception:
+            pass
+    timeout_s = timeout_s or model_timeout_s(model)
+    gw = get_gateway()
+    if hasattr(gw, "timeout"):
+        gw.timeout = timeout_s
+    sys_prompt = (
+        "Odpowiadasz na WIELE zapytań naraz (batch — jedna odpowiedź na wszystkie). "
+        "Dostaniesz JSON: {\"items\": [{\"step\": ..., \"system\": ..., \"user\": ...}, ...]}. "
+        "Każdy item to osobne zadanie z własnym kontekstem (system) i pytaniem (user). "
+        "Zwróć WYŁĄCZNIE jeden JSON: {\"answers\": [\"<pełna odpowiedź na items[0]>\", \"<items[1]>\", ...]} — "
+        "dokładnie tyle odpowiedzi ile items, W TEJ SAMEJ KOLEJNOŚCI. "
+        "Każda odpowiedź to czysty tekst (może zawierać JSON jako tekst) — bez markdown fence'ów na zewnątrz."
+    )
+    user_payload = json.dumps({"items": payloads}, ensure_ascii=False)
+    try:
+        raw = gw.complete(system=sys_prompt, user=user_payload, step="BATCH×" + str(len(jobs)),
+                          model=model, _direct=True)
+        data = extract_json(raw)
+        answers = data.get("answers")
+        if not isinstance(answers, list) or len(answers) != len(jobs):
+            raise ValueError(f"batch answers mismatch: {len(answers) if isinstance(answers, list) else type(answers)} != {len(jobs)}")
+    except Exception as e:
+        for j in jobs:
+            fail(s, j["id"], f"batch parse error: {e!r}"[:900])
+        s.record_metric("llm_batch_fail", {"n": len(jobs), "model": model, "error": repr(e)[:200]}, None)
+        return len(jobs)
+    for j, ans in zip(jobs, answers):
+        finish(s, j["id"], str(ans))
+    s.record_metric("llm_batch_done", {"n": len(jobs), "model": model, "step": jobs[0].get("step", "")}, None)
+    return len(jobs)
 
 
 def finish(s: State, job_id: str, result: str) -> None:
@@ -250,29 +335,78 @@ def _run_job(s: State, job: dict) -> None:
         finish(s, job["id"], out)
 
 
-def dispatch_once(s: State, max_jobs: int = 2, min_interval_s: float = MIN_INTERVAL_S) -> int:
-    """Wykonuje do max_jobs jobów seryjnie z rate limitem. Zwraca ile wykonano.
-    v2: keyring/vibe CLI dotyka tylko ten proces (flock w gateway serializuje)."""
+def _rate_limit(s: State, min_interval_s: float) -> None:
+    """Rate limit cross-process: min odstęp między startami kolejnych requestów LLM."""
+    import os
+    last_file = s.db_path.parent / "llm_last_start"
+    now = time.time()
+    try:
+        last = float(last_file.read_text().strip() or 0)
+    except OSError:
+        last = 0.0
+    wait = min_interval_s - (now - last)
+    if wait > 0:
+        time.sleep(wait)
+    try:
+        last_file.write_text(str(time.time()))
+    except OSError:
+        pass
+
+
+def _busy_model(s: State) -> tuple[str, int] | None:
+    """v3: model z największą liczbą czekających jobów (pierwsze próby) — kandydat do batcha."""
+    now = time.time()
+    row = s._conn().execute(
+        """SELECT model, COUNT(*) n FROM llm_jobs
+           WHERE kind='complete' AND status='QUEUED' AND delay_until<=? AND attempts=0 AND model IS NOT NULL AND model!=''
+           GROUP BY model ORDER BY n DESC LIMIT 1""",
+        (now,)).fetchone()
+    if row and row[1] >= BATCH_MIN:
+        return row[0], row[1]
+    return None
+
+
+def dispatch_once(s: State, max_jobs: int = 4, min_interval_s: float = MIN_INTERVAL_S) -> int:
+    """Wykonuje joby seryjnie z rate limitem. Zwraca ile jobów wykonano (batch liczy się jako tyle jobów,
+    ile pytań w jednym requeście).
+    v3: jeśli ≥ BATCH_MIN jobów tego samego modelu czeka -> grupuje je w JEDEN request LLM (batch),
+    co zmniejsza liczbę wywołań CLI. Pojedyncze joby (agent / retry / solo) wykonuje osobno.
+    keyring/vibe CLI dotyka tylko ten proces (flock w gateway serializuje)."""
     ensure_table(s)
+    try:
+        batch_size = max(BATCH_MIN, int(s.get_kv("llm_batch_size", BATCH_DEFAULT) or BATCH_DEFAULT))
+    except Exception:
+        batch_size = BATCH_DEFAULT
     did = 0
-    for _ in range(max_jobs):
-        import os
-        last_file = s.db_path.parent / "llm_last_start"
-        now = time.time()
-        try:
-            last = float(last_file.read_text().strip() or 0)
-        except OSError:
-            last = 0.0
-        wait = min_interval_s - (now - last)
-        if wait > 0:
-            time.sleep(wait)
+    while did < max_jobs:
+        _rate_limit(s, min_interval_s)
+        # v3: najpierw spróbuj batch (model z największą kolejką)
+        busy = _busy_model(s)
+        if busy and batch_size >= BATCH_MIN:
+            model, n_waiting = busy
+            n = min(batch_size, n_waiting, max_jobs - did)
+            if n >= BATCH_MIN:
+                jobs = claim_batch(s, model, n)
+                if len(jobs) >= BATCH_MIN:
+                    try:
+                        did += _run_batch(s, jobs)
+                    except Exception as e:
+                        for j in jobs:
+                            fail(s, j["id"], repr(e))
+                        did += len(jobs)
+                    continue
+                elif jobs:
+                    # claim zwrócił mniej niż BATCH_MIN (wyścig) — wykonaj pojedynczo
+                    for j in jobs:
+                        try:
+                            _run_job(s, j)
+                        except Exception as e:
+                            fail(s, j["id"], repr(e))
+                        did += 1
+                    continue
         job = claim_next(s)
         if not job:
             break
-        try:
-            last_file.write_text(str(time.time()))
-        except OSError:
-            pass
         try:
             _run_job(s, job)
             did += 1

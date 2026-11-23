@@ -173,8 +173,38 @@ def reset_override() -> bool:
     return False
 
 
+DELTA_WINDOW_S = 300  # okno delty na kafelkach flow: ostatnie 5 minut z historii (metryki task_event)
+
+
+def stage_deltas(state: "State | None", statuses: list[str], window_s: int = DELTA_WINDOW_S) -> dict:
+    """Delta per etap z ostatnich `window_s` sekund: ile zadań weszło (+) i wyszło (−).
+    Źródło: metryki kind='task_event' (payload {from, to}) zapisywane przy każdej zmianie statusu."""
+    if state is None:
+        return {"delta_in": 0, "delta_out": 0, "delta_window_s": window_s}
+    now = time.time()
+    try:
+        rows = state._conn().execute(
+            "SELECT payload FROM metrics WHERE kind='task_event' AND ts>=?", (now - window_s,)).fetchall()
+    except Exception:
+        rows = []
+    sset = set(statuses or [])
+    din = dout = 0
+    for r in rows:
+        try:
+            p = json.loads(r[0])
+        except Exception:
+            continue
+        to, frm = p.get("to"), p.get("from")
+        if to in sset:
+            din += 1
+        if frm in sset and to not in sset:
+            dout += 1
+    return {"delta_in": din, "delta_out": dout, "delta_window_s": window_s}
+
+
 def build_flow(snapshot: dict, state: State | None = None) -> dict:
-    """Model diagramu flow dla /api/flow: config + etapy z zadaniami + przejścia + akcje per zadanie."""
+    """Model diagramu flow dla /api/flow: config + etapy z zadaniami + przejścia + akcje per zadanie.
+    Każdy etap dostaje też delta_in/delta_out — ile zadań weszło/wyszło w ostatnich 5 min (metryki)."""
     cfg = load_config()
     errors = validate_config(cfg)
     tasks = snapshot.get("tasks", [])
@@ -211,6 +241,7 @@ def build_flow(snapshot: dict, state: State | None = None) -> dict:
             "hot": bool(st.get("hot")), "sla_s": sla, "description": st.get("description", ""),
             "count": len(tlist), "overdue": overdue, "tasks": tlist,
             "actions": stage_actions,
+            **stage_deltas(state, st.get("statuses", [])),
         })
     stages_out.sort(key=lambda s: (cfg["layout"]["lanes"][s["lane"]]["y"] if s["lane"] in cfg["layout"].get("lanes", {}) else 9,
                                    s.get("order", 0)))

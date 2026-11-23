@@ -156,3 +156,86 @@ def test_cleanup_removes_old_done_failed():
     s._conn().execute("UPDATE llm_jobs SET done_at=? WHERE id=?", (time.time() - 48 * 3600, j))
     assert Q.cleanup(s, older_than_s=24 * 3600) == 1
     assert s._conn().execute("SELECT COUNT(*) FROM llm_jobs WHERE id=?", (j,)).fetchone()[0] == 0
+
+
+# ===== v3: batch (wiele pytań = 1 request LLM) + cache odpowiedzi =====
+
+def test_claim_batch_picks_priority_and_first_attempt_only():
+    s = _tmp()
+    Q.ensure_table(s)
+    ids = []
+    for i, prio in enumerate(["P2", "P2", "P0"]):
+        ids.append(Q.enqueue(s, "complete", {"q": i, "model": "fast-model"}, step=f"S{i}", priority=prio))
+    Q.enqueue(s, "complete", {"q": 99, "model": "strong-model"}, step="SX", priority="P0")
+    jobs = Q.claim_batch(s, "fast-model", 2)  # limit 2 z 3 -> ma wejść P0 + jeden P2
+    got = {j["id"] for j in jobs}
+    assert ids[2] in got and len(jobs) == 2
+    assert all(j["model"] == "fast-model" for j in jobs)
+    # attempts>0 (retry) nie wchodzi do batcha
+    Q.fail(s, ids[0], "err")  # attempts było 1 po claim -> fail -> QUEUED attempts=1? fail nie zmienia attempts; claim zwiększył
+    jobs2 = Q.claim_batch(s, "fast-model", 5)
+    assert all(j["attempts"] == 1 for j in jobs2)
+
+
+def test_enqueue_cache_hit_done_in_ttl():
+    s = _tmp()
+    Q.ensure_table(s)
+    j1 = Q.enqueue(s, "complete", {"cache": 1, "model": "fast-model"}, step="C")
+    Q.finish(s, j1, "wynik-z-cache")
+    j2 = Q.enqueue(s, "complete", {"cache": 1, "model": "fast-model"}, step="C")
+    assert j2 == j1  # cache hit — bez nowego joba/requestu
+    assert Q.wait_result(s, j2, timeout=1) == "wynik-z-cache"
+    # po TTL -> nowy job
+    s._conn().execute("UPDATE llm_jobs SET done_at=? WHERE id=?", (time.time() - 2 * Q.CACHE_TTL_S, j1))
+    j3 = Q.enqueue(s, "complete", {"cache": 1, "model": "fast-model"}, step="C")
+    assert j3 != j1
+
+
+def test_run_batch_one_request_many_answers(monkeypatch):
+    """v3: _run_batch robi JEDEN request LLM dla wielu jobów i rozdziela odpowiedzi per job."""
+    import engine.llm_gateway as gwmod
+    s = _tmp()
+    Q.ensure_table(s)
+    jobs = [Q.enqueue(s, "complete", {"q": i, "model": "fast-model", "system": f"sys{i}", "user": f"pyt{i}"}, step=f"S{i}")
+            for i in range(3)]
+    claimed = Q.claim_batch(s, "fast-model", 3)
+    calls = {}
+
+    class FakeGw:
+        timeout = 120
+        def complete(self, *, system, user, step, model, _direct=False, **kw):
+            calls["n_requests"] = calls.get("n_requests", 0) + 1
+            calls["user"] = user
+            calls["model"] = model
+            import json as _json
+            items = _json.loads(user)["items"]
+            return _json.dumps({"answers": [f"odp-na-{it['user']}" for it in items]})
+
+    monkeypatch.setattr(gwmod, "get_gateway", lambda: FakeGw())
+    did = Q._run_batch(s, claimed)
+    assert did == 3 and calls["n_requests"] == 1  # 3 pytania = 1 request
+    for j, i in zip(claimed, range(3)):
+        row = s._conn().execute("SELECT status, result FROM llm_jobs WHERE id=?", (j["id"],)).fetchone()
+        assert row["status"] == "DONE" and row["result"] == f"odp-na-pyt{i}"
+
+
+def test_run_batch_mismatch_fails_jobs(monkeypatch):
+    """Gdy model zwróci złą liczbę odpowiedzi -> każdy job osobno do backoff (nie zgubione)."""
+    import engine.llm_gateway as gwmod
+    s = _tmp()
+    Q.ensure_table(s)
+    Q.enqueue(s, "complete", {"q": 1, "model": "fast-model"}, step="A")
+    Q.enqueue(s, "complete", {"q": 2, "model": "fast-model"}, step="B")
+    claimed = Q.claim_batch(s, "fast-model", 2)
+
+    class FakeGw:
+        timeout = 120
+        def complete(self, *, system, user, step, model, _direct=False, **kw):
+            return '{"answers": ["tylko-jedna"]}'
+
+    monkeypatch.setattr(gwmod, "get_gateway", lambda: FakeGw())
+    did = Q._run_batch(s, claimed)
+    assert did == 2
+    for j in claimed:
+        row = s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j["id"],)).fetchone()
+        assert row["status"] == "QUEUED"  # fail -> backoff -> retry pojedynczo

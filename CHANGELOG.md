@@ -1,5 +1,21 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.3] — 2026-11-23 — LLM batch (wiele pytań = 1 request) + cache odpowiedzi; kafelki flow z licznikiem i deltem ±5 min
+- 📦 **Batchowanie requestów LLM (v3)**: gdy ≥2 joby tego samego modelu czekają (pierwsze próby),
+  dispatcher wysyła je JEDNYM requestem (`_run_batch`: `{"items": [{step, system, user}...]}` →
+  `{"answers": [...]}` w tej samej kolejności, wyniki rozdzielane per job). Mniej requestów do CLI,
+  mniej overheadu procesu na pytanie. Batch tylko dla `attempts=0` (retry idą pojedynczo — bez pętli),
+  rozmiar batcha z kv `llm_batch_size` (default 3), batch per model (fast/strong osobno), priorytet P0 pierwszy.
+  Błąd parsowania/liczby odpowiedzi → fail każdego joba osobno (backoff, potem pojedynczo)
+- ♻️ **Cache odpowiedzi LLM (v3)**: `enqueue` przy DONE jobie z tym samym `dedup_key` w ostatniej godzinie
+  (`CACHE_TTL_S`) zwraca od razu wynik — zero nowych requestów na identyczne powtórki (retry tego samego kroku)
+- 🧱 Kolumna `model` w llm_jobs (migracja v3) + indeks batch `(kind, model, status, attempts)`
+- 📊 **Kafelki flow z licznikiem i deltem**: większe kółko z liczbą zadań w boksie (font 13 bold)
+  + linia `+X −Y (5 min)` pod tytułem etapu — z historii metryk `task_event` (ostatnie 300s, `stage_deltas` w flow.py);
+  tak samo w chipach filtrów etapów i w panelu szczegółów etapu. Zielone + / czerwone −, szare gdy 0
+- ✅ Testy v3: batch claim (prio, tylko attempts=0), cache hit/TTL, `_run_batch` (1 request = 3 odpowiedzi,
+  rozdział per job), batch mismatch → fail osobno — 57 passed
+
 ## [2.7.2] — 2026-11-23 — kolejka LLM v2: osobny wątek dispatchera, priorytety, dedup, per-model timeout, housekeeping
 - 🧵 **Dispatcher kolejki LLM w osobnym wątku** (`dispatch_loop` startowany w `Orchestrator.run`) — tick orchestratora
   NIE blokuje się już na czas wywołania LLM (wcześniej cały tick czekał na subprocess `vibe`); w ticku zostaje

@@ -1084,7 +1084,9 @@ async function renderFlow(){
   if(stageBar){
     stageBar.innerHTML = stages.map(st => {
       const off = fh.has(st.id);
-      return `<button class="pchip ${off?'off':''}" style="--c:${st.color}" title="klik = ukryj/pokaż etap · dwuklik = SOLO (tylko ten etap)" ondblclick="soloFlowStage('${esc(st.id)}')" onclick="toggleFlowStage('${esc(st.id)}')">${st.icon} ${esc(st.label)} <span class="muted">${st.count}</span></button>`;
+      const din = st.delta_in || 0, dout = st.delta_out || 0;
+      const dlt = (din || dout) ? ` <span style="color:${din?'#3fb950':'#8b949e'}">+${din}</span><span style="color:${dout?'#f85149':'#8b949e'}">−${dout}</span>` : '';
+      return `<button class="pchip ${off?'off':''}" style="--c:${st.color}" title="klik = ukryj/pokaż etap · dwuklik = SOLO (tylko ten etap) · +/− = delta z ostatnich ${Math.round((st.delta_window_s||300)/60)} min" ondblclick="soloFlowStage('${esc(st.id)}')" onclick="toggleFlowStage('${esc(st.id)}')">${st.icon} ${esc(st.label)} <b>${st.count}</b>${dlt}</button>`;
     }).join('') + `<button class="pchip reset" onclick="resetFlowStages()">✖ wszystkie etapy</button>`;
   }
   const visStages = stages.filter(s => !fh.has(s.id));
@@ -1112,15 +1114,20 @@ async function renderFlow(){
       const x = 16 + i*(nodeW+gap), y = laneY[k] + 26, w = nodeW, h = laneH - 36;
       pos[st.id] = {x:x, y:y, w:w, h:h};
       const over = st.overdue ? ' · <tspan fill="' + (T.overdue||'#f85149') + '">⚠ ' + st.overdue + ' po SLA</tspan>' : '';
+      // delta z ostatnich 5 min (metryki task_event): +weszło −wyszło
+      const din = st.delta_in || 0, dout = st.delta_out || 0, win = st.delta_window_s || 300;
+      const delta = '<tspan fill="' + (din ? '#3fb950' : (T.muted||'#8b949e')) + '" font-weight="bold" title="przybyło zadań w ostatnich ' + Math.round(win/60) + ' min">+' + din + '</tspan>' +
+        '<tspan fill="' + (dout ? '#f85149' : (T.muted||'#8b949e')) + '" font-weight="bold" title="ubyło zadań w ostatnich ' + Math.round(win/60) + ' min"> −' + dout + '</tspan>' +
+        '<tspan fill="' + (T.muted||'#8b949e') + '"> (' + Math.round(win/60) + ' min)</tspan>';
       s += '<g class="stage ' + (st.hot && st.count ? 'hot' : '') + '">' +
         '<rect class="box" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="12" stroke="' + st.color + '"/>' +
         '<text class="ttl" x="' + (x+10) + '" y="' + (y+22) + '" font-size="15" onclick="openStageInfo(\\'' + esc(st.id) + '\\')">' + st.icon + ' <tspan font-size="12" font-weight="bold" fill="' + (T.nodeTitle||'#c9d1d9') + '">' + esc(st.label) + '</tspan></text>' +
-        '<circle cx="' + (x+w-16) + '" cy="' + (y+18) + '" r="10" fill="' + st.color + '"/><text class="cnt" x="' + (x+w-16) + '" y="' + (y+22) + '" font-size="10" text-anchor="middle">' + st.count + '</text>' +
-        '<text x="' + (x+10) + '" y="' + (y+36) + '" font-size="9" fill="' + (T.muted||'#8b949e') + '">' + esc((st.statuses||[]).join(' · ')) + over + '</text>';
+        '<circle cx="' + (x+w-18) + '" cy="' + (y+19) + '" r="15" fill="' + st.color + '"/><text class="cnt" x="' + (x+w-18) + '" y="' + (y+24) + '" font-size="13" font-weight="bold" text-anchor="middle" fill="#0b0f14">' + st.count + '</text>' +
+        '<text x="' + (x+10) + '" y="' + (y+38) + '" font-size="9" fill="' + (T.muted||'#8b949e') + '">' + delta + ' · ' + esc((st.statuses||[]).join(' · ')) + over + '</text>';
       const chips = st.tasks.slice(0, maxChips);
       const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
       chips.forEach((t, ci) => {
-        const cx = x+8, cy = y + 44 + ci*(chipH+5);
+        const cx = x+8, cy = y + 52 + ci*(chipH+5);
         const acts = t.available_actions || [];
         const clk = (t.status==='RUNNING' && t.started_at)
           ? '<tspan class="clk" data-started="' + t.started_at + '"> ⏱' + fmtDur(Date.now()/1000 - t.started_at) + '</tspan>'
@@ -1167,7 +1174,9 @@ function openStageInfo(sid){
   document.getElementById('detailBody').dataset.key = 'flowstage|' + sid + '|' + st.count;
   document.getElementById('detailBody').innerHTML = '<h3>' + st.icon + ' ' + esc(st.label) + '</h3>' +
     '<div class="kv"><b>etap:</b> ' + esc(st.id) + ' · tor: ' + esc(st.lane) + ' · statusy: ' + esc((st.statuses||[]).join(', ')) + '</div>' +
-    '<div class="kv"><b>zadań:</b> ' + st.count + (st.overdue ? ' · <span style="color:#f85149">⚠ ' + st.overdue + ' po SLA</span>' : '') + (st.sla_s ? ' · SLA: ' + fmtDur(st.sla_s) : '') + '</div>' +
+    '<div class="kv"><b>zadań:</b> <b style="font-size:18px;color:' + st.color + '">' + st.count + '</b>' +
+    ' · delta ostatnie ' + Math.round((st.delta_window_s||300)/60) + ' min: <span style="color:#3fb950;font-weight:bold">+' + (st.delta_in||0) + '</span> / <span style="color:#f85149;font-weight:bold">−' + (st.delta_out||0) + '</span>' +
+    (st.overdue ? ' · <span style="color:#f85149">⚠ ' + st.overdue + ' po SLA</span>' : '') + (st.sla_s ? ' · SLA: ' + fmtDur(st.sla_s) : '') + '</div>' +
     '<div class="kv muted">' + esc(st.description||'') + '</div>' +
     '<div class="kv"><b>akcje w etapie:</b> ' + (st.actions||[]).map(a => { const ad = (f.actions||{})[a]||{}; return (ad.icon||'') + ' ' + esc(ad.label||a); }).join(' · ') + '</div>' +
     '<h2>Zadania w etapie (' + st.count + ')</h2>' +
