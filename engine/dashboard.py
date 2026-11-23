@@ -647,6 +647,7 @@ function renderStFilters(d){
 function projColor(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return 'hsl('+(h%360)+',70%,45%)'; }
 const ST_COLOR = {'READY':'#6e7681','RUNNING':'#1f6feb','IN_REVIEW':'#a371f7','CHANGES_REQUESTED':'#d29922','AWAITING_OWNER':'#b08800','READY_TO_MERGE':'#238636','MERGED':'#2ea043','FAILED':'#da3633','ESCALATED':'#f85149','BLOCKED':'#57606a','COOLING':'#54aeff'};
 function ccls(text){ text = String(text||''); return text.startsWith('🔄') ? 'inprogress' : (text.includes('✅') ? 'done' : ''); }
+function fmtSUBProg(st){const m={'1/5_PLAN':0.2,'2/5_IMPL':0.4,'3/5_TEST':0.6,'4/5_QG':0.8,'4.5_SIMPLIFY':0.85,'5/5_COMMIT':1.0,'LLM_EXEC':0.5,'done':1.0};return (st in m)?m[st]:0;}
 const SUBCEL = {'1/5_PLAN':'planowanie zadania','2/5_IMPL':'implementacja kodu','3/5_TEST':'testy i weryfikacja','4/5_QG':'bramki jakości (lint/typy)','4.5_SIMPLIFY':'upraszczanie rozwiązania','5/5_COMMIT':'commit + push','LLM_EXEC':'wywołanie LLM','done':'zakończone'};
 function sbadge(st){ const c = ST_COLOR[st]||'#6e7681'; return `<span class="sbadge ${st==='ESCALATED'?'esc':''}" style="background:${c}">${esc(st)}</span>`; }
 // v2.7.23: rejestr operacji (ops) — każde działanie systemu ma tu status kolejki: ⏳ czeka na wysłanie → 📤 wysłano → ✅/❌
@@ -979,7 +980,7 @@ async function openTask(id, keep){
     const steps = ['1/5_PLAN','2/5_IMPL','3/5_TEST','4/5_QG','5/5_COMMIT'];
     const curSub = d.substep||'';
     const stepRow = steps.map(st => {
-      const prog = substep_progress(st), curProg = substep_progress(curSub);
+      const prog = fmtSUBProg(st), curProg = fmtSUBProg(curSub);
       const done = curProg > prog, on = Math.abs(curProg - prog) < 0.01;
       return `<span style="padding:2px 8px;border-radius:6px;margin:0 3px;font-size:11px;display:inline-block;border:1px solid ${on?'#58a6ff':'#30363d'};background:${on?'#12233a':(done?'#0d2b1a':'#161b22')};color:${done?'#3fb950':(on?'#58a6ff':'#8b949e')}">${done?'✅ ':''}${st}</span>`;
     }).join('→');
@@ -992,7 +993,7 @@ async function openTask(id, keep){
       <div class="histbox">${(pp.steps||[]).map(se => {
         const age = Date.now()/1000 - (se.ts||0);
         const cls = age<60 ? 'fresh2' : (age<3600 ? 'fresh1' : '');
-        return `<div class="${cls}"><span class="muted">${new Date((se.ts||0)*1000).toLocaleTimeString()}</span> ${esc(String(se.event||''))}</div>`;
+        return `<div class="${cls}"><span class="muted">${new Date((se.ts||0)*1000).toLocaleTimeString()}</span> ${esc(String((se.from||'?')+' → '+(se.to||'?')))}</div>`;
       }).join('')||'<span class="muted">brak</span>'}</div>`;
   } else {
     body = `<div class="kv"><b>scope:</b> ${esc((d.scope_paths||[]).join(', ')||'-')}</div>
