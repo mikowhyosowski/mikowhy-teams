@@ -1,5 +1,22 @@
 # CHANGELOG — mikowhy-teams dashboard
 
+## [2.7.1] — 2026-11-23 — zadania OPS: audyt LLM (P0), dzienny audyt FAILED→READY, nowa rola workload-guardian (People Ops)
+- 🚨 **Zadanie P0 `OPS-LLM-ROOTCAUSE`** (rola `principal-debugger`, READY): zbadanie ostatnich problemów
+  z odpowiedziami LLM (llm_queue timeouty 600s w QUEUED/RUNNING, rc=3 keyring, puste/nieJSON odpowiedzi)
+  + wdrożenie rozwiązań prewencyjnych (limity, retry/backoff, fallback, walidacja, monitoring) + testy regresyjne
+- 🔁 **Obowiązki cykliczne egzekwowane przez orchestratora** (nowa faza `_launch_recurring` w tick):
+  `recurring_due()` → zadanie READY `REC-<id>-<yyyymmdd>` dla roli, idempotentnie (max 1 otwarte na obowiązek)
+- 📋 **Dzienny audyt `AUDIT-FAILED-2-READY`** (daily, P2, rola `health-monitor`): przejścia FAILED/BLOCKED/ESCALATED→READY
+  + kolejka LLM + retry — czy potrzebna pilna naprawa (P0)?
+- 🧑‍⚖️ **Nowa rola `workload-guardian` (People Ops — „zatrudnienie”)**: wpis w `.agents/registry.json` + skill
+  `.agents/skills/roles/workload-guardian.md` + węzeł w org chart (`default_org.json`, reports_to: sponsor).
+  Główny obowiązek: monitoruje czas pracy agentów — aktywuje się gdy „Teraz pracują” (zegarki RUNNING na żywo);
+  rola bez zadania > 30 min → tworzy dla niej zadanie wg jej odpowiedzialności w organizacji (org chart);
+  pozostałe obowiązki sama wybiera (najlepsze dla organizacji). Zadanie P1 `OPS-GUARDIAN-SETUP` (diagnoza:
+  kolejka READY pełna, a nikt nie pracuje — przyczyna: timeouty llm_queue) + recurring `GUARDIAN-IDLE-CHECK` (hourly, P2)
+- ✅ Testy `tests/test_ops_tasks.py` (4): rola w registry+skill+org, zadania OPS w kolejce, recurring zarejestrowane,
+  `_launch_recurring` idempotentny — 50 passed
+
 ## [2.7.0] — 2026-11-23 — docelowy model przepływu: samoregulująca się linia produkcyjna, Opiekun jako ostatnia instancja
 - 🔄 **Nowy zestaw statusów** (`engine/state.py`): `READY → RUNNING → IN_REVIEW → READY_TO_MERGE → MERGED` + pętla
   `IN_REVIEW → CHANGES_REQUESTED → RUNNING` (poprawki po CR bez Opiekuna) + `AWAITING_OWNER` (tylko graniczne decyzje)

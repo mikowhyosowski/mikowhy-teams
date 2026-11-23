@@ -170,6 +170,43 @@ class Orchestrator:
                                   review_notes="auto-retry po FAILED (próba %d, backoff)" % (task["retry_count"] + 2))
             self.state.record_metric("auto_retry", {"retry": task["retry_count"] + 1}, task["id"])
 
+    # --- obowiązki cykliczne (recurring_tasks) -> zadania READY dla roli -----------
+    def _launch_recurring(self) -> None:
+        """recurring_due() generuje zadanie READY dla roli, gdy obowiązek jest due.
+        Idempotentnie: max jedno otwarte zadanie na obowiązek (REC-<id>-<yyyymmdd>)."""
+        now = time.time()
+        open_st = (READY, RUNNING, IN_REVIEW, CHANGES_REQUESTED, AWAITING_OWNER)
+        for r in self.state.recurring_due(now):
+            rid = r["id"]
+            try:
+                existing = [t for t in self.state.list_tasks()
+                            if t["id"].startswith(f"REC-{rid}-") and t["status"] in open_st]
+                day = time.strftime("%Y%m%d", time.localtime(now))
+                tid = f"REC-{rid}-{day}"
+                if existing or self.state.get_task(tid):
+                    self.state._conn().execute("UPDATE recurring_tasks SET last_run=? WHERE id=?", (now, rid))
+                    continue
+                ms = self.state.list_milestones()
+                ops = next((m for m in ms if m["id"].endswith("-OPS") and (m.get("project_id") or "mikowhy-teams") == "mikowhy-teams"
+                            and m["status"] == "OPEN"), None)
+                if not ops:
+                    self.state.add_milestone("FACTORY-OPS", "Operacje i naprawy fabryki (mikowhy-teams)",
+                                             "milestone/factory-ops", title="FACTORY-OPS")
+                    ops = self.state.get_milestone("FACTORY-OPS")
+                self.state.add_task(
+                    tid, ops["id"], 9, r["title"], r["role"],
+                    acceptance_criteria=f"Obowiązek cykliczny ({r['schedule']}) roli {r['role']}. Wykonaj i odnotuj wynik w komentarzu zadania.",
+                    status=READY, priority=r.get("priority") or "P3",
+                    title_sponsor=r["title"][:90],
+                    project_id=ops.get("project_id") or "mikowhy-teams",
+                )
+                self.state._conn().execute("UPDATE recurring_tasks SET last_run=? WHERE id=?", (now, rid))
+                self.state.record_metric("recurring_spawn", {"recurring": rid, "task": tid, "role": r["role"]}, tid)
+                self.state.add_comment(tid, "orchestrator", f"🔁 Wygenerowane z obowiązku cyklicznego `{rid}` ({r['schedule']})")
+                print(f"[orchestrator] 🔁 recurring {rid} -> zadanie {tid} (rola {r['role']})", flush=True)
+            except Exception as e:
+                print(f"[orchestrator] recurring {rid} błąd: {e!r}", flush=True)
+
     # --- faza 4: workery -------------------------------------------------------
     def _max_workers_now(self) -> int:
         """Ile workerów (LLM) można bezpiecznie odpalić RÓWNOLEGLE na tym laptopie:
@@ -570,6 +607,7 @@ class Orchestrator:
         self._reap()
         self._auto_approve()
         self._auto_retry_failed()
+        self._launch_recurring()
         self._dispatch_llm_queue()
         self._launch_workers()
         self._launch_reviews()

@@ -158,6 +158,16 @@
       "title": "Security Auditor",
       "reports_to": "sponsor",
       "description": "Audyt bezpieczeństwa niezależny od działu tech — raportuje bezpośrednio Sponsorowi."
+    },
+    {
+      "id": "workload-guardian",
+      "kind": "agent",
+      "role": "workload-guardian",
+      "label": "Workload Guardian",
+      "icon": "🧑‍⚖️",
+      "title": "People Ops — strażnik obłożenia pracą",
+      "reports_to": "sponsor",
+      "description": "Monitoruje czas pracy agentów (aktywuje się, gdy „Teraz pracują” — zegarki RUNNING na żywo). Gdy rola nie ma zadań — tworzy dla niej zadanie wg jej odpowiedzialności w organizacji. Pilnuje, żeby nikt nie stał bez pracy."
     }
   ]
 }

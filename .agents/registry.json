@@ -1,159 +1,171 @@
 {
-  "schema": "dark-factory/registry@2",
-  "note": "Rejestr ról z personami (cognitive diversity): creator vs skeptic. status: PROBATION -> ACTIVE po zielonym QG. Sekcja skills = Skill Harvester (źródło, sha256, status ACTIVE/QUARANTINED/PROBATION).",
-  "roles": {
-    "product-owner": {
-      "persona": "creator",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 1.0
-    },
-    "ideation-challenger": {
-      "persona": "creator",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0,
-      "note": "ARCH_OPTIONS: 3 warianty (Boring & Bulletproof / Performance Edge-First / Wildcard UX-Delight), wysoka temperatura, bez ograniczeń"
-    },
-    "solutions-architect": {
-      "persona": "builder",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 1.0
-    },
-    "tech-lead-planner": {
-      "persona": "builder",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "fast-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 1.0
-    },
-    "backend-dev": {
-      "persona": "builder",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "fast-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0
-    },
-    "frontend-dev": {
-      "persona": "creator",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0
-    },
-    "security-auditor": {
-      "persona": "skeptic",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 1.0
-    },
-    "code-reviewer": {
-      "persona": "skeptic",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0
-    },
-    "principal-debugger": {
-      "persona": "skeptic",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "strong-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0
-    },
-    "sre-deployer": {
-      "persona": "builder",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "fast-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0
-    },
-    "systems-auditor": {
-      "persona": "skeptic",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0
-    },
-    "health-monitor": {
-      "persona": "skeptic",
-      "model": "strong-model",
-      "models": {
-        "strong": "strong-model",
-        "fast": "fast-model",
-        "creative": "strong-model"
-      },
-      "status": "ACTIVE",
-      "success_rate": 0.0
-    }
+ "schema": "dark-factory/registry@2",
+ "note": "Rejestr ról z personami (cognitive diversity): creator vs skeptic. status: PROBATION -> ACTIVE po zielonym QG. Sekcja skills = Skill Harvester (źródło, sha256, status ACTIVE/QUARANTINED/PROBATION).",
+ "roles": {
+  "product-owner": {
+   "persona": "creator",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 1.0
   },
-  "skills": {
-    "fastapi:rules/fastapi-production-architecture-cursorrules-prompt-file.mdc": {
-      "source": "PatrickJS/awesome-cursorrules/rules/fastapi-production-architecture-cursorrules-prompt-file.mdc",
-      "sha256": "62503a48d4aa",
-      "status": "ACTIVE",
-      "file": ".agents/skills/stacks/fastapi-harvested.md"
-    },
-    "fastapi:rules/fastapi.mdc": {
-      "source": "PatrickJS/awesome-cursorrules/rules/fastapi.mdc",
-      "sha256": "0c94b5295310",
-      "status": "ACTIVE",
-      "file": ".agents/skills/stacks/fastapi-harvested.md"
-    },
-    "fastapi:rules/py-fast-api.mdc": {
-      "source": "PatrickJS/awesome-cursorrules/rules/py-fast-api.mdc",
-      "sha256": "a1a1228e88b0",
-      "status": "ACTIVE",
-      "file": ".agents/skills/stacks/fastapi-harvested.md"
-    }
+  "ideation-challenger": {
+   "persona": "creator",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0,
+   "note": "ARCH_OPTIONS: 3 warianty (Boring & Bulletproof / Performance Edge-First / Wildcard UX-Delight), wysoka temperatura, bez ograniczeń"
+  },
+  "solutions-architect": {
+   "persona": "builder",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 1.0
+  },
+  "tech-lead-planner": {
+   "persona": "builder",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "fast-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 1.0
+  },
+  "backend-dev": {
+   "persona": "builder",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "fast-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0
+  },
+  "frontend-dev": {
+   "persona": "creator",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0
+  },
+  "security-auditor": {
+   "persona": "skeptic",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 1.0
+  },
+  "code-reviewer": {
+   "persona": "skeptic",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0
+  },
+  "principal-debugger": {
+   "persona": "skeptic",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "strong-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0
+  },
+  "sre-deployer": {
+   "persona": "builder",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "fast-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0
+  },
+  "systems-auditor": {
+   "persona": "skeptic",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0
+  },
+  "health-monitor": {
+   "persona": "skeptic",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0
+  },
+  "workload-guardian": {
+   "persona": "skeptic",
+   "model": "strong-model",
+   "models": {
+    "strong": "strong-model",
+    "fast": "fast-model",
+    "creative": "strong-model"
+   },
+   "status": "ACTIVE",
+   "success_rate": 0.0,
+   "note": "People Ops — strażnik obłożenia pracą: pilnuje, żeby żaden agent nie stał bez zadania; gdy ktoś bezczynny, tworzy dla niego zadanie wg odpowiedzialności roli w organizacji (org chart)."
   }
+ },
+ "skills": {
+  "fastapi:rules/fastapi-production-architecture-cursorrules-prompt-file.mdc": {
+   "source": "PatrickJS/awesome-cursorrules/rules/fastapi-production-architecture-cursorrules-prompt-file.mdc",
+   "sha256": "62503a48d4aa",
+   "status": "ACTIVE",
+   "file": ".agents/skills/stacks/fastapi-harvested.md"
+  },
+  "fastapi:rules/fastapi.mdc": {
+   "source": "PatrickJS/awesome-cursorrules/rules/fastapi.mdc",
+   "sha256": "0c94b5295310",
+   "status": "ACTIVE",
+   "file": ".agents/skills/stacks/fastapi-harvested.md"
+  },
+  "fastapi:rules/py-fast-api.mdc": {
+   "source": "PatrickJS/awesome-cursorrules/rules/py-fast-api.mdc",
+   "sha256": "a1a1228e88b0",
+   "status": "ACTIVE",
+   "file": ".agents/skills/stacks/fastapi-harvested.md"
+  }
+ }
 }

@@ -39,7 +39,7 @@ def test_hierarchy_shape():
     # reports (podwładni) są odwrotnością reports_to
     assert "backend-dev" in by_id["solutions-architect"]["reports"]
     assert "sponsor" in by_id["sponsor"]["reports"] or by_id["sponsor"]["depth"] == 0
-    assert set(by_id["sponsor"]["reports"]) == {"tech-lead-planner", "product-owner", "security-auditor"}
+    assert set(by_id["sponsor"]["reports"]) == {"tech-lead-planner", "product-owner", "security-auditor", "workload-guardian"}
     # głębokości: sponsor=0, tech-lead=1, architekt=2, dev=3, health-monitor=4
     assert by_id["sponsor"]["depth"] == 0
     assert by_id["tech-lead-planner"]["depth"] == 1

@@ -114,7 +114,7 @@ def test_new_hires_detection():
 def test_endpoints_live():
     with urllib.request.urlopen("http://127.0.0.1:8765/api/recurring?role=health-monitor", timeout=5) as r:
         lst = json.loads(r.read().decode())
-    assert isinstance(lst, list) and all(x["priority"] == "P3" for x in lst)
+    assert isinstance(lst, list) and all(x["priority"] in ("P2", "P3") for x in lst)  # audyt FAILED->READY może być P2
     with urllib.request.urlopen("http://127.0.0.1:8765/api/firma", timeout=5) as r:
         w = json.loads(r.read().decode())
     assert "conversations" in w
