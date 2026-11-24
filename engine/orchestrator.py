@@ -803,10 +803,111 @@ class Orchestrator:
         except Exception as e:
             self.state.record_metric("llm_dispatch_error", {"error": repr(e)}, None)
 
+    # --- stall watchdog: zadania RUNNING bez outputu na konsoli ----------------------
+    def _stall_watchdog(self) -> None:
+        """Opcja A′ WORKER_OBSERVABILITY_PLAN §3.3: wykrywa RUNNING zadania bez outputu
+        na konsoli przez stall_threshold_s sekund (domyślnie 600 = 10 min).
+
+        Strategie detekcji:
+          1. mtime pliku .agents/logs/console/<TASK>.jsonl (PTY streamer)
+          2. mtime pliku .agents/logs/worker_lifecycle.<TASK>.log (fallback)
+        Gdy oba wskazują na ciszę >= threshold → STALLED.
+
+        Fałszywy alarm: gdy task ma aktywny job LLM (llm_jobs status='RUNNING') —
+        cisza jest normalna (vibe przetwarza, nie pisze do PTY).
+
+        Alerty:
+          - notification w dashboardzie (bell 🔔)
+          - Telegram jeśli TELEGRAM_PUSH=1
+          @15 min: opcjonalny auto-kill (kv auto_stall_kill=1) + dump ostatnich linii
+        """
+        try:
+            from engine import console_streamer as cs
+            from engine import llm_queue
+        except ImportError:
+            return
+
+        now = time.time()
+        try:
+            threshold_s = float(self.state.get_kv("stall_threshold_s", 600) or 600)
+            kill_threshold_s = float(self.state.get_kv("stall_kill_threshold_s", 900) or 900)
+            auto_kill = str(self.state.get_kv("auto_stall_kill", "0") or "0") in ("1", "true")
+        except Exception:
+            threshold_s, kill_threshold_s, auto_kill = 600.0, 900.0, False
+
+        for task in self.state.list_tasks(status="RUNNING"):
+            tid = task["id"]
+            la = cs.last_activity_at(tid)
+            if la == 0.0:
+                log_p = LOG_DIR / f"worker_lifecycle.{tid}.log"
+                try:
+                    la = log_p.stat().st_mtime
+                except FileNotFoundError:
+                    la = task.get("updated_at") or now
+            idle_s = now - la
+            if idle_s < threshold_s:
+                continue
+
+            try:
+                llm_busy = bool(self.state._conn().execute(
+                    "SELECT 1 FROM llm_jobs WHERE task_id=? AND status='RUNNING' LIMIT 1",
+                    (tid,)).fetchone())
+            except Exception:
+                llm_busy = False
+            if llm_busy:
+                continue
+
+            idle_min = int(idle_s // 60)
+            kv_key = f"stall_notified:{tid}"
+            last_bucket = int(self.state.get_kv(kv_key, 0) or 0)
+            if last_bucket != idle_min:
+                self.state.set_kv(kv_key, idle_min)
+                msg = (f"⏳ {tid} bez outputu na konsoli od {idle_min}m "
+                       f"(próg: {int(threshold_s//60)}m) — sprawdź log lub Kill & Retry")
+                self._notify("stall", msg, tid)
+                self.state.record_metric("stall_detected",
+                                         {"task": tid, "idle_s": round(idle_s)}, tid)
+                _push(msg)
+                print(f"[orchestrator] 🔴 STALL {tid}: {idle_min}m bez outputu", flush=True)
+
+            if idle_s >= kill_threshold_s and auto_kill:
+                kv_kill = f"stall_killed:{tid}"
+                if not self.state.get_kv(kv_kill):
+                    self.state.set_kv(kv_kill, now)
+                    try:
+                        dump_lines = cs.read_tail(tid, tail=500)
+                        dump_dir = LOG_DIR.parent / "stall_dumps"
+                        dump_dir.mkdir(parents=True, exist_ok=True)
+                        dump_file = dump_dir / f"{tid}.{int(now)}.jsonl"
+                        import json as _json
+                        dump_file.write_text(
+                            "\n".join(_json.dumps(e, ensure_ascii=False) for e in dump_lines),
+                            encoding="utf-8")
+                    except Exception:
+                        pass
+                    proc = self.running.get(tid)
+                    if proc and proc.poll() is None:
+                        try:
+                            import signal
+                            proc.send_signal(signal.SIGTERM)
+                        except Exception:
+                            pass
+                    try:
+                        self.state.transition(
+                            tid, "COOLING",
+                            review_notes=f"auto-kill: stall {idle_min}m >= {int(kill_threshold_s//60)}m threshold")
+                        self.state.record_metric("stall_kill", {"task": tid, "idle_s": round(idle_s)}, tid)
+                        self._notify("stall", f"🔴 {tid} ubity (stall {idle_min}m) → COOLING", tid)
+                        _push(f"🔴 *auto-kill* `{tid}` po {idle_min}m ciszy → COOLING")
+                        print(f"[orchestrator] 🔴 auto-kill {tid} (stall {idle_min}m) → COOLING", flush=True)
+                    except Exception as e:
+                        print(f"[orchestrator] stall-kill {tid} błąd: {e!r}", flush=True)
+
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
         self._escalate_stuck_tasks()
+        self._stall_watchdog()
         self._auto_approve()
         self._auto_retry_failed()
         self._workload_guardian_tick()
@@ -840,14 +941,16 @@ class Orchestrator:
             sys.exit(0)
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
         self._ensure_ops_recurring()  # v2.7.17: seed obowiązków OPS (idempotentny)
-        # v2 kolejki LLM: dispatcher w OSOBNYM WĄTKU — tick nie blokuje się na czas wywołania LLM
-        # (joby wykonują się seryjnie, keyring dotyka tylko ten proces; flock serializuje z workerami)
+        # Opcja A′ (WORKER_OBSERVABILITY_PLAN): równoległe dispatchery per-model (fast x 4, strong x 2)
         import threading
         from engine import llm_queue
-        self._llm_thread = threading.Thread(
-            target=llm_queue.dispatch_loop, args=(self.state,), daemon=True, name="llm-dispatcher")
-        self._llm_thread.start()
-        print("[orchestrator] 🧵 wątek dispatchera kolejki LLM wystartowany", flush=True)
+        self._llm_thread_fast = threading.Thread(
+            target=llm_queue.dispatch_loop_model, args=(self.state, "fast", 4, 0.3), daemon=True, name="llm-fast")
+        self._llm_thread_strong = threading.Thread(
+            target=llm_queue.dispatch_loop_model, args=(self.state, "strong", 2, 0.5), daemon=True, name="llm-strong")
+        self._llm_thread_fast.start()
+        self._llm_thread_strong.start()
+        print("[orchestrator] 🧵 wątki dispatcherów kolejki LLM (fast×4, strong×2) wystartowane", flush=True)
         self._recover_zombies()
         rounds = 2 if once else None  # --once: dwa cykle (worker + CR), potem wyjście
         while True:
