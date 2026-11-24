@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from engine import git_guard, projects, quality_gates, skill_compiler, telegram_reporter
+from engine.console_streamer import ConsoleStreamer
 from engine.llm_gateway import get_gateway
 from engine.state import (
     AWAITING_OWNER,
@@ -799,61 +800,82 @@ def run(task_id: str) -> int:
         _log(task_id, "zadanie niedostępne do przejęcia")
         return 1
     telegram_reporter.ensure_topic(state, task)
+    streamer = ConsoleStreamer(task_id, state)
+    streamer.log_meta("init", f"worker-{os.getpid()} claim task {task_id}")
     worktree: Path | None = None
     try:
+        streamer.log_meta("0/5_PREPARE", "step0_prepare start")
         worktree = step0_prepare(state, task)
         _tg(state, task_id, "worktree gotowy")
         base = state.get_milestone(task["milestone"])["branch"]
         task = state.get_task(task_id)  # świeży wiersz (branch z step0)
         if (task.get("mode") or "pipeline") == "llm":
+            streamer.log_meta("LLM_EXEC", "step_llm start")
             step_llm(state, task, worktree, base)
             task = state.get_task(task_id)
             if task and task["status"] == "IN_REVIEW":
                 _tg(state, task_id, "LLM wykonał zadanie → IN_REVIEW (czeka na Code Review)")
+            streamer.log_meta("LLM_EXEC", "step_llm done")
             return 0
+        streamer.log_meta("1/5_PLAN", "step1_plan start")
         step1_plan(state, task)
         task = state.get_task(task_id)  # split może zmienić status
         if task["status"] != "RUNNING":
             telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
+            streamer.log_meta("1/5_PLAN", "SPLIT_TASK or non-running")
             return 0
         if _stage_stop(state, task_id, "1/5_PLAN"):
+            streamer.log_meta("1/5_PLAN", "stage_stop")
             return 0
         _tg(state, task_id)
+        streamer.log_meta("2/5_IMPL", "step2_implement start")
         step2_implement(state, task, worktree)
         task = state.get_task(task_id)
         if task["status"] != "RUNNING":  # np. AWAITING_OWNER — czekamy na decyzję Opiekuna
             _tg(state, task_id)
+            streamer.log_meta("2/5_IMPL", f"status transition: {task['status']}")
             return 0
         if _stage_stop(state, task_id, "2/5_IMPL"):
+            streamer.log_meta("2/5_IMPL", "stage_stop")
             return 0
         _tg(state, task_id)
+        streamer.log_meta("3/5_TEST", "step3_tests start")
         step3_tests(state, task, worktree)
         if _stage_stop(state, task_id, "3/5_TEST"):
+            streamer.log_meta("3/5_TEST", "stage_stop")
             return 0
         _tg(state, task_id)
+        streamer.log_meta("4/5_QG", "step4_quality_gate start")
         step4_quality_gate(state, task, worktree, base)
         task = state.get_task(task_id)
         if task["status"] != "RUNNING":
             telegram_reporter.post_event(state, task, f"❌ lokalny QG nie przeszedł: {(task.get('review_notes') or '')[:300]}")
             _tg(state, task_id)
+            streamer.log_meta("4/5_QG", "QG failed")
             return 0
         if _stage_stop(state, task_id, "4/5_QG"):
+            streamer.log_meta("4/5_QG", "stage_stop")
             return 0
+        streamer.log_meta("4.5_SIMPLIFY", "step45_simplify start")
         step45_simplify(state, task, worktree, base)
         task = state.get_task(task_id)
         if task["status"] == "RUNNING":
             if _stage_stop(state, task_id, "4.5_SIMPLIFY"):
+                streamer.log_meta("4.5_SIMPLIFY", "stage_stop")
                 return 0
+            streamer.log_meta("5/5_COMMIT", "step5_commit start")
             step5_commit(state, task, worktree, base)
         task = state.get_task(task_id)
         if task and task["status"] == "IN_REVIEW":
             _tg(state, task_id, "commit OK → IN_REVIEW (czeka na Code Review)")
+            streamer.log_meta("5/5_COMMIT", "commit OK -> IN_REVIEW")
         return 0
     except Exception as exc:  # deterministyczny fallback — nigdy cicha śmierć
         # v2.7.29: pełny traceback do loga — bez tego błędy typu OperationalError/TypeError
         # w pętli są niemożliwe do namierzenia (sam repr jest za mało)
         import traceback as _tb
         _log(task_id, "TRACEBACK:\n" + _tb.format_exc())
+        streamer.log_meta("ERROR", f"Exception: {exc!r}")
         state.transition(task_id, COOLING, review_notes=repr(exc))
         t = state.get_task(task_id)
         if t:
@@ -862,6 +884,10 @@ def run(task_id: str) -> int:
         _log(task_id, f"FAILED: {exc!r}")
         return 2
     finally:
+        try:
+            streamer.close()
+        except Exception:
+            pass
         if worktree is not None:
             repo = projects.repo_for_task(task, state)
             git_guard.remove_worktree(task_id, ns=task.get("project_id") or "mikowhy-teams", repo=repo)
