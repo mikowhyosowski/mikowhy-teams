@@ -1,0 +1,11 @@
+name: changelog
+on:
+  pull_request:
+    branches: [master, develop]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: wpis w CHANGELOG
+        run: grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md

@@ -1,0 +1,14 @@
+name: release-tag
+on:
+  push:
+    branches: [master]
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SemVer tag wskazuje na wersję z CHANGELOG
+        run: |
+          ver=$(grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | head -1 | sed -E 's/## \[([0-9.]+)\].*/v\1/')
+          git tag "$ver" || true
+          echo "tag=$ver" >> "$GITHUB_OUTPUT"
