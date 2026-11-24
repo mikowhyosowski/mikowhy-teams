@@ -389,7 +389,7 @@ class Orchestrator:
                                            f"🔚 {task['id']}: wyczerpane retry ({task['retry_count']}) nawet dla {PRINCIPAL_ROLE} → koniec kolejki, Opiekun nieangażowany automatem")
                     self.state.record_metric("circuit_back_of_queue", {"task": task["id"], "retry": task["retry_count"]}, task["id"])
 
-    # --- faza 6: merge do gałęzi milestonu --------------------------------------
+    # --- faza 6: merge do gałęzi integracyjnej (develop) / release pipeline ---------
     def _handle_merges(self) -> None:
         rtm = self.state.list_tasks(status=READY_TO_MERGE)
         # v2.7.10: zadania z flagą sponsor_merge (przycisk 🚀 Wdróż w flow) idą pierwsze
