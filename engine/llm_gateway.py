@@ -24,7 +24,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
+# Lock współdzielony z bazą stanu. Kopia w katalogu wydania miała własny llm.lock
+# i puszczała drugi proces vibe obok dispatchera z repozytorium.
+from engine.state import ROOT as _FACTORY_ROOT
+
+ROOT = _FACTORY_ROOT
 RUNTIME = ROOT / ".agents" / "runtime"
 LLM_LOCK = ROOT / ".agents" / "llm.lock"
 

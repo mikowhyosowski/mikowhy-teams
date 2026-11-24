@@ -95,6 +95,7 @@ def review(task_id: str) -> int:
             telegram_reporter.update_progress(state, t)
     else:
         state.transition(task_id, CHANGES_REQUESTED, retry_count=task["retry_count"] + 1,
+                         substep="2/5_IMPL",
                          review_notes=json.dumps(verdict, ensure_ascii=False))
         t = state.get_task(task_id)
         if t:

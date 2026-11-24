@@ -215,9 +215,11 @@ def test_resume_substep_on_return_to_ready():
     assert t["status"] == "READY"
     assert t["substep"] == "3/5_TEST", t["substep"]
     assert resume_substep(t) == "3/5_TEST"
-    # markery specjalne -> 1/5_PLAN, done -> 2/5_IMPL
+    # markery specjalne -> 1/5_PLAN; done zostaje przy commicie, chyba że to poprawki po CR
     assert resume_substep({"substep": "OWNER_PACKET"}) == "1/5_PLAN"
-    assert resume_substep({"substep": "done"}) == "2/5_IMPL"
+    assert resume_substep({"substep": "done"}) == "5/5_COMMIT"
+    assert resume_substep({"substep": "done", "status": "READY"}) == "5/5_COMMIT"
+    assert resume_substep({"substep": "done", "status": "CHANGES_REQUESTED"}) == "2/5_IMPL"
     assert resume_substep({"substep": None}) == "1/5_PLAN"
     # komentarz przy FAILED->READY mówi o kontynuacji
     import json as _json
@@ -590,3 +592,51 @@ def test_favorites_toggle_and_persist():
     # nieznane ID też można śledzić (widok „śledzę" jest niezależny od istnienia zadania)
     assert s.toggle_favorite("NIE-MA-TAKIEGO") is True
     s.toggle_favorite("NIE-MA-TAKIEGO")
+
+
+def test_ensure_branch_soft_on_non_repo(tmp_path):
+    """Katalog bez .git nie dostaje `git branch develop HEAD` (to pętla COOLING na wydaniu)."""
+    from engine import git_guard
+    assert git_guard.is_git_repo(tmp_path) is False
+    assert git_guard.ensure_branch(tmp_path, "develop") is False
+
+
+def test_run_git_timeout_is_failed_op(monkeypatch):
+    """subprocess timeout zamyka operację, zamiast zostawiać ją w RUNNING."""
+    import subprocess
+    from engine import git_guard
+
+    def _boom(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd=["git", "fetch"], timeout=1)
+
+    monkeypatch.setattr(git_guard.subprocess, "run", _boom)
+    calls = []
+
+    class FakeRec:
+        def __call__(self, kind, label, task_id=None, detail="", ref=None):
+            calls.append("enq")
+            return "op-t"
+        def start(self, o, d=None):
+            calls.append("start")
+        def done(self, o, d=""):
+            calls.append("done")
+        def fail(self, o, d=""):
+            calls.append(("fail", d))
+
+    git_guard.set_op_recorder(FakeRec())
+    try:
+        proc = git_guard.run_git(["fetch", "origin"], cwd="/tmp", check=False, timeout=1)
+        assert proc.returncode == 124
+        assert calls[-1][0] == "fail" and "timeout" in calls[-1][1]
+    finally:
+        git_guard.set_op_recorder(None)
+
+
+def test_should_run_skips_steps_before_resume():
+    from engine.worker_lifecycle import _should_run
+    assert _should_run("5/5_COMMIT", "2/5_IMPL") is False
+    assert _should_run("5/5_COMMIT", "5/5_COMMIT") is True
+    assert _should_run("done", "2/5_IMPL") is False
+    assert _should_run("2/5_IMPL", "1/5_PLAN") is False
+    assert _should_run("2/5_IMPL", "3/5_TEST") is True
+    assert _should_run("1/5_PLAN", "1/5_PLAN") is True

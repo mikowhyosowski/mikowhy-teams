@@ -330,7 +330,7 @@ class ProcessHealthMonitor:
         current_pid = None
         if self.state_db_path:
             try:
-                from state import State
+                from engine.state import State
                 s = State(db_path=self.state_db_path)
                 task = s.get_task(task_id)
                 if task and task.get("claimed_by"):
@@ -348,7 +348,7 @@ class ProcessHealthMonitor:
         current_pid = None
         if self.state_db_path:
             try:
-                from state import State
+                from engine.state import State
                 s = State(db_path=self.state_db_path)
                 task = s.get_task(task_id)
                 if task and task.get("claimed_by"):

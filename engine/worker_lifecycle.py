@@ -86,9 +86,16 @@ def step0_prepare(state: State, task: dict) -> Path:
     milestone = state.get_milestone(task["milestone"])
     ns = task.get("project_id") or "mikowhy-teams"
     repo = projects.repo_for_task(task, state)
+    if not git_guard.is_git_repo(repo):
+        from engine.state import ROOT as factory
+        if git_guard.is_git_repo(factory):
+            _log(task["id"], f"repo {repo} nie jest gitem — używam fabryki {factory}")
+            repo = factory
     ib = projects.integration_branch(ns)
-    if ib:
-        git_guard.ensure_branch(repo, ib)
+    if ib and git_guard.ensure_branch(repo, ib):
+        base = ib
+    elif ib and git_guard.is_git_repo(repo) and git_guard.run_git(
+            ["rev-parse", "--verify", "--quiet", ib], cwd=repo, check=False).returncode == 0:
         base = ib
     else:
         base = milestone["branch"] if milestone else git_guard.default_branch(repo)
@@ -576,23 +583,16 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
                          review_notes=f"Odrzucono przed CR: {exc}")
         return
     if lines == 0:
-        # v2.7.29: pusty diff + QG zielone + retry>=1 = praca już siedzi w branchu/bazie
-        # (cache LLM odtwarza ten sam content). Zamiast wiecznego „pusty diff → READY"
-        # oddajemy CR do decyzji — to **wyjście z pętli** na IN_REVIEW.
-        if (task.get("retry_count") or 0) >= 1:
-            state.add_comment_report(task["id"], f"worker({task['role']})",
-                                     "przekazać do Code Review mimo pustego diffu",
-                                     "diff zerowy (zmiany już siedzą w branchu/lub nic do zmiany), "
-                                     "QG zielone — oddaję decyzję Code Review zamiast wiecznej pętli READY")
-            _safe_transition(state, task["id"], IN_REVIEW, substep="done")
-            _log(task["id"], "pusty diff + QG zielone + retry>0 → IN_REVIEW (probe do CR)")
-            state.record_metric("empty_diff_to_review", {}, task["id"])
-            return
-        git_guard.run_git(["checkout", "--", "."], cwd=worktree, check=False)
-        _safe_transition(state, task["id"], READY,
-                         review_notes="Pusty diff względem bazy — worker nie wprowadził realnej zmiany (odrzucono przed commitem)")
-        state.record_metric("empty_diff_rejected", {}, task["id"])
-        _log(task["id"], "pusty diff (0 linii) — odrzucono przed commitem")
+        # QG jest już zielone (krok 5 jest za bramką). Pusty diff — zmiany siedzą w branchu
+        # albo nie ma czego dopisać — idzie do Code Review od pierwszej próby.
+        # Wcześniejszy próg retry>=1 zrzucał zadanie do READY i kręcił pętlę (empty_diff_rejected).
+        state.add_comment_report(task["id"], f"worker({task['role']})",
+                                 "przekazać do Code Review mimo pustego diffu",
+                                 "diff zerowy (zmiany już siedzą w branchu albo nie ma nowej treści), "
+                                 "QG zielone — oddaję decyzję Code Review")
+        _safe_transition(state, task["id"], IN_REVIEW, substep="done")
+        _log(task["id"], "pusty diff + QG zielone → IN_REVIEW")
+        state.record_metric("empty_diff_to_review", {}, task["id"])
         return
     how = git_guard.commit_task(worktree, task["id"], f"feat({task['id'].lower()}): {task['title']}")
     if how == "amended":
@@ -808,6 +808,20 @@ def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
     step5_commit(state, task, worktree, base)
 
 
+_PIPELINE = ("1/5_PLAN", "2/5_IMPL", "3/5_TEST", "4/5_QG", "4.5_SIMPLIFY", "5/5_COMMIT")
+
+
+def _should_run(resume: str, step: str) -> bool:
+    """Wznowienie wykonuje krok `step` i wszystko po nim. Wcześniejsze etapy zostają.
+
+    "done" to paczka już oddana — zostaje sam commit (albo wyjście do review), nie plan od zera.
+    Nieznany marker (LLM_EXEC, pusty) puszcza całą ścieżkę."""
+    r = "5/5_COMMIT" if resume == "done" else (resume or "")
+    if r not in _PIPELINE:
+        return True
+    return _PIPELINE.index(step) >= _PIPELINE.index(r)
+
+
 def run(task_id: str) -> int:
     state = State()
     task = state.claim_task(task_id, claimed_by=f"worker-{os.getpid()}")
@@ -861,51 +875,64 @@ def run(task_id: str) -> int:
                 _tg(state, task_id, "LLM wykonał zadanie → IN_REVIEW (czeka na Code Review)")
             streamer.log_meta("LLM_EXEC", "step_llm done")
             return 0
-        streamer.log_meta("1/5_PLAN", "step1_plan start")
-        step1_plan(state, task)
-        state.set_kv(f"last_successful_step:{task_id}", "1/5_PLAN")
-        task = state.get_task(task_id)  # split może zmienić status
-        if task["status"] != "RUNNING":
-            telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
-            streamer.log_meta("1/5_PLAN", "SPLIT_TASK or non-running")
-            return 0
-        if _stage_stop(state, task_id, "1/5_PLAN"):
-            streamer.log_meta("1/5_PLAN", "stage_stop")
-            return 0
-        _tg(state, task_id)
-        streamer.log_meta("2/5_IMPL", "step2_implement start")
-        step2_implement(state, task, worktree)
-        state.set_kv(f"last_successful_step:{task_id}", "2/5_IMPL")
-        task = state.get_task(task_id)
-        if task["status"] != "RUNNING":  # np. AWAITING_OWNER — czekamy na decyzję Opiekuna
+        if _should_run(resume_step, "1/5_PLAN"):
+            streamer.log_meta("1/5_PLAN", "step1_plan start")
+            step1_plan(state, task)
+            state.set_kv(f"last_successful_step:{task_id}", "1/5_PLAN")
+            task = state.get_task(task_id)  # split może zmienić status
+            if task["status"] != "RUNNING":
+                telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
+                streamer.log_meta("1/5_PLAN", "SPLIT_TASK or non-running")
+                return 0
+            if _stage_stop(state, task_id, "1/5_PLAN"):
+                streamer.log_meta("1/5_PLAN", "stage_stop")
+                return 0
             _tg(state, task_id)
-            streamer.log_meta("2/5_IMPL", f"status transition: {task['status']}")
-            return 0
-        if _stage_stop(state, task_id, "2/5_IMPL"):
-            streamer.log_meta("2/5_IMPL", "stage_stop")
-            return 0
-        _tg(state, task_id)
-        streamer.log_meta("3/5_TEST", "step3_tests start")
-        step3_tests(state, task, worktree)
-        state.set_kv(f"last_successful_step:{task_id}", "3/5_TEST")
-        if _stage_stop(state, task_id, "3/5_TEST"):
-            streamer.log_meta("3/5_TEST", "stage_stop")
-            return 0
-        _tg(state, task_id)
-        streamer.log_meta("4/5_QG", "step4_quality_gate start")
-        step4_quality_gate(state, task, worktree, base)
-        state.set_kv(f"last_successful_step:{task_id}", "4/5_QG")
-        task = state.get_task(task_id)
-        if task["status"] != "RUNNING":
-            telegram_reporter.post_event(state, task, f"❌ lokalny QG nie przeszedł: {(task.get('review_notes') or '')[:300]}")
+        else:
+            streamer.log_meta("1/5_PLAN", f"skipped (resume {resume_step})")
+        if _should_run(resume_step, "2/5_IMPL"):
+            streamer.log_meta("2/5_IMPL", "step2_implement start")
+            step2_implement(state, task, worktree)
+            state.set_kv(f"last_successful_step:{task_id}", "2/5_IMPL")
+            task = state.get_task(task_id)
+            if task["status"] != "RUNNING":  # np. AWAITING_OWNER — czekamy na decyzję Opiekuna
+                _tg(state, task_id)
+                streamer.log_meta("2/5_IMPL", f"status transition: {task['status']}")
+                return 0
+            if _stage_stop(state, task_id, "2/5_IMPL"):
+                streamer.log_meta("2/5_IMPL", "stage_stop")
+                return 0
             _tg(state, task_id)
-            streamer.log_meta("4/5_QG", "QG failed")
-            return 0
-        if _stage_stop(state, task_id, "4/5_QG"):
-            streamer.log_meta("4/5_QG", "stage_stop")
-            return 0
-        streamer.log_meta("4.5_SIMPLIFY", "step45_simplify start")
-        step45_simplify(state, task, worktree, base)
+        else:
+            streamer.log_meta("2/5_IMPL", f"skipped (resume {resume_step})")
+        if _should_run(resume_step, "3/5_TEST"):
+            streamer.log_meta("3/5_TEST", "step3_tests start")
+            step3_tests(state, task, worktree)
+            state.set_kv(f"last_successful_step:{task_id}", "3/5_TEST")
+            if _stage_stop(state, task_id, "3/5_TEST"):
+                streamer.log_meta("3/5_TEST", "stage_stop")
+                return 0
+            _tg(state, task_id)
+        else:
+            streamer.log_meta("3/5_TEST", f"skipped (resume {resume_step})")
+        if _should_run(resume_step, "4/5_QG"):
+            streamer.log_meta("4/5_QG", "step4_quality_gate start")
+            step4_quality_gate(state, task, worktree, base)
+            state.set_kv(f"last_successful_step:{task_id}", "4/5_QG")
+            task = state.get_task(task_id)
+            if task["status"] != "RUNNING":
+                telegram_reporter.post_event(state, task, f"❌ lokalny QG nie przeszedł: {(task.get('review_notes') or '')[:300]}")
+                _tg(state, task_id)
+                streamer.log_meta("4/5_QG", "QG failed")
+                return 0
+            if _stage_stop(state, task_id, "4/5_QG"):
+                streamer.log_meta("4/5_QG", "stage_stop")
+                return 0
+        else:
+            streamer.log_meta("4/5_QG", f"skipped (resume {resume_step})")
+        if _should_run(resume_step, "4.5_SIMPLIFY"):
+            streamer.log_meta("4.5_SIMPLIFY", "step45_simplify start")
+            step45_simplify(state, task, worktree, base)
         task = state.get_task(task_id)
         if task["status"] == "RUNNING":
             if _stage_stop(state, task_id, "4.5_SIMPLIFY"):

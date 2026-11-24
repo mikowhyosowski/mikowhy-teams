@@ -56,6 +56,7 @@ from engine.state import (
     READY,
     READY_TO_MERGE,
     RUNNING,
+    ROOT as FACTORY_ROOT,
     State,
 )
 
@@ -124,12 +125,12 @@ class Orchestrator:
         
         proc = subprocess.Popen(
             [sys.executable, "-m", f"engine.{module}", task_id],
-            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+            cwd=FACTORY_ROOT, stdout=log, stderr=subprocess.STDOUT,
             env=resume_env)
         self.running[task_id] = proc
 
     def _reap(self) -> None:
-        from process_health import get_process_monitor
+        from engine.process_health import get_process_monitor
         import signal
         monitor = get_process_monitor()
         for task_id, proc in list(self.running.items()):
@@ -676,13 +677,89 @@ class Orchestrator:
         total = sum(json.loads(r["payload"]).get("tokens", 0) for r in rows)
         return f"{total:,}"
 
+    def _proc_alive(self, pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _reap_orphan_workers(self) -> int:
+        """Duplikaty i workery przy statusie innym niż RUNNING.
+
+        Zostaje proces z claimed_by, gdy zadanie jest RUNNING i PID żyje.
+        Reszta (drugi worker tego samego zadania, worker po IN_REVIEW/COOLING,
+        code review poza IN_REVIEW) dostaje SIGTERM. Jedyny żywy worker RUNNING
+        zostaje — inaczej start skasowałby worktree w połowie implementacji.
+        """
+        import signal
+        groups: dict[tuple[str, str], list[int]] = {}
+        proc_root = Path("/proc")
+        if not proc_root.is_dir():
+            return 0
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            try:
+                cmd = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            except OSError:
+                continue
+            if "engine.worker_lifecycle" in cmd:
+                module = "worker"
+            elif "engine.code_review" in cmd:
+                module = "review"
+            else:
+                continue
+            parts = cmd.split()
+            task_id = parts[-1] if parts else ""
+            if not task_id or "/" in task_id or task_id.endswith(".py"):
+                continue
+            groups.setdefault((module, task_id), []).append(pid)
+        killed: list[int] = []
+        for (module, task_id), pids in groups.items():
+            task = self.state.get_task(task_id)
+            status = (task or {}).get("status") or ""
+            claimed = 0
+            m = re.search(r"(\d+)\s*$", (task or {}).get("claimed_by") or "")
+            if m:
+                claimed = int(m.group(1))
+            keep: int | None = None
+            if module == "worker" and status == RUNNING and claimed in pids and self._proc_alive(claimed):
+                keep = claimed
+            elif module == "review" and status == IN_REVIEW:
+                keep = claimed if claimed in pids and self._proc_alive(claimed) else max(pids)
+            for pid in pids:
+                if pid == keep:
+                    continue
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    killed.append(pid)
+                    self.state.record_metric("orphan_worker_kill",
+                                             {"pid": pid, "task": task_id, "module": module}, task_id)
+                    print(f"[orchestrator] orphan {module} {task_id} pid={pid} → SIGTERM", flush=True)
+                except ProcessLookupError:
+                    pass
+                except PermissionError as exc:
+                    print(f"[orchestrator] orphan kill {pid}: {exc}", flush=True)
+        deadline = time.time() + 2
+        while killed and time.time() < deadline:
+            if all(not self._proc_alive(pid) for pid in killed):
+                break
+            time.sleep(0.1)
+        return len(killed)
+
     # --- odzyskiwanie po crashu (zombie tasks) ------------------------------------
     def _recover_zombies(self) -> list[str]:
         """Przy starcie: zadania RUNNING/IN_REVIEW bez żywego procesu wracają do READY.
         Inaczej wisiałyby w martwym punkcie na zawsze (Ctrl+C / OOM / SIGKILL)."""
         recovered: list[str] = []
         for task in self.state.list_tasks():
-            if task["status"] not in (RUNNING, IN_REVIEW):
+            # IN_REVIEW zostaje: worker ma się tam skończyć. Martwy PID po oddaniu do review
+            # nie jest zombie — zrzucenie do READY kasowało kolejkę code review.
+            if task["status"] != RUNNING:
                 continue
             pid = None
             m = re.search(r"(\d+)\s*$", task.get("claimed_by") or "")
@@ -878,7 +955,11 @@ class Orchestrator:
             print(f"[orchestrator] 🚨 watchdog: {svc} nieaktywna -> zadanie {tid} dla LLM", flush=True)
 
     def _cleanup_merged_branches(self) -> None:
-        """Usuwa branche feature/* zmergowane do default branch (zadanie MERGED = zamknięte w pełni)."""
+        """Usuwa branche feature/* zmergowane do default branch (zadanie MERGED = zamknięte w pełni).
+
+        Jeden fetch na repozytorium na tick. Wcześniej każde zadanie MERGED odpalało własny
+        `git fetch --prune` (rekord wisiał 12 min) i jeszcze w katalogu wydania bez .git."""
+        fetched: set[str] = set()
         for t in self.state.list_tasks(status=MERGED):
             br = t.get("branch")
             if not br or not br.startswith("feature/"):
@@ -886,7 +967,12 @@ class Orchestrator:
             if self.state.get_kv(f"branch_deleted:{br}"):
                 continue
             repo = projects.repo_for_task(t, self.state)
-            git_guard.run_git(["fetch", "origin", "--prune"], cwd=repo, check=False)
+            if not git_guard.is_git_repo(repo):
+                continue
+            key = str(Path(repo).resolve())
+            if key not in fetched:
+                git_guard.run_git(["fetch", "origin", "--prune"], cwd=repo, check=False, timeout=90)
+                fetched.add(key)
             default = git_guard.default_branch(repo)
             merged = git_guard.run_git(["branch", "--merged", default], cwd=repo, check=False).stdout
             if br not in merged.split():
@@ -1068,7 +1154,7 @@ class Orchestrator:
     def run(self, once: bool = False) -> None:
         # lock pojedynczej instancji — ręczny `run` gdy działa usługa systemd wychodzi od razu
         # (dwie instancje walczą o worktree/state i jedna z nich kończy "Unicestwiony")
-        lock_path = ROOT / ".agents" / "orchestrator.lock"
+        lock_path = FACTORY_ROOT / ".agents" / "orchestrator.lock"
         self._lock_f = open(lock_path, "w")
         try:
             fcntl.flock(self._lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1090,6 +1176,7 @@ class Orchestrator:
         self._llm_thread_fast.start()
         self._llm_thread_strong.start()
         print("[orchestrator] 🧵 wątki dispatcherów kolejki LLM (fast×4, strong×2) wystartowane", flush=True)
+        self._reap_orphan_workers()
         self._recover_zombies()
         rounds = 2 if once else None  # --once: dwa cykle (worker + CR), potem wyjście
         while True:

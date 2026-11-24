@@ -315,3 +315,19 @@ def test_dispatch_model_routing_and_prefix(monkeypatch):
     assert executed == ["fast-model", "strong-model"]
     assert s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j_strong,)).fetchone()[0] == "DONE"
 
+
+def test_claim_retry_does_not_burn_other_model():
+    """Wątek fast nie podbija attempts joba strong — wcześniej licznik rósł do setek."""
+    s = _tmp()
+    Q.ensure_table(s)
+    j = Q.enqueue(s, "complete", {"q": 1, "model": "strong-model", "system": "s", "user": "u"}, step="S")
+    s._conn().execute(
+        "UPDATE llm_jobs SET status='QUEUED', attempts=1, delay_until=0 WHERE id=?", (j,))
+    assert Q.claim_retry(s, model_prefix="fast") is None
+    row = s._conn().execute("SELECT status, attempts FROM llm_jobs WHERE id=?", (j,)).fetchone()
+    assert row["status"] == "QUEUED" and row["attempts"] == 1
+    got = Q.claim_retry(s, model_prefix="strong")
+    assert got and got["id"] == j
+    row = s._conn().execute("SELECT status, attempts FROM llm_jobs WHERE id=?", (j,)).fetchone()
+    assert row["status"] == "RUNNING" and row["attempts"] == 2
+

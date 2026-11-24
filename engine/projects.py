@@ -14,7 +14,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent          # katalog silnika (fabryki)
+# Ten sam katalog co state.db (DARK_FACTORY_ROOT), nie kopia wydania bez .git.
+from engine.state import ROOT as _FACTORY_ROOT
+
+ROOT = _FACTORY_ROOT
 AGENTS = ROOT / ".agents"
 SELF_ID = "mikowhy-teams"
 

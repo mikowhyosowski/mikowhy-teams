@@ -107,7 +107,8 @@ def resume_substep(task: dict | None) -> str:
     ZASADY:
     - Jeśli substep jest ustawiony i NIE jest markerem specjalnym (ASK_OWNER/OWNER_PACKET/done),
       użyj GO (np. 5/5_COMMIT → wznawiaj od 5/5_COMMIT).
-    - Jeśli substep = "done", zawsze zwróć "2/5_IMPL" (poprawki po IN_REVIEW).
+    - substep "done" = paczka oddana do review. Poprawki (status CHANGES_REQUESTED) wracają
+      na 2/5_IMPL. Każdy inny powrót zostaje na 5/5_COMMIT — nie restartuje implementacji.
     - Jeśli substep jest pusty/ASK_OWNER, użyj max_substep (rekord postępu).
     - Jeśli nic, domyślny start: 1/5_PLAN."""
     t = task or {}
@@ -118,9 +119,11 @@ def resume_substep(task: dict | None) -> str:
     if cur in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
         return "1/5_PLAN"
     
-    # 🔴 Jeśli substep = "done" (po IN_REVIEW), zawsze wracamy do 2/5_IMPL (poprawki)
+    # "done" zostawia zadanie przy commicie. Na implementację wracamy tylko po uwagach CR.
     if cur == "done":
-        return "2/5_IMPL"
+        if str(t.get("status") or "") == "CHANGES_REQUESTED":
+            return "2/5_IMPL"
+        return "5/5_COMMIT"
     
     # 🟢 Jeśli substep i max_substep są poprawne, sprawdź cofnięcie
     cur_p = substep_progress(cur)
@@ -1128,6 +1131,9 @@ class State:
     def get_kv(self, key: str, default: Any = None) -> Any:
         row = self._conn().execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
         return json.loads(row["value"]) if row else default
+
+    def delete_kv(self, key: str) -> None:
+        self._conn().execute("DELETE FROM kv WHERE key=?", (key,))
 
     def create_approval(self, approval_id: str, milestone: str, payload: dict[str, Any], kind: str = "DEPLOY_PROD") -> None:
         self._conn().execute(

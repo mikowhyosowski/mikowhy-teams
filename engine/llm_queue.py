@@ -232,29 +232,40 @@ def claim_next(s: State, lease_s: int = LEASE_S) -> dict | None:
     return dict(row) if row else None
 
 
-def claim_retry(s: State, lease_s: int = LEASE_S) -> dict | None:
+def claim_retry(s: State, lease_s: int = LEASE_S, model_prefix: str | None = None) -> dict | None:
     """v2.7.29: FAIRNESS — pika DUE retry (attempts>0, delay_until<=now) zanim policzymy batch.
 
     Root cause (eksperyment nr 1, 23.11): dispatch_once serwisował ciągle świeże
     joby attempts=0 (claim_batch filtruje tylko attempts=0), więc joby po retry
     (attempts>0) wisiały w QUEUED godzinami aż do timeoutu 3600s workera —
     nawet gdy ich backoff (4-16s) dawno minął. Retry musi być obsłużony PRZED
-    biletowaniem kolejnego batcha."""
+    biletowaniem kolejnego batcha.
+
+    model_prefix: wątek fast/strong nie claimuje cudzego modelu. Wcześniej claim
+    podbijał attempts i oddawał job do QUEUED — licznik rósł do setek przy limicie 3."""
     ensure_table(s)
     now = time.time()
-    cur = s._conn().execute(
-        """UPDATE llm_jobs SET status='RUNNING', lease_until=?, attempts=attempts+1
-           WHERE id = (SELECT id FROM llm_jobs
-                       WHERE status='QUEUED' AND delay_until<=? AND attempts>0
-                       ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
-                                created_at
-                       LIMIT 1)
-           RETURNING *""",
-        (now + lease_s, now))
-    row = cur.fetchone()
-    if row:
-        s.op_start_ref("llm", row["id"], "wysłano do modelu (retry)")
-    return dict(row) if row else None
+    rows = s._conn().execute(
+        """SELECT id, model FROM llm_jobs
+           WHERE status='QUEUED' AND delay_until<=? AND attempts>0
+           ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+                    created_at
+           LIMIT 20""",
+        (now,)).fetchall()
+    for row in rows:
+        if model_prefix and model_prefix_for(row["model"] or "") != model_prefix:
+            continue
+        cur = s._conn().execute(
+            """UPDATE llm_jobs SET status='RUNNING', lease_until=?, attempts=attempts+1
+               WHERE id=? AND status='QUEUED' AND delay_until<=? AND attempts>0
+               RETURNING *""",
+            (now + lease_s, row["id"], now))
+        claimed = cur.fetchone()
+        if not claimed:
+            continue
+        s.op_start_ref("llm", claimed["id"], "wysłano do modelu (retry)")
+        return dict(claimed)
+    return None
 
 
 def claim_batch(s: State, model: str, n: int, lease_s: int = LEASE_S) -> list[dict]:
@@ -640,14 +651,8 @@ def _dispatch_once_for_model(
     while did < max_jobs:
         _rate_limit(s, min_interval_s)
         # Retry (attempts>0) zawsze pierwsze – FAIRNESS
-        retry = claim_retry(s)
+        retry = claim_retry(s, model_prefix=model_prefix)
         if retry:
-            if model_prefix_for(retry.get("model") or "") != model_prefix:
-                # Nie nasz model – oddaj do kolejki (inny wątek odbierze)
-                s._conn().execute(
-                    "UPDATE llm_jobs SET status='QUEUED', lease_until=0 WHERE id=?",
-                    (retry["id"],))
-                break
             try:
                 _run_job(s, retry)
             except Exception as e:

@@ -45,7 +45,7 @@ VERSION = "2.6.4"
 
 def _check_task_process_health(task_id: str, s: State) -> dict:
     """Weryfikacja na żywo stanu procesu OS dla zadania."""
-    from process_health import get_process_monitor
+    from engine.process_health import get_process_monitor
     monitor = get_process_monitor()
     task = s.get_task(task_id)
     claimed_by = task.get("claimed_by") if task else None
@@ -3133,7 +3133,7 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path.startswith("/api/task/") and u.path.endswith("/kill-orphans"):
             parts = [p for p in u.path.split("/") if p]
             tid = parts[2]
-            from process_health import get_process_monitor
+            from engine.process_health import get_process_monitor
             monitor = get_process_monitor()
             killed = monitor.kill_orphan_processes(tid)
             self._send(200, json.dumps({"task_id": tid, "killed": killed, "result": "OK"}, 

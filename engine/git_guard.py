@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKTREES_ROOT = ROOT / ".agents" / "worktrees"
 
 MAX_DIFF_LINES = 250  # zmiana #7: max_diff_lines — większy diff = odrzucenie przed CR
+GIT_TIMEOUT_S = 120.0  # fetch bez timeoutu wisiał po 12 min i trzymał wiersz RUNNING w operacjach
 
 
 class GitError(RuntimeError):
@@ -85,7 +86,14 @@ def default_branch(repo: Path | str = ROOT) -> str:
     return "master"
 
 
-def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True) -> subprocess.CompletedProcess:
+def is_git_repo(repo: Path | str) -> bool:
+    """Katalog wydania bez .git nie jest repozytorium — nie wolno na nim robić branch/fetch."""
+    proc = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo, check=False, timeout=15)
+    return proc.returncode == 0 and (proc.stdout or "").strip() == "true"
+
+
+def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True,
+            timeout: float | None = None) -> subprocess.CompletedProcess:
     # v2.7.23: każda MUTUJĄCA komenda (worktree add/remove, add, commit, push, fetch, rebase, merge, checkout...)
     # jest rejestrowana w ops jako QUEUED -> RUNNING -> DONE/FAILED — Opiekun widzi status każdego działania git
     rec = _op_recorder
@@ -96,8 +104,18 @@ def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True) -> subp
         op_id = rec("git", _git_label(args), _op_task(cwd), f"cwd={cwd}")
         if op_id:
             rec.start(op_id)
+    limit = GIT_TIMEOUT_S if timeout is None else timeout
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired as e:
+        err = f"timeout {limit:.0f}s"
+        if op_id:
+            rec.fail(op_id, err)
+        out = e.stdout if isinstance(e.stdout, str) else ""
+        err_s = e.stderr if isinstance(e.stderr, str) else ""
+        if check:
+            raise GitError(f"git {' '.join(args)} (cwd={cwd}) -> {err}")
+        return subprocess.CompletedProcess(["git", *args], 124, out or "", f"{err_s}\n{err}".strip())
     except Exception as e:
         if op_id:
             rec.fail(op_id, repr(e)[:250])
@@ -309,15 +327,20 @@ def merge_no_ff(worktree: Path, branch: str, message: str) -> None:
 # --- v2.8.0: branch integracyjny develop (Workspace/Staging/Prod) --------------
 
 def ensure_branch(repo: Path | str, branch: str, remote: str = "origin") -> bool:
-    """Upewnij się, że branch istnieje lokalnie (tworzy z origin/branch albo z HEAD). True=gdy utworzony."""
+    """Upewnij się, że branch istnieje lokalnie (tworzy z origin/branch albo z HEAD). True=gdy utworzony.
+
+    Katalog bez .git (kopia wydania) zwraca False i nie woła `git branch … HEAD` —
+    ten rzut kończył krok 4/5_QG pętlą COOLING."""
+    if not is_git_repo(repo):
+        return False
     if run_git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo, check=False).returncode == 0:
         return False
     if run_git(["fetch", remote, branch], cwd=repo, check=False).returncode == 0:
         proc = run_git(["branch", branch, f"{remote}/{branch}"], cwd=repo, check=False)
         if proc.returncode == 0:
             return True
-    run_git(["branch", branch, "HEAD"], cwd=repo)  # ostatnia Deską ratunku: z HEAD
-    return True
+    proc = run_git(["branch", branch, "HEAD"], cwd=repo, check=False)
+    return proc.returncode == 0
 
 
 def worker_push_guard(branch: str, integration_branch: str = "develop", remote: str = "origin") -> None:

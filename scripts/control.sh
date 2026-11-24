@@ -306,10 +306,19 @@ cmd_start() {
     log "Dashboard już działa"
   fi
   
-  # Uruchom serwisy systemd (user mode)
+  # Uruchom serwisy systemd (user mode).
+  # Jednostki orkiestratora i dashboardu, których WorkingDirectory nie jest tym repo,
+  # niosą stary kod z release i drugi lock — pomijamy je. Ten start trzyma jeden
+  # proces z SRC_REPO. Po deployu prod jednostka wskazuje na current i wolno ją włączyć.
   log ""
   log "Uruchamianie serwisów systemd (user mode)..."
   for svc in "${SERVICES_USER[@]}"; do
+    wd="$(systemctl --user show -p WorkingDirectory --value "$svc" 2>/dev/null || true)"
+    if [[ "$svc" == "mikowhy-teams" || "$svc" == "mikowhy-teams-dashboard" ]] \
+       && [[ -n "$wd" && "$wd" != "$SRC_REPO" ]]; then
+      warning "$svc wskazuje na $wd — pomijam (drugi proces ze starego release)"
+      continue
+    fi
     start_user_service "$svc"
   done
   
