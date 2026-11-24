@@ -824,7 +824,7 @@ async function refreshInner(){
     const ago = Math.round((Date.now()/1000 - t.updated_at)) + 's';
     const indent = '&nbsp;'.repeat((t.depth||0)*4) + ((t.depth||0)?'↳ ':'')
     const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
-    const prio = `<span class="pico" title="priorytet ${t.priority||'P2'}">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span>`;
+    const prio = `<span class="pico" title="priorytet ${t.priority||'P2'}">${PIC[t.priority||'P2']||''}</span><span class="prio prio-${t.priority||'P2'}">${t.priority||'P2'}</span><button class="tbtn" style="padding:0 4px;margin-left:4px" title="aktywuj agenta: zadanie → READY z priorytetem P0" onclick="event.stopPropagation();taskCtl('${t.id}','boost')">\u26a1</button>`;
     const ic = `<span class="ic ic-${t.status}">${d.icons[t.status]||'?'}</span>`;
     const res = t.res ? ` <span class="muted" title="zużycie workera (pid ${t.res.pid})">⚙️${t.res.cpu}% 🧠${t.res.rss_mb}MB</span>` : '';
     const clock = t.status==='RUNNING' && t.started_at ? `<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000 - t.started_at)}</span>${res}` : '';
@@ -940,6 +940,7 @@ async function openTask(id, keep){
     <div class="kv muted" style="font-size:10px">tech: ${esc(d.title||'')}</div>
     <div class="kv"><b>status:</b> ${favMark(d.id)} ${sbadge(d.status)} | <b>substep:</b> ${esc(d.substep||'-')} | <b>retry:</b> ${d.retry_count} | <b>read_only:</b> ${d.read_only?1:0}${d.mode==='llm'?' | <b>🤖 tryb LLM</b>':''} | <b>prio:</b> <span class="prio prio-${d.priority||'P2'}">${esc(d.priority||'P2')}</span></div>
     <div class="kv"><b>rola:</b> ${esc(d.role||'')} → <b>${esc(d.persona||'')}</b> | <b>projekt:</b> ${pbadge(d.project_id)} | <b>milestone:</b> ${esc(d.milestone||'')}</div>
+    <div class="kv"><b>łączny czas pracy:</b> ${t.proc&&t.proc.total_work_s!=null?fmtDur(t.proc.total_work_s):'—'} ${d.stop_requested?'· ⏹ stop zlecony':''} <button class="tbtn" onclick="taskCtl('${esc(d.id)}','boost')" title="aktywuj agenta: READY + P0">⚡ aktywuj</button></div>
     <div class="kv"><b>przejął:</b> ${esc(d.claimed_by||'-')}${d.started_at?` od ${new Date(d.started_at*1000).toLocaleTimeString()}`:''}${d.elapsed!=null?` (<b>${fmtDur(d.elapsed)}</b>)`:''} | <b>aktualizacja:</b> ${d.updated_at?new Date(d.updated_at*1000).toLocaleTimeString():'-'}</div>
     <div class="kv"><b>rodzic:</b> ${d.parent_task?`<a href="#" onclick="openTask('${esc(d.parent_task)}');return false" style="color:#58a6ff">${esc(d.parent_task)}</a>`:'— (zadanie główne)'} | <b>branch:</b> ${esc(d.branch||'-')} | <b>PR:</b> ${d.pr?('!'+d.pr):'-'}</div>
     ${(d.status!=='MERGED'&&d.status!=='AWAITING_OWNER')?`<div class="kv"><b>kontrola agenta:</b>
@@ -2546,6 +2547,28 @@ def _task_detail(s: State, task_id: str) -> dict:
     for st in fcfg.get("stages", []):
         if st.get("id") == fstage:
             favail = [a for a in (st.get("actions") or []) if not flowmod.validate_action(fcfg, t["status"], a)]
+    # v2.7.27+: łączny czas pracy nad zadaniem (suma okresów RUNNING; bieżący liczony live)
+    try:
+        _ev = s._conn().execute(
+            "SELECT ts, payload FROM metrics WHERE kind='task_event' AND task_id=? ORDER BY ts ASC",
+            (task_id,)).fetchall()
+        _run_start, total_work_s = None, 0.0
+        for _ts, _pl in _ev:
+            try:
+                _p = _json.loads(_pl)
+            except Exception:
+                continue
+            _to = str((_p.get("changes") or {}).get("status") or _p.get("to") or "")
+            if _to == "RUNNING" and _run_start is None:
+                _run_start = float(_ts)
+            elif _to != "RUNNING" and _run_start is not None:
+                total_work_s += max(0.0, float(_ts) - _run_start)
+                _run_start = None
+        if t.get("status") == "RUNNING" and _run_start is not None:
+            total_work_s += max(0.0, time.time() - _run_start)
+    except Exception:
+        total_work_s = 0.0
+
     # v2.7.23: panel „⚙️ Proces diagramu” — kroki, retry, modele LLM, czasy per krok
     try:
         import json as _json
@@ -2569,7 +2592,8 @@ def _task_detail(s: State, task_id: str) -> dict:
     except Exception:
         steps_hist, op_summary = [], []
 
-    return {"icons": ICON, "task": t, "comments": s.recent_comments(20, task_id=task_id),
+    return {"icons": ICON, "task": t, "total_work_s": total_work_s,
+            "comments": s.recent_comments(20, task_id=task_id),
             "events": s.recent_events(50, task_id=task_id),
             "attachments": s.list_attachments(task_id),
             "ops": s.list_ops(task_id, 80),  # v2.7.23: operacje zadania (llm/git/qg/tg) ze statusem kolejki
@@ -3022,6 +3046,19 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     s.add_comment(tid, "sponsor/dashboard",
                                   "▶️ AKTYWACJA z dashboardu — agent wstaje i podejmuje zadanie od wypracowanego etapu")
+                    self._send(200, b'{"ok":true}', "application/json")
+                elif action == "boost":
+                    # aktywuj agenta niezależnie od statusu: stop zdjęty + READY + najwyższy priorytet (P0)
+                    s.clear_stop(tid)
+                    _t = s.get_task(tid)
+                    if _t and _t.get("status") not in ("READY", "MERGED"):
+                        try:
+                            s.transition(tid, "READY", role="sponsor/dashboard")
+                        except Exception:
+                            pass
+                    s.set_priority(tid, "P0")
+                    s.add_comment(tid, "sponsor/dashboard",
+                                  "\u26a1 BOOST z dashboardu \u2014 zadanie z priorytetem P0 na szczycie kolejki roli")
                     self._send(200, b'{"ok":true}', "application/json")
                 else:
                     self._send(404, b'{"error":"unknown task action"}', "application/json")
