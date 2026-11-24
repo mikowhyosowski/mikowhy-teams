@@ -450,6 +450,13 @@ class Orchestrator:
                 git_guard.ensure_branch(repo, ib)
                 base = ib
                 tmp = f"_auto/{task['id']}"
+                # FIX: tmp musi istnieć jako ref przed 'worktree add' — inaczej rc=128 co tick
+                # ("nieprawidłowa referencja: _auto/<id>") i merge nigdy nie rusza
+                git_guard.run_git(["branch", "-f", tmp, f"origin/{ib}"], cwd=repo, check=False)
+                if git_guard.run_git(["rev-parse", "--verify", tmp], cwd=repo, check=False).returncode != 0:
+                    git_guard.run_git(["branch", "-f", tmp, ib], cwd=repo, check=False)
+                if git_guard.run_git(["rev-parse", "--verify", tmp], cwd=repo, check=False).returncode != 0:
+                    git_guard.run_git(["branch", "-f", tmp, "HEAD"], cwd=repo, check=False)
             elif auto_main:
                 base = git_guard.default_branch(repo)       # cel pusha: master (legacy, bez develop)
                 # master jest zajęty w głównym worktree — worktree integracyjny stawiamy na temp branchu z origin/master
@@ -475,8 +482,10 @@ class Orchestrator:
                 git_guard.rebase_onto(wt, task["branch"])  # konflikt -> mikro-bot
                 reg = quality_gates.regression(wt)
                 if not reg.get("ok"):
-                    self.state.transition(task["id"], READY,
+                    # regresja po rebase = BLOKADA, nigdy cofnięcie do READY (bez tego pętla merge co tick)
+                    self.state.transition(task["id"], BLOCKED,
                                           review_notes=f"Regresja po rebase: {reg.get('output', '')[-500:]}")
+                    self.state.record_metric("merge_regression_blocked", {"task": task["id"]}, task["id"])
                     continue
                 if task.get("parent_task"):
                     # subtask: squash do JEDNEGO commita pod rodzicem (mniej commitów na milestone)
@@ -514,7 +523,8 @@ class Orchestrator:
                 lessons_gardener.garden(self.state)  # zmiana #2: co 10 mergy
                 skill_curator.prune_if_needed(self.state)  # Skill Fitness: auto-prune + promocja lekcji
             except git_guard.MergeConflict as exc:
-                self.state.transition(task["id"], READY, review_notes=f"Konflikt: {exc}")
+                # konflikt merge = BLOKADA (Sponsor decyduje), NIE cofanie do READY — bez tego pętla
+                self.state.transition(task["id"], BLOCKED, review_notes=f"Konflikt: {exc}")
                 self.state.record_metric("merge_conflict", {"task": task["id"]}, task["id"])
             except Exception as exc:
                 # dowolny inny błąd merge nie może blokować reszty ticka (telegram/health/milestony)

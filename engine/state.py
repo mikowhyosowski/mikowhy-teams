@@ -195,14 +195,28 @@ def _turn_step(task: dict[str, Any], lane: str) -> str:
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
     READY: {RUNNING, BLOCKED, ESCALATED, AWAITING_OWNER},
-    RUNNING: {IN_REVIEW, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
-    CHANGES_REQUESTED: {RUNNING, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
-    IN_REVIEW: {READY_TO_MERGE, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
-    READY_TO_MERGE: {MERGED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
+    # UWAGA: celowo BEZ „wstecz" do READY z RUNNING/CHANGES_REQUESTED/IN_REVIEW/READY_TO_MERGE —
+    # zadanie nigdy nie może cofnąć się samo (guard poniżej pilnuje rangi pipeline'u).
+    RUNNING: {IN_REVIEW, CHANGES_REQUESTED, BLOCKED, ESCALATED, AWAITING_OWNER},
+    CHANGES_REQUESTED: {RUNNING, BLOCKED, ESCALATED, AWAITING_OWNER},
+    IN_REVIEW: {READY_TO_MERGE, CHANGES_REQUESTED, BLOCKED, ESCALATED, AWAITING_OWNER},
+    READY_TO_MERGE: {MERGED, BLOCKED, ESCALATED, AWAITING_OWNER},
     MERGED: set(),
     BLOCKED: {READY, ESCALATED, AWAITING_OWNER},
     ESCALATED: {READY, AWAITING_OWNER, BLOCKED},
     AWAITING_OWNER: {READY, BLOCKED},
+}
+
+# Ranga etapu na linii produkcyjnej — przejście do niższej rangi = regresja (cofnięcie).
+# Statusy boczne (BLOCKED/ESCALATED/AWAITING_OWNER/FAILED/COOLING) nie mają rangi — przejścia
+# do/z nich są zawsze dozwolone (to „parking”, nie cofnięcie).
+PIPELINE_RANK: dict[str, int] = {
+    READY: 0,
+    RUNNING: 1,
+    CHANGES_REQUESTED: 1,   # pętla poprawek — ten sam poziom co RUNNING
+    IN_REVIEW: 2,
+    READY_TO_MERGE: 3,
+    MERGED: 4,
 }
 
 SCHEMA = """
@@ -739,11 +753,22 @@ class State:
                     review_notes=(notes or "wyczerpane próby") + " | u opiekuna po wyczerpaniu prób")
             return self.sleep_task(task_id, seconds=seconds, review_notes=notes)
         current = task["status"]
+        allow_regression = bool(fields.pop("allow_regression", False))
         legacy = current in (FAILED, COOLING)
         if legacy and new_status not in (READY, AWAITING_OWNER, BLOCKED):
             new_status = AWAITING_OWNER if (task.get("retry_count") or 0) >= 3 else READY
-        if not legacy and new_status != current and new_status not in VALID_TRANSITIONS.get(current, set()):
+        # twarda reguła: zadanie NIGDY nie cofa się samo — regresja w pipeline'u tylko
+        # z wyraźnym allow_regression=True (jawnie: Sponsor/worker-pauza), inaczej InvalidTransition
+        cur_rank = PIPELINE_RANK.get(current)
+        new_rank = PIPELINE_RANK.get(new_status)
+        is_regression = (cur_rank is not None and new_rank is not None and new_rank < cur_rank)
+        if not legacy and new_status != current and not (allow_regression and is_regression) \
+                and new_status not in VALID_TRANSITIONS.get(current, set()):
             raise InvalidTransition(f"{current} -> {new_status} niedozwolone dla {task_id}")
+        if not legacy and not allow_regression and is_regression:
+            raise InvalidTransition(
+                f"{current} -> {new_status} to COFNIĘCIE (regresja) dla {task_id} — zabronione; "
+                f"użyj statusu bocznego (BLOCKED/AWAITING_OWNER) albo allow_regression=True")
         sets = ["status=?", "updated_at=?"]
         cooldown_s = fields.pop("cooldown_s", None)  # v2.7.23: długość bezp. sleepu dla COOLING (sekundy)
         params: list[Any] = [new_status, time.time()]

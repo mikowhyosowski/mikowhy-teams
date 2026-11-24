@@ -24,6 +24,7 @@ from engine.console_streamer import ConsoleStreamer
 from engine.llm_gateway import get_gateway
 from engine.state import (
     AWAITING_OWNER,
+    BLOCKED,
     COOLING,
     FAILED,
     IN_REVIEW,
@@ -589,8 +590,10 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         lines = git_guard.assert_diff_limit(worktree, base)  # zmiana #7
     except git_guard.DiffTooLarge as exc:
         git_guard.run_git(["checkout", "--", "."], cwd=worktree, check=False)
-        _safe_transition(state, task["id"], READY,
-                         review_notes=f"Odrzucono przed CR: {exc}")
+        # NIGDY nie cofamy do READY (regresja = pętla) — parkujemy w BLOCKED, decyduje Sponsor
+        _safe_transition(state, task["id"], BLOCKED,
+                         review_notes=f"Odrzucono przed CR (diff za duży): {exc}")
+        state.record_metric("diff_too_large_blocked", {"task": task["id"]}, task["id"])
         return
     if lines == 0:
         # QG jest już zielone (krok 5 jest za bramką). Pusty diff — zmiany siedzą w branchu
@@ -627,7 +630,8 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
     try:
         git_guard.sync_with_origin(worktree, base)  # twarda reguła: wyrównaj z origin przed pushem
     except git_guard.MergeConflict as exc:
-        _safe_transition(state, task["id"], READY,
+        # konflikt przed pushem = blokada, NIE cofnięcie do READY (bez tego pętla co tick)
+        _safe_transition(state, task["id"], BLOCKED,
                          review_notes=f"Konflikt z origin/{base} przed pushem: {exc} — wyrównaj i spróbuj ponownie")
         state.record_metric("origin_conflict", {"base": base, "error": str(exc)[:200]}, task["id"])
         _log(task["id"], f"konflikt z origin/{base}: {exc}")
@@ -856,7 +860,8 @@ def _yield_turn(state: State, task_id: str, completed: str) -> bool:
     nxt = _next_pipeline_step(completed)
     if nxt is None:
         return False
-    state.transition(task_id, READY, substep=nxt,
+    # jawne allow_regression: to zaplanowane oddanie slotu między turami (postęp substep się nie cofa)
+    state.transition(task_id, READY, substep=nxt, allow_regression=True,
                      review_notes=f"tura {completed} skończona, następna {nxt}")
     try:
         state.touch_worker(task_id, phase="SKONCZYL", step=completed, cmd=f"następna tura: {nxt}")

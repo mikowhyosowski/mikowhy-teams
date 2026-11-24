@@ -3306,7 +3306,8 @@ class Handler(BaseHTTPRequestHandler):
                                             "error": f"force_retry tylko z RUNNING (zadanie jest {status})"}).encode(),
                            "application/json")
                 return
-            s.transition(tid, READY, review_notes=f"{(task.get('review_notes') or '')} | ♻️ Odblokowano z konsoli (brak procesu)")
+            s.transition(tid, READY, allow_regression=True,
+                         review_notes=f"{(task.get('review_notes') or '')} | ♻️ Odblokowano z konsoli (brak procesu)")
             self._send(200, json.dumps({"task_id": tid, "ok": True, "from": status, "to": READY,
                                         "action": "requeued"}, ensure_ascii=False).encode(), "application/json")
         elif u.path.startswith("/api/task/"):
@@ -3650,7 +3651,7 @@ class Handler(BaseHTTPRequestHandler):
                                      "note": "już w kolejce READY — status bez zmiany"})
                         return
                     try:
-                        s.transition(tid, "READY", role="sponsor/dashboard",
+                        s.transition(tid, "READY", role="sponsor/dashboard", allow_regression=True,
                                      review_notes=("⚡ boost z dashboardu — READY z priorytetem P0"
                                                    if action == "boost" else
                                                    "▶️ aktywacja z dashboardu — agent wstaje i bierze zadanie"))

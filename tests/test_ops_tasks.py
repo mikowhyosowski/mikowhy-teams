@@ -36,7 +36,7 @@ def test_ops_tasks_in_live_state():
     s = State()
     t1 = s.get_task("OPS-LLM-ROOTCAUSE")
     # zamknięte przez Sponsora (BLOCKED) albo w pracy — zależnie od decyzji; priorytet i rola stałe
-    assert t1 and t1["status"] in ("READY", "RUNNING", "IN_REVIEW", "BLOCKED") and t1["priority"] == "P0"
+    assert t1 and t1["status"] in ("READY", "RUNNING", "IN_REVIEW", "AWAITING_OWNER", "ESCALATED", "BLOCKED") and t1["priority"] == "P0"
     assert t1["role"] == "principal-debugger"
     t2 = s.get_task("OPS-GUARDIAN-SETUP")
     # v2.7.18: po wyczerpaniu retry zadanie może też parkować w FAILED (audyt AUDIT-FAILED-ROOTCAUSE)
@@ -221,7 +221,7 @@ def test_resume_substep_on_return_to_ready():
     s.claim_task("T-R", "w1")
     s.transition("T-R", "RUNNING", substep="3/5_TEST")
     s.transition("T-R", "FAILED", review_notes="timeout")
-    s.transition("T-R", "READY", retry_count=1)  # bez substep -> NIE resetuje
+    s.transition("T-R", "READY", retry_count=1, allow_regression=True)  # bez substep -> NIE resetuje
     t = s.get_task("T-R")
     assert t["status"] == "READY"
     assert t["substep"] == "3/5_TEST", t["substep"]
@@ -300,7 +300,7 @@ def test_flow_merge_action():
         "SELECT payload FROM metrics WHERE kind='agent_comment' AND task_id='T-M'").fetchall()]
     assert any(t.startswith("🚀") for t in texts)
     # merge niedozwolony z RUNNING
-    s.transition("T-M", "READY")
+    s.transition("T-M", "READY", allow_regression=True)
     try:
         flowmod.apply_action("T-M", "merge", {}, state=s)
         assert False, "merge z READY powinien rzucić"
@@ -347,7 +347,7 @@ def test_substep_since_on_claim_even_if_same_substep():
     s.transition("T-S2", "RUNNING", substep="2/5_IMPL")   # claim -> RUNNING: timer start
     t1 = s.get_task("T-S2")
     assert t1["substep_since"] > 0
-    s.transition("T-S2", "READY")                            # wraca do kolejki (substep zostaje)
+    s.transition("T-S2", "READY", allow_regression=True)              # wraca do kolejki (substep zostaje)
     s.claim_task("T-S2", "w1")
     s.transition("T-S2", "RUNNING", substep="2/5_IMPL")      # kontynuacja tego samego etapu: timer też startuje
     t2 = s.get_task("T-S2")
@@ -416,7 +416,7 @@ def test_resume_uses_furthest_max_substep():
     s.transition("T-MX", "RUNNING", substep="2/5_IMPL")    # cofnięcie — max zostaje
     assert s.get_task("T-MX")["max_substep"] == "4/5_QG"
     s.transition("T-MX", "FAILED", review_notes="błąd")
-    s.transition("T-MX", "READY", retry_count=1)
+    s.transition("T-MX", "READY", retry_count=1, allow_regression=True)
     t = s.get_task("T-MX")
     assert t["status"] == "READY" and t["substep"] == "2/5_IMPL"   # bieżący został cofnięty
     assert resume_substep(t) == "4/5_QG"                          # ale wznawiamy od najdalej
@@ -476,11 +476,11 @@ def test_safe_transition_race_no_crash():
     s.claim_task("T-RACE", "w1")
     s.transition("T-RACE", "RUNNING")
     # wyścig: orchestrator zrobił zombie-recovery -> READY, worker próbuje RUNNING
-    s.transition("T-RACE", "READY")
+    s.transition("T-RACE", "READY", allow_regression=True)
     _safe_transition(s, "T-RACE", "RUNNING", substep="2/5_IMPL")  # powinno się udać przez re-claim
     assert s.get_task("T-RACE")["status"] == "RUNNING"
     # ktoś zamknął zadanie -> cichy SystemExit(0), bez InvalidTransition na zewnątrz
-    s.transition("T-RACE", "READY")
+    s.transition("T-RACE", "READY", allow_regression=True)
     s.transition("T-RACE", "BLOCKED")
     try:
         _safe_transition(s, "T-RACE", "RUNNING", substep="3/5_TEST")
