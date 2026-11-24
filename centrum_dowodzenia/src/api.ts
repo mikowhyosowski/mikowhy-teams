@@ -52,4 +52,7 @@ export const api = {
   /** Akcje na zadaniu (approve / decline / force_retry). */
   taskAction: (taskId: string, action: string, body: unknown = {}) =>
     post<{ ok: boolean }>(`/api/task/${encodeURIComponent(taskId)}/${action}`, body),
+  /** Akcja z flow configa (approve / decline / retry / merge) — walidowana po stronie serwera. */
+  flowAction: (taskId: string, action: string, body: unknown = {}) =>
+    post<{ ok: boolean; to?: string }>("/api/flow/action", { task_id: taskId, action, ...(body as object) }),
 };

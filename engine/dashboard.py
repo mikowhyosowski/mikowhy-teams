@@ -2877,12 +2877,27 @@ def _sponsor_view(s: State) -> dict:
             decisions.append({**t_brief(t), "available_actions": acts})
     decisions.sort(key=lambda d: -d["age"])
 
+    # actionable: wszystkie zadania, na które Sponsor może zmienić status jednym klikiem
+    # (AWAITING_OWNER → approve/decline, READY_TO_MERGE → merge, BLOCKED → retry)
+    actionable = []
+    for t in tasks:
+        if t["status"] in ("AWAITING_OWNER", "ESCALATED", "READY_TO_MERGE", "BLOCKED"):
+            stage = flowmod.stage_of_status(cfg, t["status"])
+            acts: list[str] = []
+            for st in cfg.get("stages", []):
+                if st.get("id") == stage:
+                    acts = [a for a in (st.get("actions") or [])
+                            if not flowmod.validate_action(cfg, t["status"], a)]
+            actionable.append({**t_brief(t), "available_actions": acts})
+    actionable.sort(key=lambda d: -d["age"])
+
     prio = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
     backlog = sorted((t for t in tasks if t["status"] == "READY"),
                      key=lambda t: (prio.get(t.get("priority") or "P2", 2), -(t.get("created_at") or 0)))
     backlog = [t_brief(t) for t in backlog[:15]]
 
-    return {"milestones": milestones, "decisions": decisions, "approvals": s.pending_approvals(),
+    return {"milestones": milestones, "decisions": decisions, "actionable": actionable,
+            "approvals": s.pending_approvals(),
             "backlog": backlog, "actions_def": cfg.get("actions", {}), "ts": now}
 
 
@@ -3695,7 +3710,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="0.0.0.0")  # 0.0.0.0 = dostęp też z LAN (http://<lan_ip>:8765)
+    ap.add_argument("--ws-port", type=int, default=8767, help="port WebSocket gateway (live procesy/logi)")
+    ap.add_argument("--no-ws", action="store_true", help="wyłącz WebSocket gateway")
     args = ap.parse_args()
+    if not args.no_ws:
+        from engine.ws_gateway import WsGateway
+        WsGateway(args.host, args.ws_port).start()
+        print(f"🔌 WebSocket: ws://{args.host}:{args.ws_port}  (live procesy/logi)", flush=True)
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"🏭 Dashboard: http://{args.host}:{args.port}  (Ctrl+C stop)", flush=True)

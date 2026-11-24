@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { api } from "../api";
+import { ws } from "../ws";
 import { colors, motion, radius, spacing, type } from "../theme";
 import { Icon } from "./Icon";
 import { ErrorState, Skeleton } from "./States";
@@ -35,7 +36,30 @@ export function LogViewer({ runId }: { runId: string }) {
     };
   }, [runId, fade]);
 
-  useEffect(() => load(), [load]);
+  // Live stream logu przez WebSocket (subscribe_log); REST jako fallback gdy WS nie działa.
+  useEffect(() => {
+    setLog(null);
+    setErr(null);
+    let alive = true;
+    const off = ws.on("log", (m) => {
+      if (!alive || m.run_id !== runId) return;
+      setLog((prev) => (m.complete ? m.text ?? "" : (prev ?? "") + (m.text ?? "")));
+      Animated.timing(fade, { toValue: 1, duration: motion.base, useNativeDriver: true }).start();
+    });
+    if (ws.connected) {
+      ws.send({ type: "subscribe_log", run_id: runId, tail: 400 });
+    }
+    // fallback: gdy WS nie dostarczy logu w 2 s, dociągnij REST
+    const t = setTimeout(() => {
+      if (alive) load();
+    }, 2000);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+      off();
+      ws.send({ type: "unsubscribe_log", run_id: runId });
+    };
+  }, [runId, load, fade]);
 
   useEffect(() => {
     // auto-scroll do najnowszej linii po załadowaniu

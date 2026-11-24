@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { registerRootComponent } from "expo";
 import { colors, elevation, radius, spacing, type } from "./src/theme";
 import { Icon } from "./src/components/Icon";
 import { CommandCenterScreen } from "./src/screens/CommandCenterScreen";
@@ -156,3 +157,5 @@ const styles = StyleSheet.create({
   clock: { color: colors.textDim, fontFamily: colors.mono, fontSize: type.meta },
   body: { flex: 1 },
 });
+
+registerRootComponent(App);

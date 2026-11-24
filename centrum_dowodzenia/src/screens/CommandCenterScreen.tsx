@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { api } from "../api";
+import { ws } from "../ws";
 import { Icon } from "../components/Icon";
 import { RunRow } from "../components/RunRow";
 import { EmptyState, ErrorState, Skeleton } from "../components/States";
 import { colors, elevation, radius, spacing, type } from "../theme";
 import type { ProcessRun, WorkerHealth } from "../types";
 
-type Decision = { id: string; title: string; role: string; substep: string | null };
+type Decision = { id: string; title: string; role: string; substep?: string | null };
 
 /** Ekran 1: Centrum Operacyjne — żywe procesy, liczniki, zacięcia (Puls Fabryki). */
 export function CommandCenterScreen() {
@@ -31,22 +32,54 @@ export function CommandCenterScreen() {
       setRecent(rec.runs);
       setWorkers(wh.workers);
       setStalled(wh.stalled);
-      setAwaiting((sp.awaiting_owner ?? []) as Decision[]);
+      setAwaiting(((sp.decisions ?? sp.actionable ?? []) as Decision[]));
       setError(null);
     } catch (e) {
       setError(String(e));
     }
   }, []);
 
+  // Live dane procesów lecą WebSocketem (pulse); REST zostaje jako fallback
+  // (gdy WS nie wstanie) i dla decyzji Sponsora.
+  const [wsLive, setWsLive] = useState(false);
+
   useEffect(() => {
     load();
-    const t = setInterval(load, 2000);
+    const off = ws.on("pulse", (m) => {
+      setRuns(m.live ?? []);
+      setRecent(m.recent ?? []);
+      setWorkers(m.workers ?? []);
+      setStalled(m.stalled ?? []);
+      setWsLive(true);
+      setError(null);
+    });
     const c = setInterval(() => setNow(Date.now()), 1000);
     return () => {
-      clearInterval(t);
+      off();
       clearInterval(c);
     };
   }, [load]);
+
+  useEffect(() => {
+    // fallback polling + decyzje Sponsora — tylko gdy WS nie dostarcza pulsu
+    if (wsLive) return;
+    const t = setInterval(load, 2000);
+    return () => clearInterval(t);
+  }, [load, wsLive]);
+
+  useEffect(() => {
+    const sp = async () => {
+      try {
+        const s = await api.sponsor();
+        setAwaiting(((s.decisions ?? s.actionable ?? []) as Decision[]));
+      } catch {
+        /* pulse fallback */
+      }
+    };
+    sp();
+    const t = setInterval(sp, 5000);
+    return () => clearInterval(t);
+  }, []);
 
   const failed = recent.filter((r) => r.status === "FAILED" || r.status === "TIMEOUT" || r.status === "KILLED");
 

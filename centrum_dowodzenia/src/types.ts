@@ -51,7 +51,19 @@ export interface WorkerHealth {
   llm_job_running: boolean;
 }
 
+export interface ActionableTask {
+  id: string;
+  title: string;
+  status: string;
+  role: string;
+  priority?: string;
+  review_notes?: string;
+  available_actions?: string[];
+}
+
 export interface SponsorView {
-  awaiting_owner?: Array<{ id: string; title: string; role: string; substep: string | null }>;
+  decisions?: ActionableTask[];
+  actionable?: ActionableTask[];
+  actions_def?: Record<string, { label?: string; icon?: string; target_status?: string | null }>;
   [key: string]: unknown;
 }
