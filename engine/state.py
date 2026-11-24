@@ -102,31 +102,41 @@ def estimate_eta_s(title: str = "", scope_paths: list | None = None, read_only: 
 
 def resume_substep(task: dict | None) -> str:
     """v2.7.9 + v2.7.16 — kontynuacja od NAJDALEJ wypracowanego sub-etapu przy powrocie do READY.
-    Priorytet godności: substep (bieżący krok z bazy) > last_completed_step (checkpoint) > max_substep (rekord postępu).
-    Markery specjalne (ASK_OWNER/OWNER_PACKET/brak) -> 1/5_PLAN; 'done' (po IN_REVIEW) -> 2/5_IMPL (poprawki).
+    Priorytet: substep (bieżący krok) > last_completed_step > max_substep.
     
-    ZASADA: Jeśli substep jest ustawiony (np. 5/5_COMMIT), wznawiamy OD NIEGO, nie od 0/5_PREPARE."""
+    ZASADY:
+    - Jeśli substep jest ustawiony i NIE jest markerem specjalnym (ASK_OWNER/OWNER_PACKET/done),
+      użyj GO (np. 5/5_COMMIT → wznawiaj od 5/5_COMMIT).
+    - Jeśli substep = "done", zawsze zwróć "2/5_IMPL" (poprawki po IN_REVIEW).
+    - Jeśli substep jest pusty/ASK_OWNER, użyj max_substep (rekord postępu).
+    - Jeśli nic, domyślny start: 1/5_PLAN."""
     t = task or {}
-    # 🔴 NOWE: Najpierw sprawdź bieżący substep z bazy (to jest to, co chce sponsor/orchestrator)
     cur = str(t.get("substep") or "")
-    if cur and cur not in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
-        # Jeśli substep jest poprawnym krokiem (np. 5/5_COMMIT), użyj go
-        if substep_progress(cur) > 0:
-            return cur
+    
+    # 🔴 Specjalne markery: ASK_OWNER/OWNER_PACKET → zawsze 1/5_PLAN
+    if cur in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
+        return "1/5_PLAN"
+    
+    # 🔴 Jeśli substep = "done" (po IN_REVIEW), zawsze wracamy do 2/5_IMPL (poprawki)
+    if cur == "done":
+        return "2/5_IMPL"
+    
+    # 🟢 Jeśli substep jest poprawnym krokiem (np. 5/5_COMMIT), użyj GO
+    if cur and substep_progress(cur) > 0:
+        return cur
+    
     # 🟢 Fallback 1: last_completed_step (checkpoint z bazy)
     last_completed = t.get("last_completed_step") or ""
     if last_completed and substep_progress(last_completed) > 0:
         return last_completed
+    
     # 🟣 Fallback 2: max_substep (rekord postępu z całej historii)
     mx = str(t.get("max_substep") or "")
     if mx and substep_progress(mx) > 0:
         return mx
-    # 🟣 Ostatnia deska ratunku: domyślny start
-    if not cur or cur in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
-        return "1/5_PLAN"
-    if cur == "done":
-        return "2/5_IMPL"
-    return cur
+    
+    # 🟣 Brak wszystkiego → 1/5_PLAN
+    return "1/5_PLAN"
 
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
