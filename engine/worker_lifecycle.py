@@ -508,7 +508,18 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
                          review_notes=f"Odrzucono przed CR: {exc}")
         return
     if lines == 0:
-        # pusty diff = brak realnej zmiany — NIE commitujemy pustego commita (koniec z '0 linii diffu')
+        # v2.7.29: pusty diff + QG zielone + retry>=1 = praca już siedzi w branchu/bazie
+        # (cache LLM odtwarza ten sam content). Zamiast wiecznego „pusty diff → READY"
+        # oddajemy CR do decyzji — to **wyjście z pętli** na IN_REVIEW.
+        if (task.get("retry_count") or 0) >= 1:
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     "przekazać do Code Review mimo pustego diffu",
+                                     "diff zerowy (zmiany już siedzą w branchu/lub nic do zmiany), "
+                                     "QG zielone — oddaję decyzję Code Review zamiast wiecznej pętli READY")
+            _safe_transition(state, task["id"], IN_REVIEW, substep="done")
+            _log(task["id"], "pusty diff + QG zielone + retry>0 → IN_REVIEW (probe do CR)")
+            state.record_metric("empty_diff_to_review", {}, task["id"])
+            return
         git_guard.run_git(["checkout", "--", "."], cwd=worktree, check=False)
         _safe_transition(state, task["id"], READY,
                          review_notes="Pusty diff względem bazy — worker nie wprowadził realnej zmiany (odrzucono przed commitem)")
