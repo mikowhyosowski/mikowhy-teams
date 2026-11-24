@@ -742,6 +742,10 @@ def run(task_id: str) -> int:
             _tg(state, task_id, "commit OK → IN_REVIEW (czeka na Code Review)")
         return 0
     except Exception as exc:  # deterministyczny fallback — nigdy cicha śmierć
+        # v2.7.29: pełny traceback do loga — bez tego błędy typu OperationalError/TypeError
+        # w pętli są niemożliwe do namierzenia (sam repr jest za mało)
+        import traceback as _tb
+        _log(task_id, "TRACEBACK:\n" + _tb.format_exc())
         state.transition(task_id, COOLING, review_notes=repr(exc))
         t = state.get_task(task_id)
         if t:

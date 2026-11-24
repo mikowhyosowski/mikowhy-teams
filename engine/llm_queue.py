@@ -112,6 +112,14 @@ CREATE INDEX IF NOT EXISTS idx_llm_jobs_status ON llm_jobs(status, created_at);
             s._conn().execute("ALTER TABLE llm_jobs ADD COLUMN model TEXT")
         except Exception:
             pass
+    # v2.7.29: steel guard (v4) filtruje i INSERTuje task_id — świeże bazy (nowe projekty/
+    # worktree-y) muszą mieć tę kolumnę, inaczej enqueue pada OperationalError
+    if "task_id" not in cols:
+        try:
+            s._conn().execute("ALTER TABLE llm_jobs ADD COLUMN task_id TEXT")
+            s._conn().execute("CREATE INDEX IF NOT EXISTS idx_llm_jobs_task ON llm_jobs(task_id, step)")
+        except Exception:
+            pass
     s._conn().execute("CREATE INDEX IF NOT EXISTS idx_llm_jobs_claim ON llm_jobs(status, delay_until, priority, created_at)")
     s._conn().execute("CREATE INDEX IF NOT EXISTS idx_llm_jobs_batch ON llm_jobs(kind, model, status, attempts)")
 
