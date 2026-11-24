@@ -63,7 +63,8 @@ Wyeliminowanie wąskiego gardła jednowątkowej kolejki LLM (`llm_queue`), usuni
 ---
 
 ### Faza 5: Wdrożenie Produkcyjne (Deployment)
-- [ ] **5.1. Utworzenie i zatwierdzenie pliku śledzącego wdrożenie** — dodanie `worker.refactor.md` do repozytorium.
+- [x] **5.1. Utworzenie i zatwierdzenie pliku śledzącego wdrożenie** — dodanie `worker.refactor.md` do repozytorium.
+  - *Commit:* `8e9ea84` — `docs(refactor): add worker implementation log and todo checklist`
 - [ ] **5.2. Scalenie gałęzi do `develop`** — bezpieczny merge gałęzi `feat/worker-observability-and-queue` do gałęzi integracyjnej `develop`.
 - [ ] **5.3. Przeładowanie usług systemd** — restart `mikowhy-teams-dashboard` oraz `mikowhy-teams` (orchestrator).
 - [ ] **5.4. Weryfikacja na żywo (Live Health Check)** — weryfikacja endpointu `/api/workers/health`, sprawdzenie logów orkiestratora pod kątem wątków `llm-fast` i `llm-strong`.
@@ -82,3 +83,4 @@ Wyeliminowanie wąskiego gardła jednowątkowej kolejki LLM (`llm_queue`), usuni
 | 2026-11-24 12:35 | Faza 2.5 | Implementacja `_stall_watchdog` w orkiestratorze i uruchomienie 2 dispatcherów | `40aa706` |
 | 2026-11-24 12:35 | Faza 3 | Wdrożenie API `/api/workers/health`, `/console` oraz UI terminala w dashboardzie | `c50c064` |
 | 2026-11-24 12:38 | Faza 4 | Napisanie testów jednostkowych/integracyjnych; 103/103 testy zielone | `28289a8` |
+| 2026-11-24 12:46 | Faza 5.1 | Utworzenie pliku śledzenia wdrożenia `worker.refactor.md` z checklistą TODO | `8e9ea84` |
