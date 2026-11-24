@@ -297,14 +297,15 @@ class InvalidTransition(StateError):
     pass
 
 
-_CONNS: dict[str, sqlite3.Connection] = {}
-_CONNS_LOCK = threading.Lock()
+_CONNS_LOCAL = threading.local()  # v2.7.28: conn per-wątek (współdzielony conn = flaky IndexError/500 przy DDL)
 
 
 class State:
-    """Wrapper nad SQLite WAL. Jedno współdzielone połączenie na proces i db_path
-    (check_same_thread=False — sqlite w trybie serialized jest bezpieczny wątkowo),
-    dzięki czemu mnożenie instancji State() nie leakuje deskryptorów."""
+    """Wrapper nad SQLite WAL. Połączenie per (wątek, db_path) — ThreadingHTTPServer
+    i wątki tła (ask, telegram, orchestrator) NIE dzielą ze sobą sqlite3.Connection,
+    więc równoległe żądania nie przeplatają cursorów (root cause sporadycznych
+    IndexError 'tuple index out of range' w PRAGMA table_info i 500 na endpointach).
+    WAL + busy_timeout=30s → czytelnicy równolegle, piszę czekają grzecznie."""
 
     def __init__(self, db_path: Path | str = DB_PATH):
         self.db_path = Path(db_path)
@@ -360,26 +361,29 @@ class State:
             (thread_id, summary_msg_id, time.time(), task_id))
 
     def _conn(self) -> sqlite3.Connection:
+        """v2.7.28: połączenie per (wątek, db_path) — thread-local. Kursory różnych
+        wątków nigdy się nie przeplatają; WAL pozwala czytać równolegle."""
         key = str(self.db_path)
-        conn = _CONNS.get(key)
+        conns = getattr(_CONNS_LOCAL, "conns", None)
+        if conns is None:
+            conns = {}
+            _CONNS_LOCAL.conns = conns
+        conn = conns.get(key)
         if conn is None:
-            with _CONNS_LOCK:
-                conn = _CONNS.get(key)
-                if conn is None:
-                    conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None,
-                                           check_same_thread=False)
-                    conn.row_factory = sqlite3.Row
-                    conn.execute("PRAGMA journal_mode=WAL")
-                    conn.execute("PRAGMA busy_timeout=30000")
-                    conn.execute("PRAGMA foreign_keys=ON")
-                    _CONNS[key] = conn
+            conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conns[key] = conn
         return conn
 
     def close(self) -> None:
-        """Zamyka współdzielone połączenie procesu — tylko przy wyjściu procesu."""
-        with _CONNS_LOCK:
-            conn = _CONNS.pop(str(self.db_path), None)
-        if conn is not None:
+        """Zamyka thread-localne połączenie dla tego db_path (wywoływane przy wyjściu procesu
+        w wątku głównym; conn w innych wątkach znikają razem z nimi)."""
+        conns = getattr(_CONNS_LOCAL, "conns", None)
+        if conns:
+            conn = conns.pop(str(self.db_path), None)
             try:
                 conn.close()
             except Exception:

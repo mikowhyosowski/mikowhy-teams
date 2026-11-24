@@ -305,17 +305,18 @@ class Orchestrator:
 
     # --- faza 4: workery -------------------------------------------------------
     def _max_workers_now(self) -> int:
-        """Ile workerów (LLM) można bezpiecznie odpalić RÓWNOLEGLE na tym laptopie:
-        bierzemy pod uwagę CPU, wolny RAM i aktualny load — dzielimy maszynę ze wszystkimi.
-        Nadpisanie ręczne: kv max_workers (orchestrator: set via state kv)."""
+        """Ile workerów może pracować równolegle (v2.7.28: pełny paralelizm — worker czeka w kolejce).
+
+        Filozofia v2.7.28: worker to TANI proces „stojący w kolejce do LLM" (realną
+        współbieżność LLM pilnuje osobno kolejka llm_queue z uczciwym sortowaniem
+        P0→P3 + batching). Zadania są więc chwycone WSZYSTKIE i visible jako RUNNING
+        („czeka na zasoby" w Operacjach), zamiast zbierać kurz w READY.
+        Bezpiecznik: wolny RAM (~0.6 GB/worker) + twardy limit 32 + kv max_workers.
+        """
         override = self.state.get_kv("max_workers", 0)
         if override:
             return max(1, int(override))
         cpu = os.cpu_count() or 4
-        try:
-            load1 = float(open("/proc/loadavg").read().split()[0])
-        except OSError:
-            load1 = float(cpu)
         free_gb = 4.0
         try:
             for line in open("/proc/meminfo"):
@@ -324,11 +325,8 @@ class Orchestrator:
                     break
         except OSError:
             pass
-        base = max(1, cpu - 2)                       # zostawiamy cores na system/UI
-        ram_cap = max(1, int(free_gb / 1.2))         # ~1.2 GB na proces vibe
-        load_cap = max(1, int(base * cpu / max(load1, 1.0)))  # load > cpu -> mniej workerów
-        cap = max(1, min(8, base, ram_cap, load_cap))  # hard cap: 8 LLM naraz na współdzielonym laptopie
-        return cap
+        ram_cap = max(8, int(free_gb / 0.6))   # worker w kolejce to głównie RAM (idle)
+        return max(4, min(32, ram_cap))
 
     def _launch_workers(self) -> None:
         # projekty nieaktywne (wstrzymane przez opiekuna) nie dostają workerów
@@ -336,32 +334,23 @@ class Orchestrator:
         tasks = [t for t in self.state.claimable_tasks()
                  if projects.is_active(t.get("project_id") or "mikowhy-teams")]
         cap = self._max_workers_now()
-        free = cap - len([t for t in self.running])  # wspólna pula też z review
-        light_free = 2  # lekkie zadania (read_only / tryb llm) dostają 2 dodatkowe sloty — zużywają mniej zasobów
-        # v2.7.9 — zasada Sponsora „jedno zadanie na raz”: rola z aktywnym RUNNING nie dostaje kolejnego
-        # (kolejka priorytetów P0→P3 sama ustawia kolejność w claimable_tasks)
-        busy_roles = {t.get("role") for t in self.state.list_tasks(status=RUNNING)}
+        free = cap - len(self.running)
+        # v2.7.28 — PEŁNY PARALLELIZM (decyzja Sponsora): każde zadanie jest chwytane
+        # natychmiast (RUNNING), a honory tę kolejkę pilnuje llm_queue (roota: nauka
+        # fair-play P0→P3 + batching + „⏳ czeka na wysłanie” w Operacjach).
+        # Kończy się wymóg „jedno zadanie na rola”: role pracują równolegle,
+        # a kolejność w obrębie roli daje claimable_tasks (priorytet → postęp → wiek).
+        spawned = 0
         for task in tasks:
             if task["id"] in self.running:
-                busy_roles.add(task.get("role"))
                 continue
-            if task.get("role") in busy_roles:
-                continue  # ta rola już pracuje nad jednym zadaniem — zamknij je najpierw
-            if free > 0:
-                self._spawn("worker_lifecycle", task["id"])
-                busy_roles.add(task.get("role"))  # spawn w tym samym ticku też blokuje rolę
-                free -= 1
-            elif (task.get("read_only") or task.get("mode") == "llm") and light_free > 0:
-                # równoległy lekki proces ponad głównym capem — nie rusza repo, mało RAM/CPU
-                light_free -= 1
-                self.state.record_metric("light_worker", {"task": task["id"], "mode": task.get("mode")}, task["id"])
-                self._spawn("worker_lifecycle", task["id"])
-                busy_roles.add(task.get("role"))
-            else:
-                if len(tasks) > 0:
-                    self.state.record_metric("throttled", {"waiting": len(tasks), "cap": cap,
-                                                           "running": len(self.running)}, None)
+            if free <= 0:
+                self.state.record_metric("throttled", {"waiting": len(tasks) - spawned,
+                                                       "cap": cap, "running": len(self.running)}, None)
                 break
+            self._spawn("worker_lifecycle", task["id"])
+            spawned += 1
+            free -= 1
 
     # --- faza 5: code review + circuit breaker ----------------------------------
     def _launch_reviews(self) -> None:
