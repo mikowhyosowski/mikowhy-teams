@@ -336,6 +336,10 @@ def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> N
                             model=skill_compiler.model_for_role(task["role"], kind="fast"))
             for rel, content in fix.get("files", {}).items():
                 if rel not in task["scope_paths"]:
+                    if not _scope_autoextend(state, task, rel):  # v2.7.27: rutyna — bez eskalacji
+                        continue
+                    task = state.get_task(task["id"])
+                if (worktree / rel).is_dir():
                     continue
                 (worktree / rel).write_text(content, encoding="utf-8")
         except RuntimeError:
@@ -372,8 +376,11 @@ def _run_preflight(state: State, task: dict, worktree: Path) -> None:
                                        ensure_ascii=False),
                             model=skill_compiler.model_for_role(task["role"], kind="fast"))
             for rel, content in (fix.get("files") or {}).items():
+                # v2.7.27: spójnie ze step2 — plik poza scope auto-rozszerza scope (rutyna, nie eskalacja)
                 if task["scope_paths"] and rel not in task["scope_paths"]:
-                    continue
+                    if not _scope_autoextend(state, task, rel):
+                        continue  # sekret/limit — QG i tak zweryfikuje
+                    task = state.get_task(task["id"])
                 if (worktree / rel).is_dir():
                     continue
                 (worktree / rel).write_text(content, encoding="utf-8")
@@ -531,6 +538,7 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
     history: list[str] = []
     wt_resolved = str(worktree.resolve())
     done = False
+    pf_feedback_count = 0  # v2.7.27: ile razy pre-flight zwrócił pracę agentowi przed przyjęciem done
     for turn in range(1, max_turns + 1):
         if turn == 1:
             payload = user0
@@ -595,6 +603,20 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
             done = True
             break
         elif action == "done":
+            # v2.7.27: pre-flight PRZED przyjęciem done — wykonawca sam łapie składnię/JSON/
+            # zepsute własne testy. Problemy wracają do agenta jako feedback (max 2 razy):
+            # „nie kłóć się z maszyną, popraw i zgłoś done ponownie".
+            from engine import preflight
+            pf = preflight.run(worktree)
+            if not pf["ok"] and pf_feedback_count < 2:
+                pf_feedback_count += 1
+                history.append(f"t{turn} PREFLIGHT: co najmniej 1 problem — NAPRAW i daj done ponownie:\n"
+                               f"{preflight.problems_digest(pf)}")
+                state.record_metric("preflight_agent_loop", {"task": tid, "attempt": pf_feedback_count}, tid)
+                _log(tid, f"pre-flight zwrócił pracę agentowi (problemów: {len(pf['problems'])})")
+                continue
+            if not pf["ok"]:
+                _log(tid, f"pre-flight: {len(pf['problems'])} problemów po 2 zwrotach — przyjmuję done (QG wykaże)")
             history.append(f"t{turn} DONE: {str(resp.get('summary', ''))[:500]}")
             _log(tid, f"LLM t{turn} done: {str(resp.get('summary',''))[:200]}")
             done = True
