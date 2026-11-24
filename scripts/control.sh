@@ -42,8 +42,6 @@ SERVICES_USER=(
   "mikowhy-teams"
   "mikowhy-teams-dashboard"
   "mikowhy-teams-staging"
-  "mikowhy-llm-queue"
-  "mikowhy-agents"
 )
 
 SERVICES_SYSTEM=(
@@ -87,11 +85,16 @@ has_system_service() {
 start_user_service() {
   local service="$1"
   if has_user_service; then
-    if systemctl --user is-active "$service" >/dev/null 2>&1; then
-      log "$service już działa"
+    # Sprawdź czy usługa istnieje
+    if systemctl --user list-unit-files "$service.service" >/dev/null 2>&1; then
+      if systemctl --user is-active "$service" >/dev/null 2>&1; then
+        log "$service już działa"
+      else
+        log "🚀 Uruchamianie $service (user mode)..."
+        systemctl --user start "$service" || warning "Nie udało się uruchomić $service"
+      fi
     else
-      log "🚀 Uruchamianie $service (user mode)..."
-      systemctl --user start "$service" || warning "Nie udało się uruchomić $service"
+      warning "Usługa $service nie jest zainstalowana - pomijam"
     fi
   else
     warning "systemctl --user niedostępny - pomijam $service"
