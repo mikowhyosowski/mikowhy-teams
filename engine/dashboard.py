@@ -870,6 +870,7 @@ async function refreshInner(){
      <div class="pbarWrap" title="postęp z podetapów: ${esc(t.substep||'—')}">${pbarHtml(t)}<span class="plabel">${esc(t.substep||'start')}</span></div>
      <div class="teraz"><span class="spin">🌀</span> 🎯 teraz: ${SUBCEL[t.substep]||esc(t.substep||'start')}
        <span class="subclk" data-subsince="${t.substep_since||0}">${t.substep_since?fmtDur(Date.now()/1000 - t.substep_since):''}</span></div>
+     ${t.idle_s!=null?`<div class="teraz" style="color:${t.stall?'#f85149':(t.llm_busy?'#d29922':'#3fb950')}">${t.stall?`🔴 BEZ OUTPUTU: ${fmtDur(t.idle_s)} (STALL)`:(t.llm_busy?`🟡 Czeka na model LLM (${fmtDur(t.idle_s)})`:`🟢 output: ${fmtDur(t.idle_s)} temu`)}</div>`:''}
      ${t.eta_s?`<div class="teraz" style="color:#8b949e">🔮 ETA ${fmtDur(t.eta_s)}${t.eta_left_s!=null?` · zostało ~${fmtDur(t.eta_left_s)} · będzie ~<b>${new Date((t.eta_at||0)*1000).toLocaleTimeString()}</b>`:''}</div>`:''}
      ${t.res?`<div class="muted" title="proces workera pid ${t.res.pid}">⚙️ CPU ${t.res.cpu}% · 🧠 RAM ${t.res.rss_mb}MB</div>`:''}
      <span class="who">${esc(t.persona||t.role||'')} · ${pbadge(t.project_id)}</span></div>`).join('')
@@ -929,6 +930,7 @@ async function openTask(id, keep){
   document.getElementById('detailBody').dataset.key = key;
   const tabs = `<div class="dtabs">
     <button class="${detailTab==='overview'?'on':''}" onclick="detailTab='overview';openTask(curTask,true)">📋 Szczegóły</button>
+    <button class="${detailTab==='console'?'on':''}" onclick="detailTab='console';openTask(curTask,true)">🖥️ Konsola</button>
     <button class="${detailTab==='history'?'on':''}" onclick="detailTab='history';openTask(curTask,true)">🕘 Historia (${(t.events||[]).length})</button>
     <button class="${detailTab==='comments'?'on':''}" onclick="detailTab='comments';openTask(curTask,true)">💬 Komentarze (${(t.comments||[]).length})</button>
     <button class="${detailTab==='atts'?'on':''}" onclick="detailTab='atts';openTask(curTask,true)">📎 Załączniki (${(t.attachments||[]).length})</button>
@@ -949,7 +951,19 @@ async function openTask(id, keep){
       ${d.stop_requested?`<button class="tbtn" style="border-color:#3fb950;color:#3fb950" onclick="taskCtl('${esc(d.id)}','activate')" title="usuń zlecenie stopu — agent pracuje dalej">▶️ wznów (anuluj stop)</button>`:''}
     </div>`:''}`;
   let body = '';
-  if(detailTab === 'history'){
+  if(detailTab === 'console'){
+    body = `<h2>🖥️ Konsola agenta na żywo <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}')">🔄 Odśwież</button> <button class="tbtn" style="border-color:#da3633;color:#f85149" onclick="killAndRetry('${esc(d.id)}')">🔄 Zabij i ponów</button></h2>
+      <div id="taskConsoleStatus" class="kv muted" style="margin-bottom:6px">Ładowanie konsoli...</div>
+      <div style="margin-bottom:6px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}', null)">wszystko</button>
+        <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}', 'cmd')">komendy</button>
+        <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}', 'stdout')">stdout</button>
+        <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}', 'stderr')">stderr</button>
+        <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}', 'meta')">meta</button>
+      </div>
+      <div id="taskConsoleBox" style="background:#0b0f14;border:1px solid #30363d;border-radius:8px;padding:8px;max-height:360px;overflow-y:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;line-height:1.4"></div>`;
+    setTimeout(()=>loadTaskConsole(d.id), 50);
+  } else if(detailTab === 'history'){
     const nowS = Date.now()/1000;
     body = `<h2>🕘 Historia zmian <span class="muted">(najświeższe na górze — zielone = <60s, niebieskie = <1h)</span></h2>
       <div class="histbox">${(t.events||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(e=>{
@@ -1131,6 +1145,54 @@ async function taskCtl(id, act){
     toast(j.ok ? (act==='stop' ? '⏹ zlecono stop po etapie: '+id : '▶️ aktywowano: '+id) : '⚠ '+(j.error||'błąd'));
   }catch(e){ toast('⚠ '+e); }
   openTask(id, true); refresh();
+}
+async function loadTaskConsole(tid, streamFilter){
+  const box = document.getElementById('taskConsoleBox');
+  const st = document.getElementById('taskConsoleStatus');
+  if(!box || !st) return;
+  try{
+    let url = '/api/task/'+encodeURIComponent(tid)+'/console?tail=250';
+    if(streamFilter) url += '&stream=' + encodeURIComponent(streamFilter);
+    const r = await fetch(url);
+    const j = await r.json();
+    st.innerHTML = `Plik: <code>${esc(j.file_path||'')}</code> · Linii: ${j.total_lines||0} · ` +
+      (j.stall ? `<b style="color:#f85149">🔴 STALLED: ${fmtDur(j.idle_s||0)} bez outputu</b>` :
+                 `<b style="color:#3fb950">🟢 Ostatni output: ${fmtDur(j.idle_s||0)} temu</b>`);
+    const evs = j.events || [];
+    if(!evs.length){
+      box.innerHTML = '<span class="muted">Brak wpisów w konsoli dla tego zadania</span>';
+      return;
+    }
+    box.innerHTML = evs.map(e => {
+      const ts = e.ts ? new Date(e.ts*1000).toLocaleTimeString() : '';
+      const step = e.step ? `[${esc(e.step)}] ` : '';
+      if(e.stream === 'cmd'){
+        return `<div style="color:#58a6ff"><span class="muted">${ts}</span> ❯ <b>${step}${esc(e.cmd||'')}</b></div>`;
+      } else if(e.stream === 'stderr'){
+        return `<div style="color:#f85149"><span class="muted">${ts}</span> ⚠ ${step}${esc(e.data||'')}</div>`;
+      } else if(e.stream === 'meta'){
+        const rcTxt = e.rc != null ? ` (rc=${e.rc})` : '';
+        return `<div style="color:#a371f7"><span class="muted">${ts}</span> ℹ ${step}${esc(e.data||'')}${rcTxt}</div>`;
+      } else {
+        return `<div style="color:#c9d1d9"><span class="muted">${ts}</span> ${step}${esc(e.data||'')}</div>`;
+      }
+    }).join('');
+    box.scrollTop = box.scrollHeight;
+  }catch(e){
+    st.textContent = 'Błąd ładowania konsoli: ' + e;
+  }
+}
+async function killAndRetry(tid){
+  if(!confirm('Czy na pewno zabić zadanie '+tid+' i wysłać je do ponowienia?')) return;
+  try{
+    const r = await fetch('/api/task/'+encodeURIComponent(tid)+'/kill_and_retry', {
+      method: 'POST',
+      body: JSON.stringify({reason: 'kliknięcie Zabij i ponów w dashboardzie'})
+    });
+    const j = await r.json();
+    toast(j.ok ? '🔄 Zadanie '+tid+' zrestartowane' : '⚠ Błąd');
+  }catch(e){ toast('⚠ '+e); }
+  refresh();
 }
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
   await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
@@ -2311,6 +2373,23 @@ def _snapshot(s: State) -> dict:
             tasks[-1]["eta_at"] = time.time() + left
         if t.get("status") == "RUNNING":
             tasks[-1]["res"] = _proc_stats(t.get("claimed_by"))
+            from engine import console_streamer as _cs
+            _la = _cs.last_activity_at(t["id"])
+            if _la == 0.0:
+                _log_p = ROOT / ".agents" / "logs" / f"worker_lifecycle.{t['id']}.log"
+                try:
+                    _la = _log_p.stat().st_mtime
+                except FileNotFoundError:
+                    _la = t.get("updated_at") or time.time()
+            _idle = max(0.0, time.time() - _la)
+            tasks[-1]["last_activity_at"] = _la
+            tasks[-1]["idle_s"] = round(_idle, 1)
+            _thresh = float(s.get_kv("stall_threshold_s", 600) or 600)
+            _llm_busy = bool(s._conn().execute(
+                "SELECT 1 FROM llm_jobs WHERE task_id=? AND status='RUNNING' LIMIT 1",
+                (t["id"],)).fetchone())
+            tasks[-1]["llm_busy"] = _llm_busy
+            tasks[-1]["stall"] = (_idle >= _thresh) and not _llm_busy
     tasks.sort(key=lambda t: (t["status"] != "AWAITING_OWNER", t["status"] != "RUNNING", t["status"] != "CHANGES_REQUESTED", -(t["updated_at"] or 0)))
     events = s.recent_events(30)
     # statystyki kolejki: ile czeka, ile już "spóźnionych" (READY/AWAITING starsze niż 1h), ile długo biegnie
@@ -2736,6 +2815,85 @@ class Handler(BaseHTTPRequestHandler):
             role = parse_qs(u.query).get("role", [None])[0]
             self._send(200, json.dumps(State().list_recurring(role=role), ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
+        elif u.path == "/api/workers/health":
+            from engine import console_streamer as cs
+            s = State()
+            now = time.time()
+            try:
+                threshold_s = float(s.get_kv("stall_threshold_s", 600) or 600)
+            except Exception:
+                threshold_s = 600.0
+            workers_out = []
+            stalled_out = []
+            for t in s.list_tasks(status="RUNNING"):
+                tid = t["id"]
+                la = cs.last_activity_at(tid)
+                if la == 0.0:
+                    log_p = ROOT / ".agents" / "logs" / f"worker_lifecycle.{tid}.log"
+                    try:
+                        la = log_p.stat().st_mtime
+                    except FileNotFoundError:
+                        la = t.get("updated_at") or now
+                idle_s = max(0.0, now - la)
+                llm_busy = bool(s._conn().execute(
+                    "SELECT 1 FROM llm_jobs WHERE task_id=? AND status='RUNNING' LIMIT 1",
+                    (tid,)).fetchone())
+                is_stalled = (idle_s >= threshold_s) and not llm_busy
+                if is_stalled:
+                    stalled_out.append(tid)
+                workers_out.append({
+                    "task_id": tid,
+                    "status": t["status"],
+                    "substep": t.get("substep"),
+                    "claimed_by": t.get("claimed_by"),
+                    "last_activity_at": la,
+                    "idle_s": round(idle_s, 1),
+                    "llm_job_running": llm_busy,
+                    "stall": is_stalled,
+                    "stall_threshold_s": threshold_s,
+                    "console_lines": cs.count_lines(tid),
+                })
+            self._send(200, json.dumps({
+                "workers": workers_out,
+                "stalled": stalled_out,
+                "stall_threshold_s": threshold_s,
+            }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path.startswith("/api/task/") and u.path.endswith("/console"):
+            from engine import console_streamer as cs
+            parts = [p for p in u.path.split("/") if p]
+            tid = parts[2]
+            q = parse_qs(u.query)
+            tail = int(q.get("tail", ["200"])[0])
+            since_ts = float(q.get("since_ts", ["0.0"])[0])
+            stream_f = q.get("stream", [None])[0]
+            s = State()
+            now = time.time()
+            la = cs.last_activity_at(tid)
+            if la == 0.0:
+                log_p = ROOT / ".agents" / "logs" / f"worker_lifecycle.{tid}.log"
+                try:
+                    la = log_p.stat().st_mtime
+                except FileNotFoundError:
+                    la = now
+            idle_s = max(0.0, now - la)
+            try:
+                threshold_s = float(s.get_kv("stall_threshold_s", 600) or 600)
+            except Exception:
+                threshold_s = 600.0
+            events = cs.read_tail(tid, tail=tail, since_ts=since_ts, stream_filter=stream_f)
+            try:
+                fp = str(cs.console_path(tid).relative_to(ROOT))
+            except ValueError:
+                fp = str(cs.console_path(tid))
+            self._send(200, json.dumps({
+                "task_id": tid,
+                "file_path": fp,
+                "total_lines": cs.count_lines(tid),
+                "last_activity_at": la,
+                "idle_s": round(idle_s, 1),
+                "stall": (idle_s >= threshold_s),
+                "events": events,
+            }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
         elif u.path.startswith("/api/task/"):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),
@@ -3060,6 +3218,22 @@ class Handler(BaseHTTPRequestHandler):
                     s.add_comment(tid, "sponsor/dashboard",
                                   "\u26a1 BOOST z dashboardu \u2014 zadanie z priorytetem P0 na szczycie kolejki roli")
                     self._send(200, b'{"ok":true}', "application/json")
+                elif action == "kill_and_retry":
+                    reason = str(body.get("reason") or "manual kill from dashboard")
+                    try:
+                        s.transition(tid, "COOLING", review_notes=f"kill_and_retry: {reason}")
+                    except Exception:
+                        try:
+                            s.transition(tid, "READY", review_notes=f"kill_and_retry: {reason}")
+                        except Exception:
+                            pass
+                    s.record_metric("kill_and_retry", {"task": tid, "reason": reason}, tid)
+                    s.add_comment(tid, "sponsor/dashboard", f"🔄 ZABIJ I PONÓW z dashboardu: {reason}")
+                    self._send(200, json.dumps({"ok": True, "task_id": tid, "status": "COOLING"}).encode(), "application/json")
+                elif action == "dismiss_stall":
+                    mins = float(body.get("minutes") or 30)
+                    s.set_kv(f"stall_dismissed:{tid}", time.time() + mins * 60)
+                    self._send(200, json.dumps({"ok": True, "task_id": tid, "dismissed_for_mins": mins}).encode(), "application/json")
                 else:
                     self._send(404, b'{"error":"unknown task action"}', "application/json")
             except Exception as e:
