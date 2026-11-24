@@ -223,6 +223,31 @@ def step1_plan(state: State, task: dict) -> None:
     _safe_transition(state, task["id"], "RUNNING", substep="2/5_IMPL")
 
 
+def _resolve_task_rel(rel: str, worktree: Path) -> str | None:
+    """v2.7.29: NORMALIZACJA ścieżki od LLM.
+
+    LLM potrafi zwrócić ŚCIEŻKĘ ABSOLUTNĄ (np. /home/miko/Projekty/M+/mikowhy-teams/engine/x.py,
+    "/home/miko/...").  `worktree / abs_path` == abs_path → zapis ląduje W MASTERZE
+    (root cause „target dirty" i zapisów obok fabryki).  Zwraca ścieżkę relatywną
+    do worktree albo None gdy ścieżka jest absolutna poza ROOT (do pominięcia z logiem).
+    """
+    rel = str(rel or "").strip()
+    if not rel:
+        return None
+    p = Path(rel)
+    if not p.is_absolute():
+        return rel
+    wt_str = str(worktree.resolve())
+    root_str = str(ROOT.resolve())
+    ps = str(p)
+    if ps.startswith(wt_str + os.sep):
+        return str(Path(ps).relative_to(wt_str))
+    if ps.startswith(root_str + os.sep):
+        # LLM podał ścieżkę w GŁÓWNYM repo — mapuj na odpowiednik w worktree (nie w masterze!)
+        return str(Path(ps).relative_to(root_str))
+    return None  # mystyczna ścieżka absolutna poza fabryką — odrzucamy z logiem
+
+
 def _coerce_file_content(content) -> str:
     """v2.7.29: LLM potrafi zwrócić content jako dict/list/bool — koercja do str
     zamiast TypeError('data must be str, not ...') wybijającego cały krok."""
@@ -275,7 +300,13 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
         return
     if not files:
         raise RuntimeError("LLM trzykrotnie zwrócił pustą implementację (bez 'files') — przejściowy błąd LLM")
-    for rel, content in files.items():
+    for rel0, content in files.items():
+        rel = _resolve_task_rel(rel0, worktree)  # v2.7.29: absolutna ścieżka LLM → worktree, Nie master!
+        if rel is None:
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"zapisać plik `{rel0}`",
+                                     "LLM zwrócił absolutną ścieżkę poza fabryką — wpis pominięty (ochrona mastera)")
+            continue
         if task["scope_paths"] and rel not in task["scope_paths"]:
             # AUTO-HEAL (zasada „Opiekunowi łatwiej”): plik spoza scope nie eskaluje do Opiekuna —
             # poszerzamy scope automatycznie (limit + ochrona sekretów), logujemy i kontynuujemy.
@@ -311,7 +342,11 @@ def step3_tests(state: State, task: dict, worktree: Path) -> None:
     result = _llm_step(task, "3/5_TEST", json.dumps(payload, ensure_ascii=False),
                        model=skill_compiler.model_for_role(task["role"], kind="fast"))
     test_files = result.get("test_files") or {}
-    for rel, content in test_files.items():
+    for rel0, content in test_files.items():
+        rel = _resolve_task_rel(rel0, worktree)  # v2.7.29: normalizacja absolutnych ścieżek
+        if rel is None:
+            state.record_metric("llm_path_rejected", {"path": rel0, "step": "3/5_TEST"}, task["id"])
+            continue
         target = worktree / rel
         if target.exists() and target.is_dir():
             # spójnie ze step2: LLM zwrócił katalog zamiast pliku — pomijamy z logiem,
@@ -352,7 +387,10 @@ def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> N
         try:
             fix = _llm_step(task, "4b_FIX", json.dumps(fix_payload, ensure_ascii=False),
                             model=skill_compiler.model_for_role(task["role"], kind="fast"))
-            for rel, content in fix.get("files", {}).items():
+            for rel0, content in fix.get("files", {}).items():
+                rel = _resolve_task_rel(rel0, worktree)  # v2.7.29: normalizacja
+                if rel is None:
+                    continue
                 if rel not in task["scope_paths"]:
                     if not _scope_autoextend(state, task, rel):  # v2.7.27: rutyna — bez eskalacji
                         continue
@@ -393,7 +431,10 @@ def _run_preflight(state: State, task: dict, worktree: Path) -> None:
                                                   'Żadnego innego klucza.'},
                                        ensure_ascii=False),
                             model=skill_compiler.model_for_role(task["role"], kind="fast"))
-            for rel, content in (fix.get("files") or {}).items():
+            for rel0, content in (fix.get("files") or {}).items():
+                rel = _resolve_task_rel(rel0, worktree)  # v2.7.29: normalizacja absolutnych ścieżek
+                if rel is None:
+                    continue
                 # v2.7.27: spójnie ze step2 — plik poza scope auto-rozszerza scope (rutyna, nie eskalacja)
                 if task["scope_paths"] and rel not in task["scope_paths"]:
                     if not _scope_autoextend(state, task, rel):
@@ -432,7 +473,8 @@ def step45_simplify(state: State, task: dict, worktree: Path, base: str) -> None
     except RuntimeError:
         return  # LLM niedostępny — pomijamy uproszczenie
     files = res.get("files") or {}
-    files = {p: c for p, c in files.items() if p in task["scope_paths"]}
+    files = {_resolve_task_rel(p, worktree) or p: c for p, c in files.items()
+             if (_resolve_task_rel(p, worktree) or p) in task["scope_paths"]}
     if not files:
         return
     backup = {p: (worktree / p).read_text(encoding="utf-8") for p in files if (worktree / p).is_file()}
@@ -591,7 +633,10 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
             except subprocess.TimeoutExpired:
                 history.append(f"t{turn} $ {cmd}\n→ TIMEOUT 300s")
         elif action == "write_file":
-            rel = str(resp.get("path", ""))
+            rel0 = str(resp.get("path", ""))
+            rel = _resolve_task_rel(rel0, worktree) or rel0  # v2.7.29: normalizacja
+            if rel != rel0:
+                history.append(f"t{turn} write_file: zmapowano '{rel0}' -> '{rel}' (ścieżka absolutna)")
             p = (worktree / rel).resolve()
             if not str(p).startswith(wt_resolved + os.sep) and str(p) != wt_resolved:
                 history.append(f"t{turn} write_file ODRZUCONE (poza worktree): {rel}")
