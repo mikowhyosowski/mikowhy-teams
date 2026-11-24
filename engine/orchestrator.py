@@ -105,8 +105,16 @@ def bootstrap(goal: str, milestone_id: str = "M1") -> None:
 
 
 class Orchestrator:
-    def __init__(self, poll: int = 10):
-        self.state = State()
+    def __init__(self, poll: int = 10, container=None):
+        # Ports & Adapters: rdzeń dostaje porty przez AppContainer (domyślnie sqlite/vibe_cli/local)
+        from engine.container import AppContainer
+        self.container = container or AppContainer.from_env()
+        self.tasks = self.container.task_source      # TaskSourcePort
+        self.llm = self.container.llm                # ReasoningEnginePort
+        self.runner = self.container.runner          # ExecutionRunnerPort
+        self.vcs = self.container.vcs                # VcsWorkspacePort
+        self.notifier = self.container.notifier      # HumanLoopNotifierPort
+        self.state = self.container.state or State()  # back-compat dla starszych ścieżek
         self.poll = poll
         self.running: dict[str, subprocess.Popen] = {}
 
@@ -483,8 +491,8 @@ class Orchestrator:
                 reg = quality_gates.regression(wt)
                 if not reg.get("ok"):
                     # regresja po rebase = BLOKADA, nigdy cofnięcie do READY (bez tego pętla merge co tick)
-                    self.state.transition(task["id"], BLOCKED,
-                                          review_notes=f"Regresja po rebase: {reg.get('output', '')[-500:]}")
+                    self.tasks.transition_status(task["id"], BLOCKED,
+                                                 review_notes=f"Regresja po rebase: {reg.get('output', '')[-500:]}")
                     self.state.record_metric("merge_regression_blocked", {"task": task["id"]}, task["id"])
                     continue
                 if task.get("parent_task"):
@@ -503,7 +511,7 @@ class Orchestrator:
                 # auto_main: push z detached/temp worktree -> HEAD leci na refs/heads/master
                 push_ref = f"HEAD:refs/heads/{base}" if auto_main else base
                 git_guard.run_git(["push", "origin", push_ref], cwd=wt, check=False)
-                self.state.transition(task["id"], MERGED)
+                self.tasks.transition_status(task["id"], MERGED)
                 self.state.record_metric("merge", {"milestone": task["milestone"]}, task["id"])
                 self._notify("merge", f"✅ {task['id']} zmergowane do `{base}`", task["id"])
                 merged = self.state.get_task(task["id"])
@@ -524,7 +532,7 @@ class Orchestrator:
                 skill_curator.prune_if_needed(self.state)  # Skill Fitness: auto-prune + promocja lekcji
             except git_guard.MergeConflict as exc:
                 # konflikt merge = BLOKADA (Sponsor decyduje), NIE cofanie do READY — bez tego pętla
-                self.state.transition(task["id"], BLOCKED, review_notes=f"Konflikt: {exc}")
+                self.tasks.transition_status(task["id"], BLOCKED, review_notes=f"Konflikt: {exc}")
                 self.state.record_metric("merge_conflict", {"task": task["id"]}, task["id"])
             except Exception as exc:
                 # dowolny inny błąd merge nie może blokować reszty ticka (telegram/health/milestony)

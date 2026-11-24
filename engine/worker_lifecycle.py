@@ -885,7 +885,11 @@ def _should_run(resume: str, step: str) -> bool:
 
 
 def run(task_id: str) -> int:
-    state = State()
+    # Ports & Adapters: worker bierze porty z AppContainer (domyślnie sqlite), a nie sztywno State
+    from engine.container import get_container
+    container = get_container()
+    tasks = container.task_source  # TaskSourcePort
+    state = container.state or State()
     task = state.claim_task(task_id, claimed_by=f"worker-{os.getpid()}")
     if task is None:
         _log(task_id, "zadanie niedostępne do przejęcia")
@@ -898,9 +902,9 @@ def run(task_id: str) -> int:
     # Ustaw substep, jeśli wznawiamy od kroku innego niż 0/5_PREPARE
     if resume_step and resume_step != "0/5_PREPARE":
         try:
-            state.transition(task_id, RUNNING, substep=resume_step,
-                           review_notes=f"{(task.get('review_notes') or '')} | Resumed from {resume_step}")
-            task = state.get_task(task_id)
+            tasks.transition_status(task_id, RUNNING, substep=resume_step,
+                                    review_notes=f"{(task.get('review_notes') or '')} | Resumed from {resume_step}")
+            task = tasks.get_task(task_id)
         except Exception:
             pass
     
