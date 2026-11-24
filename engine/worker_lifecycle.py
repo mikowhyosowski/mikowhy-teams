@@ -799,13 +799,26 @@ def run(task_id: str) -> int:
     if task is None:
         _log(task_id, "zadanie niedostępne do przejęcia")
         return 1
+    
+    # Sprawdź, czy mamy kontynuować od konkretnego kroku
+    resume_step = os.environ.get("MIKOWHY_RESUME_FROM_STEP", "")
+    
     telegram_reporter.ensure_topic(state, task)
     streamer = ConsoleStreamer(task_id, state)
-    streamer.log_meta("init", f"worker-{os.getpid()} claim task {task_id}")
+    streamer.log_meta("init", f"worker-{os.getpid()} claim task {task_id}" + 
+                      (f" (RESUMING from {resume_step})" if resume_step else ""))
+    
+    # Jeśli mamy kontynuować od konkretnego kroku, przerzuć substep
+    if resume_step:
+        state.transition(task_id, RUNNING, substep=resume_step, 
+                        review_notes=f"{(task.get('review_notes') or '')} | Resumed from {resume_step}")
+        task = state.get_task(task_id)
+    
     worktree: Path | None = None
     try:
         streamer.log_meta("0/5_PREPARE", "step0_prepare start")
         worktree = step0_prepare(state, task)
+        state.set_kv(f"last_successful_step:{task_id}", "0/5_PREPARE")
         _tg(state, task_id, "worktree gotowy")
         base = state.get_milestone(task["milestone"])["branch"]
         task = state.get_task(task_id)  # świeży wiersz (branch z step0)
@@ -819,6 +832,7 @@ def run(task_id: str) -> int:
             return 0
         streamer.log_meta("1/5_PLAN", "step1_plan start")
         step1_plan(state, task)
+        state.set_kv(f"last_successful_step:{task_id}", "1/5_PLAN")
         task = state.get_task(task_id)  # split może zmienić status
         if task["status"] != "RUNNING":
             telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
@@ -830,6 +844,7 @@ def run(task_id: str) -> int:
         _tg(state, task_id)
         streamer.log_meta("2/5_IMPL", "step2_implement start")
         step2_implement(state, task, worktree)
+        state.set_kv(f"last_successful_step:{task_id}", "2/5_IMPL")
         task = state.get_task(task_id)
         if task["status"] != "RUNNING":  # np. AWAITING_OWNER — czekamy na decyzję Opiekuna
             _tg(state, task_id)
@@ -841,12 +856,14 @@ def run(task_id: str) -> int:
         _tg(state, task_id)
         streamer.log_meta("3/5_TEST", "step3_tests start")
         step3_tests(state, task, worktree)
+        state.set_kv(f"last_successful_step:{task_id}", "3/5_TEST")
         if _stage_stop(state, task_id, "3/5_TEST"):
             streamer.log_meta("3/5_TEST", "stage_stop")
             return 0
         _tg(state, task_id)
         streamer.log_meta("4/5_QG", "step4_quality_gate start")
         step4_quality_gate(state, task, worktree, base)
+        state.set_kv(f"last_successful_step:{task_id}", "4/5_QG")
         task = state.get_task(task_id)
         if task["status"] != "RUNNING":
             telegram_reporter.post_event(state, task, f"❌ lokalny QG nie przeszedł: {(task.get('review_notes') or '')[:300]}")
@@ -875,11 +892,20 @@ def run(task_id: str) -> int:
         # w pętli są niemożliwe do namierzenia (sam repr jest za mało)
         import traceback as _tb
         _log(task_id, "TRACEBACK:\n" + _tb.format_exc())
-        streamer.log_meta("ERROR", f"Exception: {exc!r}")
+        
+        # Zapisz ostatni udany etap do KV, aby orkiestrator mógł restartować od niego
+        last_step = state.get_kv(f"last_successful_step:{task_id}", "")
+        if last_step:
+            state.set_kv(f"worker_error:{task_id}", f"{exc!r}")
+            state.set_kv(f"resume_from_step:{task_id}", last_step)
+            streamer.log_meta("ERROR", f"Exception: {exc!r} - RESUME FROM: {last_step}")
+        else:
+            streamer.log_meta("ERROR", f"Exception: {exc!r}")
+        
         state.transition(task_id, COOLING, review_notes=repr(exc))
         t = state.get_task(task_id)
         if t:
-            telegram_reporter.post_event(state, t, f"💥 FAILED: `{exc!r}`")
+            telegram_reporter.post_event(state, t, f"💥 FAILED: `{exc!r}` - Ostatni udany etap: {last_step or 'brak'}")
             telegram_reporter.update_progress(state, t)
         _log(task_id, f"FAILED: {exc!r}")
         return 2
