@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/miko/apps/mikowhy-teams/deploy/prod
-ExecStart=/usr/bin/python3 -m engine.dashboard --port 8765 --host 127.0.0.1
+ExecStart=/usr/bin/python3 -m engine.dashboard --port 8765 --host 0.0.0.0
 Environment=DARK_FACTORY_ROOT=/home/miko/Projekty/M+/mikowhy-teams
 Environment=PYTHONPATH=/home/miko/Projekty/M+/mikowhy-teams
 Restart=always
