@@ -172,3 +172,41 @@ Co się zepsuło PÓŹNIEJ (nie tamta zmiana!): eksplozja feature'ów 15:00–01
 3. rc=3 keyring przy dużej równoległości (procesy zewnętrzne nie traderują flocka) — do dalszego nadzoru (workload guardian).
 
 Stan na dziś Ocena: pętla RUNNING→FAILED→COOLING→READY→RUNNING przy zadaniach kręcących się w QG — to one nie dochodziły do IN_REVIEW/merge; nie dlatego, że merge jest zepsuty (merge działał do 22:33 23.11), tylko dlatego, że QG/namiar JSON wybuchał przed commitem.
+
+## 9. v2.8.0 — Architektura 3-warstwowa (spec architekta, implementacja 24.11)
+
+```
+WARSTWA 1 — WORKSPACE (Workspace / Git)                branch docelowy: develop
+orchestrator (tick co 1s)
+  worker_lifecycle per task
+    step0: git worktree z develop (W-1: base = integration_branch projektu)
+    step2/3: kod wg JSON files {path: content}           (nowe pliki/s<small pliki)
+             + PATCHES search/replace (W-2: pliki >150 linii — zakaz nadpisywania w całości!)
+    step5: commit feature/* → push (worker_push_guard: zakaz pushu master/develop)
+  _handle_merges: READY_TO_MERGE → rebase + REGRESSION → merge --no-ff → develop
+                  → _after_develop_merge: deploy.sh staging + RELEASE_CANDIDATE (kv + powiadomienie)
+
+WARSTWA 2 — STAGING (/srv/mikowhy-teams/staging, :8766)
+deploy.sh staging:
+  eksport origin/develop → staging/ (git archive)
+  kopia bazy: shared/.agents/state.db → staging/.agents (sqlite3 .backup)
+  systemctl --user restart mikowhy-teams-staging
+  healthcheck /api/state :8766 + pełna regresja pytest
+
+WARSTWA 3 — PROD (/srv/mikowhy-teams/prod, :8765) — wzór Capistrano
+releases/<YYYYMMDD-HHMMSS>-<sha>/  (niemutowalne, git archive z origin/master)
+shared/.env + shared/.agents/state.db + logs (symlinkowane do wydań)
+current → releases/<latest>          (atomowy symlink: ln -sfn + mv -T)
+systemd --user: mikowhy-teams(.service) + mikowhy-teams-dashboard(.service) → current
+systemd --user: mikowhy-teams-staging.service → staging
+
+RELEASE FLOW:
+  develop (zielony staging) → [🚀 Deploy Prod] (kv release_approved=<sha>)
+    → deploy.sh promote: develop→master ff-only + tag vX.Y.Z
+    → deploy.sh prod: release dir + backup WAL + symlink switch + restart + healthcheck
+    → (fail?) AUTO-ROLBACK do poprzedniego release + przywrócenie stanu
+  [🛑 Rollback] (kv release_rollback=1) → deploy.sh rollback
+```
+
+Konfiguracja: `.agents/projects/mikowhy-teams/project.json`
+(`integration_branch`, `deploy_branch`, `staging_path`, `prod_path`). Runbook migracji: `MIGRATION.md`.

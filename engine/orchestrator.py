@@ -389,7 +389,7 @@ class Orchestrator:
                                            f"🔚 {task['id']}: wyczerpane retry ({task['retry_count']}) nawet dla {PRINCIPAL_ROLE} → koniec kolejki, Opiekun nieangażowany automatem")
                     self.state.record_metric("circuit_back_of_queue", {"task": task["id"], "retry": task["retry_count"]}, task["id"])
 
-    # --- faza 6: merge do gałęzi milestonu --------------------------------------
+    # --- faza 6: merge do gałęzi integracyjnej (develop) / release pipeline ---------
     def _handle_merges(self) -> None:
         rtm = self.state.list_tasks(status=READY_TO_MERGE)
         # v2.7.10: zadania z flagą sponsor_merge (przycisk 🚀 Wdróż w flow) idą pierwsze
@@ -402,8 +402,15 @@ class Orchestrator:
             # merguje READY_TO_MERGE od razu do default branch (master) — bez milestonu i bez ręcznego mergowania
             auto_main = (projects.approval_policy(ns) == "auto"
                          and repo.resolve() == projects.ROOT.resolve())
-            if auto_main:
-                base = git_guard.default_branch(repo)       # cel pusha: master
+            # v2.8.0 W-1: branch integracyjny (develop) ma PIERWSZEŃSTWO — worker merguje
+            # wyłącznie do develop; master aktualizuje wyłącznie release pipeline (deploy.sh promote)
+            ib = projects.integration_branch(ns)
+            if ib:
+                git_guard.ensure_branch(repo, ib)
+                base = ib
+                tmp = f"_auto/{task['id']}"
+            elif auto_main:
+                base = git_guard.default_branch(repo)       # cel pusha: master (legacy, bez develop)
                 # master jest zajęty w głównym worktree — worktree integracyjny stawiamy na temp branchu z origin/master
                 tmp = f"_auto/{task['id']}"
             else:
@@ -459,6 +466,9 @@ class Orchestrator:
                 git_guard.remove_worktree("_integration", ns=ns, repo=repo)
                 if auto_main:
                     git_guard.run_git(["branch", "-D", tmp], cwd=repo, check=False)  # sprzątnij temp branch
+                # v2.8.0: develop jako branch integracyjny -> staging deploy + RELEASE_CANDIDATE
+                if base == projects.integration_branch(ns):
+                    self._after_develop_merge(ns, base)
                 self.state.export_snapshot(project_id=ns)  # snapshot po każdym mergu
                 lessons_gardener.garden(self.state)  # zmiana #2: co 10 mergy
                 skill_curator.prune_if_needed(self.state)  # Skill Fitness: auto-prune + promocja lekcji
@@ -470,7 +480,79 @@ class Orchestrator:
                 self.state.record_metric("merge_error", {"task": task["id"], "error": repr(exc)}, task["id"])
                 print(f"[orchestrator] błąd merge {task['id']}: {exc!r}", flush=True)
 
-    # --- QG-3 + zamknięcie milestonu + faza 7 -------------------------------------
+    # --- v2.8.0: WARSTWA 2/3 — staging + release candidates ------------------------
+
+    def _after_develop_merge(self, ns: str, ib: str) -> None:
+        """Po merge do develop: (1) RELEASE_CANDIDATE — powiadomienie z propagowaną wersją,
+        (2) kandydat do deployu staging/notyfikacje (deploy staging uruchamia deploy.sh staging)."""
+        sha = git_guard.run_git(["rev-parse", "--short", ib], cwd=projects.ROOT, check=False).stdout.strip()
+        ver = f"v{time.strftime('%Y.%m.%d')}-{sha}"
+        cands = dict(self.state.get_kv("release_candidates") or {})
+        cands[sha] = {"version": ver, "branch": ib, "created_at": time.time()}
+        self.state.set_kv("release_candidates", cands)
+        self.state.add_notification(
+            "release",
+            f"📦 RELEASE CANDIDATE {ver} na `{ib}` — staging: `deploy.sh staging`; "
+            f"prod po akceptacji: [🚀 Deploy Prod] (kv release_approved={sha}) / [🛑 Rollback] (kv release_rollback=1)",
+            None)
+        self._deploy_staging(ns)
+
+    def _deploy_staging(self, ns: str = "mikowhy-teams") -> bool:
+        """Po merge do develop: aktualizuje środowisko staging (kopia bazy + regresja + smoke /api/state).
+        Faile NIE blokują orkiestracji — dostają powiadomienie (staging to piaskownica)."""
+        sp = projects.staging_path(ns)
+        if not sp:
+            return False
+        t0 = time.time()
+        try:
+            proc = subprocess.run(["bash", str(projects.ROOT / "scripts" / "deploy.sh"), "staging"],
+                                  capture_output=True, text=True, timeout=900)
+        except Exception as exc:
+            self.state.add_notification("staging", f"❌ deploy staging: {exc!r}", None)
+            return False
+        ok = proc.returncode == 0
+        took = round(time.time() - t0)
+        if ok:
+            self.state.add_notification("staging", f"🧪 staging zaaktualizowany z develop w {took}s — smoke + regresja OK", None)
+        else:
+            self.state.add_notification("staging",
+                                        f"❌ deploy staging FAILED rc={proc.returncode} ({took}s): {(proc.stdout+proc.stderr)[-300:]}",
+                                        None)
+        return ok
+
+    def _handle_releases(self) -> None:
+        """W-3 RELEASE CANDIDATE: sponsor zatwierdza [🚀 Deploy Prod] (kv release_approved=<sha>)
+        -> develop -> master (ff-only z gate'em staging) + tag vX.Y.Z + deploy.sh prod
+        (auto-rollback w deploy.sh przy złym healthchecku). [🛑 Rollback] = kv release_rollback=true."""
+        if str(self.state.get_kv("release_rollback") or "") in ("1", "true"):
+            try:
+                subprocess.run(["bash", str(projects.ROOT / "scripts" / "deploy.sh"), "rollback"],
+                               timeout=900)
+                self.state.add_notification("release", "⏪ ROLLBACK prod wykonany (deploy.sh rollback)", None)
+            except Exception as exc:
+                self.state.add_notification("release", f"❌ rollback: {exc!r}", None)
+            self.state.set_kv("release_rollback", "")
+            return
+        rc = self.state.get_kv("release_candidates") or {}
+        approved = str(self.state.get_kv("release_approved") or "")
+        if not approved:
+            return
+        # wyślij tylko raz: wyczyść kv przed deployem (idempotencja przycisku)
+        self.state.set_kv("release_approved", "")
+        sha = approved
+        self.state.add_notification("release", f"🚀 RELEASE: develop({sha}) -> master + deploy prod startuje", None)
+        try:
+            proc = subprocess.run(["bash", str(projects.ROOT / "scripts" / "deploy.sh"), "promote", sha],
+                                  capture_output=True, text=True, timeout=1200)
+            ok = proc.returncode == 0
+        except Exception as exc:
+            ok, proc = False, None
+        detail = (proc.stdout + proc.stderr)[-400:] if proc is not None else repr(exc)
+        if ok:
+            self.state.add_notification("release", f"✅ RELEASE wdrożony na prod ({sha}); tag: vX.Y.Z; auto-rollback wbudowany", None)
+        else:
+            self.state.add_notification("release", f"❌ RELEASE FAILED: {detail}", None)
+
     def _handle_milestones(self) -> None:
         for ms in self.state.list_milestones():
             if ms["status"] != "OPEN" or not self.state.milestone_complete(ms["id"]):
@@ -721,10 +803,111 @@ class Orchestrator:
         except Exception as e:
             self.state.record_metric("llm_dispatch_error", {"error": repr(e)}, None)
 
+    # --- stall watchdog: zadania RUNNING bez outputu na konsoli ----------------------
+    def _stall_watchdog(self) -> None:
+        """Opcja A′ WORKER_OBSERVABILITY_PLAN §3.3: wykrywa RUNNING zadania bez outputu
+        na konsoli przez stall_threshold_s sekund (domyślnie 600 = 10 min).
+
+        Strategie detekcji:
+          1. mtime pliku .agents/logs/console/<TASK>.jsonl (PTY streamer)
+          2. mtime pliku .agents/logs/worker_lifecycle.<TASK>.log (fallback)
+        Gdy oba wskazują na ciszę >= threshold → STALLED.
+
+        Fałszywy alarm: gdy task ma aktywny job LLM (llm_jobs status='RUNNING') —
+        cisza jest normalna (vibe przetwarza, nie pisze do PTY).
+
+        Alerty:
+          - notification w dashboardzie (bell 🔔)
+          - Telegram jeśli TELEGRAM_PUSH=1
+          @15 min: opcjonalny auto-kill (kv auto_stall_kill=1) + dump ostatnich linii
+        """
+        try:
+            from engine import console_streamer as cs
+            from engine import llm_queue
+        except ImportError:
+            return
+
+        now = time.time()
+        try:
+            threshold_s = float(self.state.get_kv("stall_threshold_s", 600) or 600)
+            kill_threshold_s = float(self.state.get_kv("stall_kill_threshold_s", 900) or 900)
+            auto_kill = str(self.state.get_kv("auto_stall_kill", "0") or "0") in ("1", "true")
+        except Exception:
+            threshold_s, kill_threshold_s, auto_kill = 600.0, 900.0, False
+
+        for task in self.state.list_tasks(status="RUNNING"):
+            tid = task["id"]
+            la = cs.last_activity_at(tid)
+            if la == 0.0:
+                log_p = LOG_DIR / f"worker_lifecycle.{tid}.log"
+                try:
+                    la = log_p.stat().st_mtime
+                except FileNotFoundError:
+                    la = task.get("updated_at") or now
+            idle_s = now - la
+            if idle_s < threshold_s:
+                continue
+
+            try:
+                llm_busy = bool(self.state._conn().execute(
+                    "SELECT 1 FROM llm_jobs WHERE task_id=? AND status='RUNNING' LIMIT 1",
+                    (tid,)).fetchone())
+            except Exception:
+                llm_busy = False
+            if llm_busy:
+                continue
+
+            idle_min = int(idle_s // 60)
+            kv_key = f"stall_notified:{tid}"
+            last_bucket = int(self.state.get_kv(kv_key, 0) or 0)
+            if last_bucket != idle_min:
+                self.state.set_kv(kv_key, idle_min)
+                msg = (f"⏳ {tid} bez outputu na konsoli od {idle_min}m "
+                       f"(próg: {int(threshold_s//60)}m) — sprawdź log lub Kill & Retry")
+                self._notify("stall", msg, tid)
+                self.state.record_metric("stall_detected",
+                                         {"task": tid, "idle_s": round(idle_s)}, tid)
+                _push(msg)
+                print(f"[orchestrator] 🔴 STALL {tid}: {idle_min}m bez outputu", flush=True)
+
+            if idle_s >= kill_threshold_s and auto_kill:
+                kv_kill = f"stall_killed:{tid}"
+                if not self.state.get_kv(kv_kill):
+                    self.state.set_kv(kv_kill, now)
+                    try:
+                        dump_lines = cs.read_tail(tid, tail=500)
+                        dump_dir = LOG_DIR.parent / "stall_dumps"
+                        dump_dir.mkdir(parents=True, exist_ok=True)
+                        dump_file = dump_dir / f"{tid}.{int(now)}.jsonl"
+                        import json as _json
+                        dump_file.write_text(
+                            "\n".join(_json.dumps(e, ensure_ascii=False) for e in dump_lines),
+                            encoding="utf-8")
+                    except Exception:
+                        pass
+                    proc = self.running.get(tid)
+                    if proc and proc.poll() is None:
+                        try:
+                            import signal
+                            proc.send_signal(signal.SIGTERM)
+                        except Exception:
+                            pass
+                    try:
+                        self.state.transition(
+                            tid, "COOLING",
+                            review_notes=f"auto-kill: stall {idle_min}m >= {int(kill_threshold_s//60)}m threshold")
+                        self.state.record_metric("stall_kill", {"task": tid, "idle_s": round(idle_s)}, tid)
+                        self._notify("stall", f"🔴 {tid} ubity (stall {idle_min}m) → COOLING", tid)
+                        _push(f"🔴 *auto-kill* `{tid}` po {idle_min}m ciszy → COOLING")
+                        print(f"[orchestrator] 🔴 auto-kill {tid} (stall {idle_min}m) → COOLING", flush=True)
+                    except Exception as e:
+                        print(f"[orchestrator] stall-kill {tid} błąd: {e!r}", flush=True)
+
     # --- pętla główna -------------------------------------------------------------
     def tick(self) -> None:
         self._reap()
         self._escalate_stuck_tasks()
+        self._stall_watchdog()
         self._auto_approve()
         self._auto_retry_failed()
         self._workload_guardian_tick()
@@ -735,6 +918,7 @@ class Orchestrator:
         self._circuit_breakers()
         self._stale_queue_watchdog()
         self._handle_merges()
+        self._handle_releases()
         self._cleanup_merged_branches()
         self._handle_milestones()
         self._notify_approvals()
@@ -757,14 +941,16 @@ class Orchestrator:
             sys.exit(0)
         print(f"Orchestrator start (poll={self.poll}s, once={once}). Stan: {self.state.db_path}", flush=True)
         self._ensure_ops_recurring()  # v2.7.17: seed obowiązków OPS (idempotentny)
-        # v2 kolejki LLM: dispatcher w OSOBNYM WĄTKU — tick nie blokuje się na czas wywołania LLM
-        # (joby wykonują się seryjnie, keyring dotyka tylko ten proces; flock serializuje z workerami)
+        # Opcja A′ (WORKER_OBSERVABILITY_PLAN): równoległe dispatchery per-model (fast x 4, strong x 2)
         import threading
         from engine import llm_queue
-        self._llm_thread = threading.Thread(
-            target=llm_queue.dispatch_loop, args=(self.state,), daemon=True, name="llm-dispatcher")
-        self._llm_thread.start()
-        print("[orchestrator] 🧵 wątek dispatchera kolejki LLM wystartowany", flush=True)
+        self._llm_thread_fast = threading.Thread(
+            target=llm_queue.dispatch_loop_model, args=(self.state, "fast", 4, 0.3), daemon=True, name="llm-fast")
+        self._llm_thread_strong = threading.Thread(
+            target=llm_queue.dispatch_loop_model, args=(self.state, "strong", 2, 0.5), daemon=True, name="llm-strong")
+        self._llm_thread_fast.start()
+        self._llm_thread_strong.start()
+        print("[orchestrator] 🧵 wątki dispatcherów kolejki LLM (fast×4, strong×2) wystartowane", flush=True)
         self._recover_zombies()
         rounds = 2 if once else None  # --once: dwa cykle (worker + CR), potem wyjście
         while True:

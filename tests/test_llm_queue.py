@@ -276,3 +276,42 @@ def test_reclaim_expired_leases():
     r2 = s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j2,)).fetchone()
     assert r1["status"] == "QUEUED" and r1["lease_until"] == 0   # do kolejki z powrotem
     assert r2["status"] == "FAILED"                               # attempts >= MAX -> FAILED
+
+
+def test_dispatch_model_routing_and_prefix(monkeypatch):
+    """Opcja A′: model_prefix_for rozróżnia fast/strong, a _dispatch_once_for_model pobiera właściwy model."""
+    import engine.llm_gateway as gwmod
+    s = _tmp()
+    Q.ensure_table(s)
+
+    assert Q.model_prefix_for("zai-glm-5-3-flash") == "fast"
+    assert Q.model_prefix_for("fast-model") == "fast"
+    assert Q.model_prefix_for("mistral-large-4-0") == "strong"
+    assert Q.model_prefix_for("strong-model") == "strong"
+
+    # Enqueue 1 fast i 1 strong
+    j_fast = Q.enqueue(s, "complete", {"q": "f", "model": "fast-model", "system": "s", "user": "u"}, step="FAST")
+    j_strong = Q.enqueue(s, "complete", {"q": "s", "model": "strong-model", "system": "s", "user": "u"}, step="STRONG")
+
+    executed = []
+    class FakeGw:
+        timeout = 120
+        def complete(self, *, system, user, step, model, _direct=False, **kw):
+            executed.append(model)
+            return "OK"
+
+    monkeypatch.setattr(gwmod, "get_gateway", lambda: FakeGw())
+
+    # Dispatcher 'fast' powinien pobrać tylko j_fast
+    did_fast = Q._dispatch_once_for_model(s, "fast", max_jobs=1, min_interval_s=0)
+    assert did_fast == 1
+    assert executed == ["fast-model"]
+    assert s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j_fast,)).fetchone()[0] == "DONE"
+    assert s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j_strong,)).fetchone()[0] == "QUEUED"
+
+    # Dispatcher 'strong' powinien pobrać j_strong
+    did_strong = Q._dispatch_once_for_model(s, "strong", max_jobs=1, min_interval_s=0)
+    assert did_strong == 1
+    assert executed == ["fast-model", "strong-model"]
+    assert s._conn().execute("SELECT status FROM llm_jobs WHERE id=?", (j_strong,)).fetchone()[0] == "DONE"
+

@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from engine import git_guard, projects, quality_gates, skill_compiler, telegram_reporter
+from engine.console_streamer import ConsoleStreamer
 from engine.llm_gateway import get_gateway
 from engine.state import (
     AWAITING_OWNER,
@@ -65,11 +66,18 @@ def _stage_stop(state: State, task_id: str, stage: str) -> bool:
 
 def step0_prepare(state: State, task: dict) -> Path:
     """Krok 0 (Python): izolowany worktree + gałąź feature/<task>.
-    Repo worktree = target_repo_path projektu (lub katalog silnika gdy task['repo']=='factory')."""
+    v2.8.0 W-1: base = branch integracyjny projektu (develop) gdy projekt go ma
+    (worktree WYŁĄCZNIE od develop); fallback: branch milestonu / default branch."""
     milestone = state.get_milestone(task["milestone"])
-    base = milestone["branch"] if milestone else git_guard.default_branch()
+    ns = task.get("project_id") or "mikowhy-teams"
+    repo = projects.repo_for_task(task, state)
+    ib = projects.integration_branch(ns)
+    if ib:
+        git_guard.ensure_branch(repo, ib)
+        base = ib
+    else:
+        base = milestone["branch"] if milestone else git_guard.default_branch(repo)
     branch = task["branch"] or f"feature/{task['id'].lower()}"
-    repo = projects.repo_for_task(task, state)          # multi-project: fizyczne repo na dysku
     # fallback: gdy gałąź milestonu jeszcze nie istnieje (np. FIX z health) — leć z głównej gałęzi
     if base != git_guard.default_branch(repo):
         chk = git_guard.run_git(["rev-parse", "--verify", "--quiet", base], cwd=repo, check=False)
@@ -248,6 +256,9 @@ def _resolve_task_rel(rel: str, worktree: Path) -> str | None:
     return None  # mystyczna ścieżka absolutna poza fabryką — odrzucamy z logiem
 
 
+PATCH_OVERWRITE_LIMIT = 150  # W-2: pliki > 150 linii NIE mogą być nadpisywane w całości (tylko SEARCH/REPLACE)
+
+
 def _coerce_file_content(content) -> str:
     """v2.7.29: LLM potrafi zwrócić content jako dict/list/bool — koercja do str
     zamiast TypeError('data must be str, not ...') wybijającego cały krok."""
@@ -256,6 +267,35 @@ def _coerce_file_content(content) -> str:
     if isinstance(content, (dict, list)):
         return json.dumps(content, ensure_ascii=False, indent=2)
     return "" if content is None else str(content)
+
+
+def _apply_patches(state: State, task: dict, worktree: Path, patches) -> int:
+    """W-2 GATE (Search/Replace): aplikuje patche (diff semantyczny) zamiast nadpisywania plików.
+    patch: {"path": ..., "search": ..., "replace": ...}. search musi wystąpić DOKŁADNIE raz.
+    Zwraca liczbę zaaplikowanych patchy; problemy trafiają jako komentarz do zadania."""
+    applied = 0
+    problems: list[str] = []
+    for pt in patches or []:
+        rel = _resolve_task_rel(str(pt.get("path", "")), worktree)
+        if not rel or (task.get("scope_paths") and rel not in task["scope_paths"]
+                        and not _scope_autoextend(state, task, rel)):
+            problems.append(f"{rel or pt.get('path')}: poza scope")
+            continue
+        target = worktree / rel
+        if not target.is_file():
+            problems.append(f"{rel}: brak pliku (patch do nieistniejącego pliku)")
+            continue
+        cur = target.read_text(encoding="utf-8")
+        search, replace = str(pt.get("search", "")), str(pt.get("replace", ""))
+        if not search or cur.count(search) != 1:
+            problems.append(f"{rel}: search znaleziony {cur.count(search)}× (wymagane dokładnie 1×)")
+            continue
+        target.write_text(cur.replace(search, replace, 1), encoding="utf-8")
+        applied += 1
+    if problems:
+        state.add_comment_report(task["id"], f"worker({task['role']})",
+                                 "patch-search-replace", "; ".join(problems)[:300])
+    return applied
 
 
 def step2_implement(state: State, task: dict, worktree: Path) -> None:
@@ -322,8 +362,21 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
                                      f"LLM zwrócił katalog zamiast pliku — pomijam ten wpis (auto-heal), reszta idzie dalej")
             state.record_metric("llm_dir_instead_of_file", {"path": rel}, task["id"])
             continue
+        # W-2 GATE: istniejący plik >150 linii NIE może być nadpisany w całości (pętle QG!) —
+        # dopuszczalny wyłącznie tryb SEARCH/REPLACE (patches)
+        if target.is_file() and len(target.read_text(encoding="utf-8").splitlines()) > PATCH_OVERWRITE_LIMIT:
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"przepisać `{rel}` w całości — BLOKADA W-2",
+                                     f"plik ma {len(target.read_text(encoding='utf-8').splitlines())} linii "
+                                     f"(>{PATCH_OVERWRITE_LIMIT}) — użyj trybu patches (search/replace), pełne nadpisanie odrzucone")
+            state.record_metric("overwrite_gate_rejected", {"path": rel}, task["id"])
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(_coerce_file_content(content), encoding="utf-8")
+    # W-2: tryb Search/Replace — patche aplikowane PO zwykłych plikach
+    n_patches = _apply_patches(state, task, worktree, result.get("patches"))
+    if n_patches:
+        _log(task["id"], f"W-2 patches: zaaplikowano {n_patches}")
     state.record_metric("step_time", {"step": "2/5_IMPL", "seconds": round(time.time() - t0, 2)}, task["id"])
     state.add_comment_report(task["id"], f"worker({task['role']})",
                              f"zaimplementować zmiany w zakresie {', '.join(task.get('scope_paths') or [])[:80]}",
@@ -747,61 +800,82 @@ def run(task_id: str) -> int:
         _log(task_id, "zadanie niedostępne do przejęcia")
         return 1
     telegram_reporter.ensure_topic(state, task)
+    streamer = ConsoleStreamer(task_id, state)
+    streamer.log_meta("init", f"worker-{os.getpid()} claim task {task_id}")
     worktree: Path | None = None
     try:
+        streamer.log_meta("0/5_PREPARE", "step0_prepare start")
         worktree = step0_prepare(state, task)
         _tg(state, task_id, "worktree gotowy")
         base = state.get_milestone(task["milestone"])["branch"]
         task = state.get_task(task_id)  # świeży wiersz (branch z step0)
         if (task.get("mode") or "pipeline") == "llm":
+            streamer.log_meta("LLM_EXEC", "step_llm start")
             step_llm(state, task, worktree, base)
             task = state.get_task(task_id)
             if task and task["status"] == "IN_REVIEW":
                 _tg(state, task_id, "LLM wykonał zadanie → IN_REVIEW (czeka na Code Review)")
+            streamer.log_meta("LLM_EXEC", "step_llm done")
             return 0
+        streamer.log_meta("1/5_PLAN", "step1_plan start")
         step1_plan(state, task)
         task = state.get_task(task_id)  # split może zmienić status
         if task["status"] != "RUNNING":
             telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
+            streamer.log_meta("1/5_PLAN", "SPLIT_TASK or non-running")
             return 0
         if _stage_stop(state, task_id, "1/5_PLAN"):
+            streamer.log_meta("1/5_PLAN", "stage_stop")
             return 0
         _tg(state, task_id)
+        streamer.log_meta("2/5_IMPL", "step2_implement start")
         step2_implement(state, task, worktree)
         task = state.get_task(task_id)
         if task["status"] != "RUNNING":  # np. AWAITING_OWNER — czekamy na decyzję Opiekuna
             _tg(state, task_id)
+            streamer.log_meta("2/5_IMPL", f"status transition: {task['status']}")
             return 0
         if _stage_stop(state, task_id, "2/5_IMPL"):
+            streamer.log_meta("2/5_IMPL", "stage_stop")
             return 0
         _tg(state, task_id)
+        streamer.log_meta("3/5_TEST", "step3_tests start")
         step3_tests(state, task, worktree)
         if _stage_stop(state, task_id, "3/5_TEST"):
+            streamer.log_meta("3/5_TEST", "stage_stop")
             return 0
         _tg(state, task_id)
+        streamer.log_meta("4/5_QG", "step4_quality_gate start")
         step4_quality_gate(state, task, worktree, base)
         task = state.get_task(task_id)
         if task["status"] != "RUNNING":
             telegram_reporter.post_event(state, task, f"❌ lokalny QG nie przeszedł: {(task.get('review_notes') or '')[:300]}")
             _tg(state, task_id)
+            streamer.log_meta("4/5_QG", "QG failed")
             return 0
         if _stage_stop(state, task_id, "4/5_QG"):
+            streamer.log_meta("4/5_QG", "stage_stop")
             return 0
+        streamer.log_meta("4.5_SIMPLIFY", "step45_simplify start")
         step45_simplify(state, task, worktree, base)
         task = state.get_task(task_id)
         if task["status"] == "RUNNING":
             if _stage_stop(state, task_id, "4.5_SIMPLIFY"):
+                streamer.log_meta("4.5_SIMPLIFY", "stage_stop")
                 return 0
+            streamer.log_meta("5/5_COMMIT", "step5_commit start")
             step5_commit(state, task, worktree, base)
         task = state.get_task(task_id)
         if task and task["status"] == "IN_REVIEW":
             _tg(state, task_id, "commit OK → IN_REVIEW (czeka na Code Review)")
+            streamer.log_meta("5/5_COMMIT", "commit OK -> IN_REVIEW")
         return 0
     except Exception as exc:  # deterministyczny fallback — nigdy cicha śmierć
         # v2.7.29: pełny traceback do loga — bez tego błędy typu OperationalError/TypeError
         # w pętli są niemożliwe do namierzenia (sam repr jest za mało)
         import traceback as _tb
         _log(task_id, "TRACEBACK:\n" + _tb.format_exc())
+        streamer.log_meta("ERROR", f"Exception: {exc!r}")
         state.transition(task_id, COOLING, review_notes=repr(exc))
         t = state.get_task(task_id)
         if t:
@@ -810,6 +884,10 @@ def run(task_id: str) -> int:
         _log(task_id, f"FAILED: {exc!r}")
         return 2
     finally:
+        try:
+            streamer.close()
+        except Exception:
+            pass
         if worktree is not None:
             repo = projects.repo_for_task(task, state)
             git_guard.remove_worktree(task_id, ns=task.get("project_id") or "mikowhy-teams", repo=repo)

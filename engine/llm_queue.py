@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_llm_jobs_claim ON llm_jobs(status, delay_until, p
 """
 
 MAX_ATTEMPTS = 3      # v2: 3 próby z backoffem, potem FAILED (worker robi własny auto-retry zadania)
-LEASE_S = 480         # v2: lease > timeout subprocessu (fast 180s / strong 360s) — bez re-claim duplikatów
+LEASE_S = 900         # v2→A′: 900s = 50% margines nad max model timeout (fast 120s / strong 400s+)
 MIN_INTERVAL_S = 0.3  # v2: rate limit między startami (było 0.8)
 BACKOFF_BASE_S = 4    # v2: backoff 4s * 2^(attempts-1) (było 8s)
 CLEANUP_AFTER_S = 24 * 3600  # v2: housekeeping — DONE/FAILED starsze niż 24h
@@ -550,7 +550,8 @@ def dispatch_once(s: State, max_jobs: int = 4, min_interval_s: float = MIN_INTER
 
 def dispatch_loop(s: State, poll_s: float = 0.3, max_jobs: int = 2) -> None:
     """v2: pętla dispatchera do OSOBNEGO WĄTKU — tick orchestratora nie czeka na LLM.
-    Co jakiś czas robi housekeeping (cleanup starych jobów)."""
+    Co jakiś czas robi housekeeping (cleanup starych jobów).
+    Opcja A′: bez filtrowania po modelu — obsługuje WSZYSTKIE joby (legacy fallback)."""
     ensure_table(s)
     idle = 0
     while True:
@@ -572,6 +573,162 @@ def dispatch_loop(s: State, poll_s: float = 0.3, max_jobs: int = 2) -> None:
             except Exception:
                 pass
             time.sleep(1.0)
+
+
+def dispatch_loop_model(
+    s: State,
+    model_prefix: str,
+    max_jobs: int = 2,
+    poll_s: float = 0.3,
+) -> None:
+    """Opcja A′: osobny wątek dispatchera dla jednego rodzaju modelu.
+
+    model_prefix = "fast"   → joby z "fast"/"flash" w nazwie modelu
+    model_prefix = "strong" → joby z "large"/"strong"/"mistral" (nie fast/flash)
+
+    Gdy brak jobów dla „swojego" modelu → obsługuje DOWOLNY job (fair fallback),
+    żeby żaden job nie głodził mimo wolnego wątku.
+
+    Opcja A′ z WORKER_OBSERVABILITY_PLAN.md:
+      threading.Thread(target=dispatch_loop_model, args=(state, "fast",  4, 0.3))
+      threading.Thread(target=dispatch_loop_model, args=(state, "strong", 2, 0.5))
+    """
+    ensure_table(s)
+    idle = 0
+    while True:
+        try:
+            did = _dispatch_once_for_model(s, model_prefix=model_prefix, max_jobs=max_jobs)
+            if did == 0:
+                idle += 1
+                if idle % 40 == 0:
+                    try:
+                        cleanup(s)
+                    except Exception:
+                        pass
+                time.sleep(poll_s)
+            else:
+                idle = 0
+        except Exception as e:
+            try:
+                s.record_metric("llm_dispatch_error",
+                                {"error": repr(e), "model_prefix": model_prefix}, None)
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+
+def model_prefix_for(model: str) -> str:
+    """Zwraca prefix ("fast"/"strong") dla nazwy modelu."""
+    m = (model or "").lower()
+    return "fast" if any(x in m for x in ("fast", "flash")) else "strong"
+
+
+def _dispatch_once_for_model(
+    s: State,
+    model_prefix: str,
+    max_jobs: int = 2,
+    min_interval_s: float = MIN_INTERVAL_S,
+) -> int:
+    """dispatch_once z filtrem model_prefix. Gdy brak dedykowanych jobów → claim_next()."""
+    ensure_table(s)
+    try:
+        batch_size = max(BATCH_MIN, int(s.get_kv("llm_batch_size", BATCH_DEFAULT) or BATCH_DEFAULT))
+    except Exception:
+        batch_size = BATCH_DEFAULT
+    _reclaim_expired(s)
+    did = 0
+    while did < max_jobs:
+        _rate_limit(s, min_interval_s)
+        # Retry (attempts>0) zawsze pierwsze – FAIRNESS
+        retry = claim_retry(s)
+        if retry:
+            if model_prefix_for(retry.get("model") or "") != model_prefix:
+                # Nie nasz model – oddaj do kolejki (inny wątek odbierze)
+                s._conn().execute(
+                    "UPDATE llm_jobs SET status='QUEUED', lease_until=0 WHERE id=?",
+                    (retry["id"],))
+                break
+            try:
+                _run_job(s, retry)
+            except Exception as e:
+                fail(s, retry["id"], repr(e))
+            did += 1
+            continue
+        # Batch dla własnego modelu
+        busy = _busy_model_prefix(s, model_prefix)
+        if busy and batch_size >= BATCH_MIN:
+            model, n_waiting = busy
+            n = min(batch_size, n_waiting, max_jobs - did)
+            if n >= BATCH_MIN:
+                jobs = claim_batch(s, model, n)
+                if len(jobs) >= BATCH_MIN:
+                    try:
+                        did += _run_batch(s, jobs)
+                    except Exception as e:
+                        for j in jobs:
+                            fail(s, j["id"], repr(e))
+                        did += len(jobs)
+                    continue
+                elif jobs:
+                    for j in jobs:
+                        try:
+                            _run_job(s, j)
+                        except Exception as e:
+                            fail(s, j["id"], repr(e))
+                        did += 1
+                    continue
+        # Pojedynczy job dla własnego modelu
+        job = _claim_next_model(s, model_prefix)
+        if not job:
+            break
+        try:
+            _run_job(s, job)
+            did += 1
+        except Exception as e:
+            fail(s, job["id"], repr(e))
+            did += 1
+    return did
+
+
+def _busy_model_prefix(s: State, model_prefix: str) -> "tuple[str, int] | None":
+    """Model z największą liczbą czekających jobów pasujących do prefiksu."""
+    now = time.time()
+    rows = s._conn().execute(
+        """SELECT model, COUNT(*) n FROM llm_jobs
+           WHERE kind='complete' AND status='QUEUED' AND delay_until<=? AND attempts=0
+             AND model IS NOT NULL AND model!=''
+           GROUP BY model ORDER BY n DESC""",
+        (now,)).fetchall()
+    for row in rows:
+        if row[1] >= BATCH_MIN and model_prefix_for(row[0]) == model_prefix:
+            return row[0], row[1]
+    return None
+
+
+def _claim_next_model(s: State, model_prefix: str, lease_s: int = LEASE_S) -> "dict | None":
+    """Atomowy claim dla jobu pasującego do model_prefix; fallback = dowolny job."""
+    ensure_table(s)
+    now = time.time()
+    rows = s._conn().execute(
+        """SELECT id, model FROM llm_jobs
+           WHERE (status='QUEUED' AND delay_until<=?)
+              OR (status='RUNNING' AND lease_until<=?)
+           ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+                    created_at
+           LIMIT 20""",
+        (now, now)).fetchall()
+    for row in rows:
+        if model_prefix_for(row["model"] or "") == model_prefix:
+            cur = s._conn().execute(
+                """UPDATE llm_jobs SET status='RUNNING', lease_until=?, attempts=attempts+1
+                   WHERE id=? AND (status='QUEUED' OR (status='RUNNING' AND lease_until<=?))
+                   RETURNING *""",
+                (now + lease_s, row["id"], now))
+            claimed = cur.fetchone()
+            if claimed:
+                s.op_start_ref("llm", claimed["id"], f"wysłano do modelu ({model_prefix})")
+                return dict(claimed)
+    return None
 
 
 def stats(s: State) -> dict:

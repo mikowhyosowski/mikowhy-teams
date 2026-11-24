@@ -325,6 +325,7 @@ class State:
                 ("tasks", "max_substep", "TEXT"),  # v2.7.16: NAJDALEJ wypracowany sub-etap w całej historii — przy powrocie do READY wznawiamy od niego
                 ("tasks", "eta_s", "REAL NOT NULL DEFAULT 0"),  # v2.7.19: szacowany czas zadania (s) — ETA, raport „za ile będzie”
                 ("tasks", "cooldown_until", "REAL NOT NULL DEFAULT 0"),  # v2.7.23: ❄️ COOLING — aż kiedy śpić (epoch)
+                ("tasks", "last_activity_at", "REAL NOT NULL DEFAULT 0"),  # v2.8.1: mtime / PTY activity timestamp
                 ("llm_jobs", "task_id", "TEXT"),  # v2.7.24: steel guard — 1 aktywny job per (task, kind, step)
                 ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
                 ("tasks", "title_sponsor", "TEXT"),  # tytuł wyświetlany Sponsorowi — krótko, prostymi słowami

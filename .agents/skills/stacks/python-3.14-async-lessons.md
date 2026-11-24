@@ -33,3 +33,6 @@
 - Diff przekracza twardy limit MAX_DIFF_LINES=250 (ten diff ma 300 linii dodanych) — zmiana wymaga podziału na mniejsze części (SPLIT_TASK), zgodnie z poprzednią notatką review (razy: 1, ostatnio: merge#4)
 - Pusty diff nie pozwala zweryfikować, że przyczyna awarii usługi została usunięta — code-review wymaga zmian w kodzie/konfiguracji (plik unit systemd, skrypt startowy, zależności), a nie tylko stwierdzenia stanu runtime (razy: 1, ostatnio: merge#49)
 - Brak dowodu wykonania acceptance_criteria: wymagany wynik `systemctl --user is-active` = active oraz raport opisujący przyczynę awarii — test_results puste, żaden artefakt nie został załączony (razy: 1, ostatnio: merge#49)
+- Pusty diff (0 linii zmian) automatycznie odrzuca zadanie — niezależnie od przyczyny (self-check.md punkt 5: 'zakończenie pracy bez realnych zmian to odrzucone zadanie') (razy: 1, ostatnio: merge#50)
+- Acceptance criteria nie zostało spełnione: brak dowodu że usługa mikowhy-teams-dashboard jest aktywna (systemctl --user is-active = active) oraz brak raportu opisującego przyczynę awarii (razy: 1, ostatnio: merge#50)
+- Przy retry_count=2 i pustym diffie — zadanie wymaga faktycznej pracy diagnostycznej (logi systemd --user, journalctl, konfiguracja unit file), nie może zakończyć się pustym wynikiem (razy: 1, ostatnio: merge#50)
