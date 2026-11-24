@@ -67,7 +67,20 @@ def _stage_stop(state: State, task_id: str, stage: str) -> bool:
 def step0_prepare(state: State, task: dict) -> Path:
     """Krok 0 (Python): izolowany worktree + gałąź feature/<task>.
     v2.8.0 W-1: base = branch integracyjny projektu (develop) gdy projekt go ma
-    (worktree WYŁĄCZNIE od develop); fallback: branch milestonu / default branch."""
+    (worktree WYŁĄCZNIE od develop); fallback: branch milestonu / default branch.
+
+    🔴 NOWE: Pomijaj, jeśli wznawiamy od późniejszego etapu.
+    """
+    # 🔴 NOWE: Jeśli wznawiamy od kroku > 0/5_PREPARE, worktree powinien już istnieć
+    current_substep = task.get("substep") or ""
+    if current_substep not in ("0/5_PREPARE", ""):
+        _log(task["id"], f"⏭️ step0_prepare SKIPPED (resuming from {current_substep})")
+        # Zwróć istniejącą ścieżkę worktree z bazy
+        existing_worktree = task.get("worktree")
+        if existing_worktree and Path(existing_worktree).exists():
+            return Path(existing_worktree)
+        # Jeśli worktree nie istnieje, odtwórz go
+        _log(task["id"], "⚠️ worktree nie istnieje, odtwarzam...")
     milestone = state.get_milestone(task["milestone"])
     ns = task.get("project_id") or "mikowhy-teams"
     repo = projects.repo_for_task(task, state)
@@ -800,17 +813,36 @@ def run(task_id: str) -> int:
         _log(task_id, "zadanie niedostępne do przejęcia")
         return 1
     
-    # Sprawdź, czy mamy kontynuować od konkretnego kroku
-    resume_step = os.environ.get("MIKOWHY_RESUME_FROM_STEP", "")
+    # 🔴 NOWE: Odczytaj ostatni ukończony krok z bazy SQLite
+    last_completed_row = state._conn().execute(
+        "SELECT last_completed_step FROM tasks WHERE id = ?",
+        (task_id,)
+    ).fetchone()
+    
+    # 🔴 NOWE: Jeśli mamy checkpoint w bazie, użyj go jako resume_step
+    resume_step = ""
+    if last_completed_row and last_completed_row[0]:
+        resume_step = last_completed_row[0]
+        task["last_completed_step"] = resume_step  # Ustaw w tasku, aby resume_substep działał
+        _log(task_id, f"🔄 RESUMING from checkpoint (DB): {resume_step}")
+    
+    # 🟢 Fallback: sprawdź environment variable (stare zachowanie)
+    if not resume_step:
+        resume_step = os.environ.get("MIKOWHY_RESUME_FROM_STEP", "")
     
     telegram_reporter.ensure_topic(state, task)
     streamer = ConsoleStreamer(task_id, state)
     streamer.log_meta("init", f"worker-{os.getpid()} claim task {task_id}" + 
                       (f" (RESUMING from {resume_step})" if resume_step else ""))
     
-    # Jeśli mamy kontynuować od konkretnego kroku, przerzuć substep
+    # 🔴 NOWE: Jeśli mamy kontynuować od konkretnego kroku, przerzuć substep (używa resume_substep, który teraz czyta last_completed_step)
     if resume_step:
-        state.transition(task_id, RUNNING, substep=resume_step, 
+        # Użyj resume_substep, które teraz bierze pod uwagę last_completed_step
+        actual_resume = resume_substep(task)
+        if actual_resume != resume_step:
+            _log(task_id, f"🔄 resume_substep skorygował z {resume_step} na {actual_resume}")
+            resume_step = actual_resume
+        state.transition(task_id, RUNNING, substep=resume_step,
                         review_notes=f"{(task.get('review_notes') or '')} | Resumed from {resume_step}")
         task = state.get_task(task_id)
     

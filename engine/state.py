@@ -102,9 +102,15 @@ def estimate_eta_s(title: str = "", scope_paths: list | None = None, read_only: 
 
 def resume_substep(task: dict | None) -> str:
     """v2.7.9 + v2.7.16 — kontynuacja od NAJDALEJ wypracowanego sub-etapu przy powrocie do READY.
-    Bierzemy max_substep (rekord postępu z całej historii), gdy jest dalej niż bieżący substep.
+    Bierzemy last_completed_step (checkpoint z bazy), max_substep (rekord postępu z całej historii),
+    albo substep (bieżący krok). Priorytet: last_completed_step > max_substep > substep.
     Markery specjalne (ASK_OWNER/OWNER_PACKET/brak) -> 1/5_PLAN; 'done' (po IN_REVIEW) -> 2/5_IMPL (poprawki)."""
     t = task or {}
+    # 🔴 NOWE: Sprawdź last_completed_step (checkpoint z bazy SQLite)
+    last_completed = t.get("last_completed_step") or ""
+    if last_completed and substep_progress(last_completed) > 0:
+        return last_completed
+    # 🟢 Fallback: max_substep (stare zachowanie)
     cur = str(t.get("substep") or "")
     mx = str(t.get("max_substep") or "")
     if mx and substep_progress(mx) > substep_progress(cur):
