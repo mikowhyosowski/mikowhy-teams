@@ -7,13 +7,15 @@ import { Icon } from "./src/components/Icon";
 import { CommandCenterScreen } from "./src/screens/CommandCenterScreen";
 import { AgentsPipelineScreen } from "./src/screens/AgentsPipelineScreen";
 import { ApprovalsScreen } from "./src/screens/ApprovalsScreen";
+import { WorldScreen } from "./src/screens/WorldScreen";
 
-type Tab = "command" | "agents" | "approvals";
+type Tab = "command" | "agents" | "approvals" | "world";
 
 const TABS: { key: Tab; label: string; icon: keyof typeof Icon }[] = [
   { key: "command", label: "Centrum Operacyjne", icon: "radar" },
   { key: "agents", label: "Agenci & Pipeline", icon: "bot" },
   { key: "approvals", label: "Decyzje Sponsora", icon: "inbox" },
+  { key: "world", label: "Świat Fabryki", icon: "radar" },
 ];
 
 /**
@@ -98,6 +100,7 @@ export default function App() {
         {tab === "command" && <CommandCenterScreen />}
         {tab === "agents" && <AgentsPipelineScreen />}
         {tab === "approvals" && <ApprovalsScreen />}
+        {tab === "world" && <WorldScreen />}
       </View>
     </SafeAreaView>
   );
