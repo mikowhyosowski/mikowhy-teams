@@ -67,9 +67,9 @@ Wyeliminowanie wąskiego gardła jednowątkowej kolejki LLM (`llm_queue`), usuni
   - *Commit:* `8e9ea84` — `docs(refactor): add worker implementation log and todo checklist`
 - [x] **5.2. Scalenie gałęzi do `develop`** — bezpieczny merge gałęzi `feat/worker-observability-and-queue` do gałęzi integracyjnej `develop`.
   - *Commit:* `d36da8f` — `merge(feat): worker observability and parallel queue into develop`
-- [ ] **5.3. Przeładowanie usług systemd** — restart `mikowhy-teams-dashboard` oraz `mikowhy-teams` (orchestrator).
-- [ ] **5.4. Weryfikacja na żywo (Live Health Check)** — weryfikacja endpointu `/api/workers/health`, sprawdzenie logów orkiestratora pod kątem wątków `llm-fast` i `llm-strong`.
-- [ ] **5.5. Weryfikacja konsoli na żywo w przeglądarce** — sprawdzenie czy nowe zadania poprawnie generują `.jsonl` i czy są widoczne w dashboardzie na porcie 8765.
+- [x] **5.3. Przeładowanie usług systemd** — restart `mikowhy-teams-dashboard` oraz `mikowhy-teams` (orchestrator).
+- [x] **5.4. Weryfikacja na żywo (Live Health Check)** — weryfikacja endpointu `/api/workers/health`, sprawdzenie logów orkiestratora pod kątem wątków `llm-fast` i `llm-strong`.
+- [x] **5.5. Weryfikacja konsoli na żywo w przeglądarce** — sprawdzenie czy nowe zadania poprawnie generują `.jsonl` i czy są widoczne w dashboardzie na porcie 8765.
 
 ---
 
@@ -86,3 +86,5 @@ Wyeliminowanie wąskiego gardła jednowątkowej kolejki LLM (`llm_queue`), usuni
 | 2026-11-24 12:38 | Faza 4 | Napisanie testów jednostkowych/integracyjnych; 103/103 testy zielone | `28289a8` |
 | 2026-11-24 12:46 | Faza 5.1 | Utworzenie pliku śledzenia wdrożenia `worker.refactor.md` z checklistą TODO | `8e9ea84` |
 | 2026-11-24 12:47 | Faza 5.2 | Scalenie gałęzi `feat/worker-observability-and-queue` do `develop` | `d36da8f` |
+| 2026-11-24 12:48 | Faza 5.3 | Restart usług systemd: mikowhy-teams-dashboard oraz mikowhy-teams | live systemd |
+| 2026-11-24 12:49 | Faza 5.4-5.5 | Potwierdzenie na żywo: /api/workers/health i /api/task/<id>/console (200 OK) | live verified |
