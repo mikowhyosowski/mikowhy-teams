@@ -6,9 +6,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 # v2.8.0: repo/dispatcher w katalogu fabryki; agent-workspace i staging są osobnymi katalogami
-# (/srv/mikowhy-teams/staging — patrz scripts/deploy.sh), żeby orchestrator nie gonił własnego ogona.
+# (/home/miko/apps/mikowhy-teams/deploy/staging — patrz scripts/deploy.sh), żeby orchestrator nie gonił własnego ogona.
 WorkingDirectory=/home/miko/Projekty/M+/mikowhy-teams
 ExecStart=/usr/bin/python3 -m engine.orchestrator run --poll 1
+Environment=DARK_FACTORY_ROOT=/home/miko/Projekty/M+/mikowhy-teams
+Environment=PYTHONPATH=/home/miko/Projekty/M+/mikowhy-teams
 Restart=always
 RestartSec=3
 TimeoutStopSec=10

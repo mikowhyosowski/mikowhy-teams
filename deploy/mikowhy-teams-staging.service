@@ -1,19 +1,20 @@
 [Unit]
 Description=Dark Factory mikowhy-teams — staging dashboard (weryfikacja develop; http://127.0.0.1:8766)
-After=network-online.target mikowhy-teams.service
+After=network-online.target
 
 [Service]
 Type=simple
 # v2.8.0 warstwa 2: staging — kopia deployu git develop, osobna kopia bazy (sandbox testów),
 # port 8766. Kod katalogu aktualizuje scripts/deploy.sh staging (po każdym merge do develop).
-WorkingDirectory=/srv/mikowhy-teams/staging
+WorkingDirectory=/home/miko/apps/mikowhy-teams/deploy/staging
 ExecStart=/usr/bin/python3 -m engine.dashboard --port 8766 --host 127.0.0.1
-Environment=DARK_FACTORY_ROOT=/srv/mikowhy-teams/staging
+Environment=DARK_FACTORY_ROOT=/home/miko/Projekty/M+/mikowhy-teams
+Environment=PYTHONPATH=/home/miko/Projekty/M+/mikowhy-teams
 Environment=VIBE_DASH_LIVE=1
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:/srv/mikowhy-teams/logs/staging.dashboard.log
-StandardError=append:/srv/mikowhy-teams/logs/staging.dashboard.log
+StandardOutput=append:/home/miko/apps/mikowhy-teams/deploy/logs/staging.dashboard.log
+StandardError=append:/home/miko/apps/mikowhy-teams/deploy/logs/staging.dashboard.log
 
 [Install]
 WantedBy=default.target

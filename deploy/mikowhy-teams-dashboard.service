@@ -1,16 +1,18 @@
 [Unit]
 Description=Dark Factory mikowhy-teams — live dashboard (http://127.0.0.1:8765)
-After=network-online.target mikowhy-teams.service
+After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/miko/Projekty/M+/mikowhy-teams
-ExecStart=/usr/bin/python3 -m engine.dashboard --port 8765
+WorkingDirectory=/home/miko/apps/mikowhy-teams/deploy/prod
+ExecStart=/usr/bin/python3 -m engine.dashboard --port 8765 --host 127.0.0.1
+Environment=DARK_FACTORY_ROOT=/home/miko/Projekty/M+/mikowhy-teams
+Environment=PYTHONPATH=/home/miko/Projekty/M+/mikowhy-teams
 Restart=always
 RestartSec=3
 KillMode=control-group
-StandardOutput=append:/home/miko/Projekty/M+/mikowhy-teams/.agents/logs/dashboard.service.log
-StandardError=append:/home/miko/Projekty/M+/mikowhy-teams/.agents/logs/dashboard.service.log
+StandardOutput=append:/home/miko/apps/mikowhy-teams/deploy/logs/dashboard.service.log
+StandardError=append:/home/miko/apps/mikowhy-teams/deploy/logs/dashboard.service.log
 
 [Install]
 WantedBy=default.target

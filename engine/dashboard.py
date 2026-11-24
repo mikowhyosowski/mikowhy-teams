@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -23,7 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-ROOT = Path(__file__).resolve().parent.parent
+# Support DARK_FACTORY_ROOT env var for deployed instances, fallback to script location
+_factory_root = os.environ.get('DARK_FACTORY_ROOT')
+if _factory_root and os.path.isdir(_factory_root):
+    ROOT = Path(_factory_root).resolve()
+else:
+    ROOT = Path(__file__).resolve().parent.parent
 
 import sys
 sys.path.insert(0, str(ROOT))
