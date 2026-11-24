@@ -86,6 +86,16 @@ def default_branch(repo: Path | str = ROOT) -> str:
     return "master"
 
 
+def usable_base(repo: Path | str, candidate: str | None) -> str:
+    """Rewizja do `git diff`. Nieistniejąca gałąź milestonu (np. milestone/chat-ops)
+    nie jest rewizją — wracamy do gałęzi domyślnej, żeby rc=128 nie udawał pustego diffa."""
+    if candidate:
+        chk = run_git(["rev-parse", "--verify", "--quiet", candidate], cwd=repo, check=False)
+        if chk.returncode == 0:
+            return candidate
+    return default_branch(repo)
+
+
 def is_git_repo(repo: Path | str) -> bool:
     """Katalog wydania bez .git nie jest repozytorium — nie wolno na nim robić branch/fetch."""
     proc = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo, check=False, timeout=15)
@@ -253,8 +263,23 @@ def enforce_scope(worktree: Path, scope_paths: list[str]) -> list[str]:
 
 # --- limity diffu (zmiana #7) -------------------------------------------------
 def diff_line_count(worktree: Path, base: str) -> int:
-    """Liczba linii diffa (added + deleted) względem base."""
-    out = run_git(["diff", "--numstat", base], cwd=worktree, check=False).stdout
+    """Liczba linii diffa (added + deleted) względem base.
+
+    `--` odcina rewizję od ścieżki: nazwa `milestone/chat-ops` nie może być
+    odczytana jako katalog w drzewie. Brak rewizji podnosi GitError, nie 0.
+
+    Diff liczymy od rozwidlenia (merge-base), nie od czubka base: gałąź integracyjna
+    idzie do przodu, a bez tego cudze commity udają „zbyt duży diff" zadania.
+    """
+    resolved = usable_base(worktree, base)
+    mb = run_git(["merge-base", resolved, "HEAD"], cwd=worktree, check=False)
+    target = (mb.stdout or "").strip() if mb.returncode == 0 else ""
+    target = target or resolved
+    proc = run_git(["diff", "--numstat", target, "--"], cwd=worktree, check=False)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise GitError(f"git diff --numstat {target} rc={proc.returncode}: {err[0] if err else ''}")
+    out = proc.stdout
     total = 0
     for line in out.splitlines():
         parts = line.split("\t")
