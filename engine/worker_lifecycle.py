@@ -71,16 +71,17 @@ def step0_prepare(state: State, task: dict) -> Path:
 
     🔴 NOWE: Pomijaj, jeśli wznawiamy od późniejszego etapu.
     """
-    # 🔴 NOWE: Jeśli wznawiamy od kroku > 0/5_PREPARE, worktree powinien już istnieć
+    # 🔴 NOWE: Jeśli wznawiamy od kroku > 0/5_PREPARE, spróbuj użyć istniejącego worktree
     current_substep = task.get("substep") or ""
     if current_substep not in ("0/5_PREPARE", ""):
-        _log(task["id"], f"⏭️ step0_prepare SKIPPED (resuming from {current_substep})")
-        # Zwróć istniejącą ścieżkę worktree z bazy
+        _log(task["id"], f"⏭️ step0_prepare: wznowienie od {current_substep}, sprawdzam worktree...")
+        # Zwróć istniejącą ścieżkę worktree z bazy, JEŚLI ISTNIEJE
         existing_worktree = task.get("worktree")
         if existing_worktree and Path(existing_worktree).exists():
+            _log(task["id"], f"✅ worktree istnieje: {existing_worktree}")
             return Path(existing_worktree)
-        # Jeśli worktree nie istnieje, odtwórz go
-        _log(task["id"], "⚠️ worktree nie istnieje, odtwarzam...")
+        # 🔴 NOWE: Jeśli worktree nie istnieje, NIE zwracaj None - kontynuuj tworzenie
+        _log(task["id"], "⚠️ worktree nie istnieje, tworzę nowy (wznowienie nie było czyste)")
     milestone = state.get_milestone(task["milestone"])
     ns = task.get("project_id") or "mikowhy-teams"
     repo = projects.repo_for_task(task, state)
