@@ -113,8 +113,19 @@ class Orchestrator:
     def _spawn(self, module: str, task_id: str) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log = open(LOG_DIR / f"{module}.{task_id}.log", "a", encoding="utf-8")
-        proc = subprocess.Popen([sys.executable, "-m", f"engine.{module}", task_id],
-                                cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        
+        # Sprawdź, czy jest zapisany etap do kontynuacji
+        last_step = self.state.get_kv(f"resume_from_step:{task_id}", "")
+        resume_env = os.environ.copy()
+        if last_step:
+            resume_env["MIKOWHY_RESUME_FROM_STEP"] = last_step
+            # Wyczyść flagę po użyciu
+            self.state.delete_kv(f"resume_from_step:{task_id}")
+        
+        proc = subprocess.Popen(
+            [sys.executable, "-m", f"engine.{module}", task_id],
+            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+            env=resume_env)
         self.running[task_id] = proc
 
     def _reap(self) -> None:
@@ -732,6 +743,99 @@ class Orchestrator:
         except Exception as exc:
             self.state.record_metric("health_error", {"error": repr(exc)})
 
+    def _monitor_worker_errors(self) -> None:
+        """Monitoruje logi konsoli w poszukiwaniu błędów workerów.
+        Jeśli pracownik zakończy z błędem, automatycznie restartuje zadanie
+        od ostatniego udanego etapu (zamiast od zera) i powiadamia natychmiast."""
+        from engine import console_streamer as cs
+        
+        last_check = self.state.get_kv("last_error_check_ts", 0)
+        # Sprawdzaj co 30 sekund
+        if time.time() - last_check < 30:
+            return
+        
+        self.state.set_kv("last_error_check_ts", time.time())
+        
+        # Sprawdź wszystkie zadania RUNNING
+        running_tasks = self.state.list_tasks(status=RUNNING)
+        
+        for task in running_tasks:
+            tid = task["id"]
+            if tid not in self.running:
+                continue
+            
+            # Sprawdź ostatnie linie konsoli pod kątem błędów
+            try:
+                events = cs.read_tail(tid, tail=10)
+                error_found = False
+                error_type = None
+                error_message = None
+                last_successful_step = task.get("substep", "")
+                
+                for event in reversed(events):
+                    if event.get("stream") == "stderr":
+                        # Sprawdź, czy to błąd worker_lifecycle
+                        data = event.get("data", "")
+                        if "Exception" in data or "Error" in data or "RuntimeError" in data:
+                            error_found = True
+                            error_type = "worker_exception"
+                            error_message = data[:500]
+                            # Spróbuj odzyskać ostatni udany etap z historii
+                            for ev in reversed(events):
+                                if ev.get("step") and "start" not in ev.get("data", ""):
+                                    # Szukaj ostatniego etapu, który nie był błędem
+                                    step_name = ev.get("step", "")
+                                    if step_name and not any(e in ev.get("data", "") 
+                                                             for e in ["Exception", "Error", "FAILED"]):
+                                        last_successful_step = step_name
+                                        break
+                            break
+                    
+                    # Sprawdź, czy to kończąca się próba (claim task -> błąd -> nowy claim)
+                    if "claim task" in event.get("data", "") and error_found:
+                        # Nowy worker zajął zadanie po błędzie - kontynuuj od ostatniego etapu
+                        if last_successful_step:
+                            try:
+                                # Zaktualizuj substep, aby nowy worker kontynuował od tego etapu
+                                self.state._conn().execute(
+                                    "UPDATE tasks SET substep=?, updated_at=? WHERE id=?",
+                                    (last_successful_step, time.time(), tid))
+                                
+                                # Powiadomienie o auto-restarcie z kontynuacją
+                                self.state.record_metric("auto_restart_from_step", {
+                                    "task": tid,
+                                    "step": last_successful_step,
+                                    "error": error_type
+                                }, tid)
+                                
+                                # Powiadom natychmiast przez konsole i Telegram
+                                msg = f"⚠️ Auto-restart zadania `{tid}` z etapo `{last_successful_step}` (błąd: {error_type})"
+                                self._notify("worker_error", msg, tid)
+                                _push(msg)
+                                print(f"[orchestrator] {msg}", flush=True)
+                                
+                                # Wyzeruj flagę błędu
+                                error_found = False
+                            except Exception as e:
+                                print(f"[orchestrator] Błąd przy restarcie {tid}: {e!r}", flush=True)
+                        break
+                
+                # Jeśli znaleziono błąd, ale nie było nowego claim task, powiadom
+                if error_found:
+                    self.state.record_metric("worker_error_detected", {
+                        "task": tid,
+                        "error": error_type,
+                        "message": error_message[:200]
+                    }, tid)
+                    
+                    msg = f"🔴 Błąd workera w zadaniu `{tid}`: {error_type} - {error_message[:100]}"
+                    self._notify("worker_error", msg, tid)
+                    _push(msg)
+                    print(f"[orchestrator] {msg}", flush=True)
+                    
+            except Exception as e:
+                print(f"[orchestrator] Błąd monitorowania {tid}: {e!r}", flush=True)
+
     def _watchdog(self) -> None:
         """Sprawdza usługi systemd; jak któraś nieaktywna -> restart, a jak dalej nie żyje
         -> prośba do LLM (zadanie mode='llm') o naprawę."""
@@ -951,6 +1055,7 @@ class Orchestrator:
         self._launch_reviews()
         self._circuit_breakers()
         self._stale_queue_watchdog()
+        self._monitor_worker_errors()  # Monitorowanie błędów workerów w czasie rzeczywistym
         self._handle_merges()
         self._handle_releases()
         self._cleanup_merged_branches()

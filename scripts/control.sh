@@ -18,6 +18,7 @@
 #   STAGING_PORT: port staging (default: 8766)
 #
 set -euo pipefail
+shopt -s nullglob  # Pozwala na ignorowanie braku plików w globbingu
 
 # Kolory
 RED='\033[0;31m'
@@ -413,9 +414,12 @@ cmd_logs() {
   if [ "$service" = "all" ] || [ "$service" = "console" ]; then
     log ""
     log "--- Konsola (ostatnie 5 konsoli) ---"
-    for console_file in "$SRC_REPO/.agents/logs/console/"*.jsonl 2>/dev/null; do
-      [ -f "$console_file" ] && log "File: $(basename "$console_file")" && tail -n 3 "$console_file" && echo ""
-    done
+    local console_dir="$SRC_REPO/.agents/logs/console"
+    if [ -d "$console_dir" ]; then
+      for console_file in "$console_dir"/*.jsonl; do
+        [ -f "$console_file" ] && log "File: $(basename "$console_file")" && tail -n 3 "$console_file" && echo ""
+      done
+    fi
   fi
   
   # systemd logs
