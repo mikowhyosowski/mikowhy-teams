@@ -1223,13 +1223,21 @@ async function sendAsk(){
   try{ await fetch('/api/ask', {method:'POST', body: JSON.stringify({text: t})}); } finally { document.getElementById('askBtn').disabled = false; }
   refresh();
 }
-async function approve(){ await fetch('/api/task/'+curTask+'/approve', {method:'POST', body:'{}'}); refresh(); }
+async function approve(){
+  try{
+    const r = await fetch('/api/task/'+curTask+'/approve', {method:'POST', body:'{}'});
+    const j = await r.json().catch(()=>({}));
+    toast(j.ok ? ('✅ '+curTask+' → '+(j.to||'READY')) : ('⚠ '+(j.error||'nie zaakceptowano')));
+  }catch(e){ toast('⚠ '+e); }
+  refresh();
+}
 async function taskCtl(id, act){
   // act: 'stop' = łagodny stop na granicy etapu · 'activate' = anuluj stop / aktywuj agenta
   try{
     const r = await fetch('/api/task/'+id+'/'+act, {method:'POST', body:'{}'});
     const j = await r.json().catch(()=>({}));
-    toast(j.ok ? (act==='stop' ? '⏹ zlecono stop po etapie: '+id : '▶️ aktywowano: '+id) : '⚠ '+(j.error||'błąd'));
+    toast(j.ok ? (act==='stop' ? ('⏹ zlecono stop po etapie: '+id) : ('▶️ '+id+': '+(j.from||'?')+' → '+(j.to||'?')))
+               : ('⚠ '+(j.error||'błąd')));
   }catch(e){ toast('⚠ '+e); }
   openTask(id, true); refresh();
 }
@@ -1384,12 +1392,18 @@ async function killAndRetry(tid){
       body: JSON.stringify({reason: 'kliknięcie Zabij i ponów w dashboardzie'})
     });
     const j = await r.json();
-    toast(j.ok ? '🔄 Zadanie '+tid+' zrestartowane' : '⚠ Błąd');
+    toast(j.ok ? ('🔄 Zadanie '+tid+' — USPIONE na '+Math.max(0, Math.round(((j.cooldown_until||0) - Date.now()/1000)))
+                 +'s (status '+(j.to||'?')+' zostaje)') : ('⚠ '+(j.error||'Błąd')));
   }catch(e){ toast('⚠ '+e); }
   refresh();
 }
 async function decline(){ const why = prompt('Powód odrzucenia:'); if(why===null) return;
-  await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})}); refresh(); }
+  try{
+    const r = await fetch('/api/task/'+curTask+'/decline', {method:'POST', body: JSON.stringify({reason: why})});
+    const j = await r.json().catch(()=>({}));
+    toast(j.ok ? ('🛑 '+curTask+' → '+(j.to||'BLOCKED')) : ('⚠ '+(j.error||'nie odrzucono')));
+  }catch(e){ toast('⚠ '+e); }
+  refresh(); }
 // v2.7.10 — podgląd załącznika inline (tekst) / obrazek
 async function toggleAtt(id){
   const el = document.getElementById('attprev-'+id);
@@ -1406,7 +1420,11 @@ async function toggleAtt(id){
 async function approvalAction(id, action){
   const reason = action==='decline' ? (prompt('Powód odrzucenia deployu:')||'') : '';
   if(action==='decline' && !reason) return;
-  await fetch('/api/approval/'+encodeURIComponent(id)+'/'+action, {method:'POST', body: JSON.stringify({reason})});
+  try{
+    const r = await fetch('/api/approval/'+encodeURIComponent(id)+'/'+action, {method:'POST', body: JSON.stringify({reason})});
+    const j = await r.json().catch(()=>({}));
+    toast(j.ok ? ('✅ '+id+' — '+(action==='approve'?'zgoda na deploy':'odrzucone')) : ('⚠ '+(j.error||'błąd zgody')));
+  }catch(e){ toast('⚠ '+e); }
   refresh();
 }
 // zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
@@ -2465,7 +2483,7 @@ async function forceRetryTask(tid){
   try{
     const r = await fetch('/api/task/'+encodeURIComponent(tid)+'/force_retry', {method: 'POST'});
     const j = await r.json();
-    toast(j.ok ? '♻️ Odblokowano' : '⚠ Błąd'); refresh();
+    toast(j.ok ? ('♻️ '+tid+': '+(j.from||'?')+' → '+(j.to||'?')) : ('⚠ '+(j.error||'Błąd'))); refresh();
   }catch(e){ toast('⚠ '+e); }
 }
 async function killOrphans(tid){
@@ -3212,10 +3230,20 @@ class Handler(BaseHTTPRequestHandler):
             from engine.state import READY
             s = State()
             task = s.get_task(tid)
-            if task and task.get("status") == "RUNNING":
-                s.transition(tid, READY, review_notes=f"{(task.get('review_notes') or '')} | ♻️ Odblokowano z konsoli (brak procesu)")
-            self._send(200, json.dumps({"task_id": tid, "ok": True, "action": "requeued"}, 
-                       ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+            if task is None:
+                self._send(404, json.dumps({"ok": False, "task_id": tid, "error": "nieznane zadanie"}).encode(),
+                           "application/json")
+                return
+            status = task.get("status") or ""
+            if status != "RUNNING":
+                # requeue ma sens tylko dla zawieszonego RUNNING; z innych statusów są osobne akcje
+                self._send(409, json.dumps({"ok": False, "task_id": tid, "from": status,
+                                            "error": f"force_retry tylko z RUNNING (zadanie jest {status})"}).encode(),
+                           "application/json")
+                return
+            s.transition(tid, READY, review_notes=f"{(task.get('review_notes') or '')} | ♻️ Odblokowano z konsoli (brak procesu)")
+            self._send(200, json.dumps({"task_id": tid, "ok": True, "from": status, "to": READY,
+                                        "action": "requeued"}, ensure_ascii=False).encode(), "application/json")
         elif u.path.startswith("/api/task/"):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),
@@ -3319,6 +3347,11 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in u.path.split("/") if p]  # ['api','task','<id>','<action>']
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
+        # przyciski UI wołają POST-em także endpointy diagnostyczne (force_retry, kill-orphans,
+        # process-check, console) — obsługuje je GET; delegujemy, zamiast wracać 404 „unknown task action"
+        if len(parts) == 4 and parts[:2] == ["api", "task"] and parts[3] in (
+                "force_retry", "kill-orphans", "process-check", "console"):
+            return self._do_GET()
         if u.path == "/api/threads/start":
             # nowy wątek z konkretnym agentem (rola) + pierwsza wiadomość Sponsora + asynchroniczna odpowiedź
             from engine import team_threads
@@ -3496,70 +3529,95 @@ class Handler(BaseHTTPRequestHandler):
             from engine.orchestrator import cmd_approve, cmd_decline, cmd_note
             _, _, tid, action = parts
             s = State()
+            task = s.get_task(tid)
+            if task is None:
+                self._send(404, json.dumps({"ok": False, "error": f"nieznane zadanie: {tid}"}).encode(),
+                           "application/json")
+                return
+            status = task.get("status") or ""
+
+            def _reply(code: int, payload: dict) -> None:
+                self._send(code, json.dumps(payload, ensure_ascii=False).encode(), "application/json")
+
             try:
                 if action == "comment":
                     cmd_note(tid, body.get("text", ""))
                     State().add_comment(tid, "sponsor/dashboard", body.get("text", ""))
                     self._send(200, b'{"ok":true}', "application/json")
-                elif action == "approve":
-                    cmd_approve(tid)
-                    self._send(200, b'{"ok":true}', "application/json")
-                elif action == "decline":
-                    cmd_decline(tid, body.get("reason", "odrzucone z dashboardu"))
-                    self._send(200, b'{"ok":true}', "application/json")
+                elif action in ("approve", "decline"):
+                    # decyzja Opiekuna ma sens tylko z AWAITING_OWNER — z innego statusu nie ruszamy zadania
+                    if status != "AWAITING_OWNER":
+                        _reply(409, {"ok": False, "task_id": tid, "from": status,
+                                     "error": f"{action} tylko z AWAITING_OWNER (zadanie jest {status})"})
+                        return
+                    if action == "approve":
+                        cmd_approve(tid)
+                    else:
+                        cmd_decline(tid, body.get("reason", "odrzucone z dashboardu"))
+                    _reply(200, {"ok": True, "task_id": tid, "from": status,
+                                 "to": (s.get_task(tid) or {}).get("status")})
                 elif action == "stop":
                     # ⏹️ łagodny stop: worker kończy bieżący etap, potem pauza (READY) — bez zabijania procesu
+                    # status zostaje RUNNING do granicy etapu (zmienia go worker, nie dashboard)
                     s.request_stop(tid)
                     s.add_comment(tid, "sponsor/dashboard",
                                   "⏹️ STOP zlecony z dashboardu — agent dokończy bieżący etap i pauzuje (→ READY)")
-                    self._send(200, b'{"ok":true}', "application/json")
-                elif action == "activate":
-                    # ▶️ aktywacja: zdejmij stop + wybudź — z każdego statusu (poza MERGED) wraca do READY,
-                    # orchestrator od razu podpina workera (worker sam wznowi od max_substep)
+                    _reply(200, {"ok": True, "task_id": tid, "from": status, "to": status,
+                                 "note": "stop zlecony — status zmieni worker na granicy etapu"})
+                elif action in ("activate", "boost"):
+                    # ▶️ aktywacja / ⚡ boost: zdejmij stop i wstaw do kolejki — READY tylko gdy przejście legalne
                     s.clear_stop(tid)
-                    _t = s.get_task(tid)
-                    if _t and _t.get("status") not in ("READY", "MERGED"):
-                        try:
-                            s.transition(tid, "READY", role="sponsor/dashboard",
-                                         review_notes="▶️ aktywacja z dashboardu — agent wstaje i bierze zadanie")
-                        except Exception:
-                            pass
+                    if status == "MERGED":
+                        _reply(409, {"ok": False, "task_id": tid, "from": status,
+                                     "error": "MERGED — zadanie zamknięte, nie ma czego aktywować"})
+                        return
+                    if status == "READY":
+                        _reply(200, {"ok": True, "task_id": tid, "from": status, "to": status,
+                                     "note": "już w kolejce READY — status bez zmiany"})
+                        return
+                    try:
+                        s.transition(tid, "READY", role="sponsor/dashboard",
+                                     review_notes=("⚡ boost z dashboardu — READY z priorytetem P0"
+                                                   if action == "boost" else
+                                                   "▶️ aktywacja z dashboardu — agent wstaje i bierze zadanie"))
+                    except Exception as exc:
+                        _reply(409, {"ok": False, "task_id": tid, "from": status,
+                                     "error": f"{action} niemożliwe: {exc}"})
+                        return
+                    if action == "boost":
+                        s.set_priority(tid, "P0")
                     s.add_comment(tid, "sponsor/dashboard",
+                                  "\u26a1 BOOST z dashboardu \u2014 zadanie z priorytetem P0 na szczycie kolejki roli"
+                                  if action == "boost" else
                                   "▶️ AKTYWACJA z dashboardu — agent wstaje i podejmuje zadanie od wypracowanego etapu")
-                    self._send(200, b'{"ok":true}', "application/json")
-                elif action == "boost":
-                    # aktywuj agenta niezależnie od statusu: stop zdjęty + READY + najwyższy priorytet (P0)
-                    s.clear_stop(tid)
-                    _t = s.get_task(tid)
-                    if _t and _t.get("status") not in ("READY", "MERGED"):
-                        try:
-                            s.transition(tid, "READY", role="sponsor/dashboard")
-                        except Exception:
-                            pass
-                    s.set_priority(tid, "P0")
-                    s.add_comment(tid, "sponsor/dashboard",
-                                  "\u26a1 BOOST z dashboardu \u2014 zadanie z priorytetem P0 na szczycie kolejki roli")
-                    self._send(200, b'{"ok":true}', "application/json")
+                    _reply(200, {"ok": True, "task_id": tid, "from": status, "to": "READY"})
                 elif action == "kill_and_retry":
                     reason = str(body.get("reason") or "manual kill from dashboard")
-                    try:
-                        s.transition(tid, "COOLING", review_notes=f"kill_and_retry: {reason}")
-                    except Exception:
-                        try:
-                            s.transition(tid, "READY", review_notes=f"kill_and_retry: {reason}")
-                        except Exception:
-                            pass
+                    if status == "MERGED":
+                        _reply(409, {"ok": False, "task_id": tid, "from": status,
+                                     "error": "MERGED — zadanie zamknięte"})
+                        return
                     s.record_metric("kill_and_retry", {"task": tid, "reason": reason}, tid)
+                    # COOLING = obecność USPIONE na cooldown (status i etap zostają, orchestrator wybudzi)
+                    s.transition(tid, "COOLING", review_notes=f"kill_and_retry: {reason}")
                     s.add_comment(tid, "sponsor/dashboard", f"🔄 ZABIJ I PONÓW z dashboardu: {reason}")
-                    self._send(200, json.dumps({"ok": True, "task_id": tid, "status": "COOLING"}).encode(), "application/json")
+                    fresh = s.get_task(tid) or {}
+                    _reply(200, {"ok": True, "task_id": tid, "from": status, "to": fresh.get("status"),
+                                 "presence": fresh.get("presence"),
+                                 "cooldown_until": fresh.get("cooldown_until")})
                 elif action == "dismiss_stall":
                     mins = float(body.get("minutes") or 30)
                     s.set_kv(f"stall_dismissed:{tid}", time.time() + mins * 60)
-                    self._send(200, json.dumps({"ok": True, "task_id": tid, "dismissed_for_mins": mins}).encode(), "application/json")
+                    _reply(200, {"ok": True, "task_id": tid, "dismissed_for_mins": mins})
                 else:
-                    self._send(404, b'{"error":"unknown task action"}', "application/json")
+                    _reply(404, {"ok": False, "error": "unknown task action"})
+            except SystemExit as e:
+                # cmd_approve/cmd_decline sygnalizują odmowę przez SystemExit — w wątku HTTP
+                # skończyłoby się to brakiem odpowiedzi (klik bez efektu i bez błędu)
+                _reply(409, {"ok": False, "task_id": tid, "from": status,
+                             "error": str(e) or "operacja odrzucona"})
             except Exception as e:
-                self._send(400, json.dumps({"ok": False, "error": repr(e)}).encode(), "application/json")
+                _reply(400, {"ok": False, "task_id": tid, "from": status, "error": repr(e)})
             return
         else:
             self._send(404, b"not found", "text/plain")

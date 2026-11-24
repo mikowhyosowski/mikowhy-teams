@@ -294,13 +294,15 @@ def apply_action(task_id: str, action_id: str, payload: dict | None = None,
     atype = a.get("type")
     frm = status
     if atype == "approve":
-        s.transition(task_id, "READY", substep="1/5_PLAN",
+        # substep bez zmiany: decyzja puszcza zadanie do kolejki, a worker wznawia od wypracowanego etapu
+        s.transition(task_id, "READY",
                      review_notes=(task.get("review_notes") or "") + " | zaakceptowane przez Sponsora (flow)")
         s.record_metric("sponsor_approve", {"task": task_id, "via": "flow"}, task_id)
         to = "READY"
     elif atype == "decline":
         reason = str(payload.get("reason") or "odrzucone z flow").strip()
-        s.transition(task_id, "BLOCKED", review_notes=f"ODRZUCONE przez Sponsora (flow): {reason}")
+        s.transition(task_id, "BLOCKED", substep="OWNER_PACKET",
+                     review_notes=f"ODRZUCONE przez Sponsora (flow): {reason}")
         s.record_metric("sponsor_decline", {"task": task_id, "reason": reason, "via": "flow"}, task_id)
         to = "BLOCKED"
     elif atype == "retry":

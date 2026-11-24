@@ -1293,7 +1293,10 @@ def cmd_decline(task_id: str, reason: str = "") -> None:
     task = state.get_task(task_id)
     if not task:
         raise SystemExit(f"Nieznane zadanie: {task_id}")
-    state.transition(task_id, BLOCKED, review_notes=f"ODRZUCONE przez Sponsora: {reason}")
+    if task["status"] != AWAITING_APPROVAL:
+        raise SystemExit(f"{task_id} ma status {task['status']} — decline tylko z AWAITING_OWNER")
+    state.transition(task_id, BLOCKED, substep="OWNER_PACKET",
+                     review_notes=f"ODRZUCONE przez Sponsora: {reason}")
     state.record_metric("sponsor_decline", {"task": task_id, "reason": reason}, task_id)
     telegram_reporter.post_event(state, state.get_task(task_id), f"🛑 odrzucone przez Sponsora: {reason}")
     print(f"🛑 {task_id} -> BLOCKED ({reason})")
