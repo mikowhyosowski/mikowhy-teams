@@ -154,11 +154,13 @@ Punkty tarcia / kandydaci do optymalizacji (zdiagnozowane 23-24.11):
 | Problem | Efekt | Gdzie |
 |---|---|---|
 | Atomy JSON od LLM niepasujące do parsera (`LLM nie zwrócił czystego JSON`) | zadanie wybucha w 2/5 lub 3/5 → FAILED → pętla z COOLINGiem | `llm_gateway.extract_json` + retry pętli worker_lifecycle |
-| `vibe CLI rc=3` (race keyring) | retrye w kolejce, worker czeka | `_llm_process_lock` nie chroni przed proce­sam zewn. (np. visual_qa) |
+| `vibe CLI rc=3` — dwa warianty: (a) race keyring, (b) model próbuje wywołać narzędzia (`file_system.bash`) w callu `--enabled-tools __none__` → `turn_limit` | retrye w kolejce; job FAILED po 3 próbach | lock `.agents/llm.lock` serializuje silnik, ale **procesy zewn. nie respektują locka** (np. news-video-generator `visual_qa.py`); mitigation: reminder w `complete()` (3 próby) |
 | **Zagłodzenie retryów**: `dispatch_once` biletuje tylko batch z attempts=0 | job po retry wisiał w QUEUED do timeoutu 3600s workera | `llm_queue.dispatch_once` — **naprawione v2.7.29 (`claim_retry` przed batchem)** |
 | Ucięte odpowiedzi (time limit) → brak zamknięcia JSON | cała odpowiedź do śmieci, pełny restart kroku | **naprawione v2.7.29: `_autoclose_json` fallback** |
 | `wait_result` floor 3600s | przy zatykaniu kolejki worker trzyma slot ~1h zamiast failować szybciej | `llm_gateway.complete` (celowe „backlog-safe" z 31a3451) |
-| Registry errors typu `16 values for 14 columns` | pojedyncze crashe zadań (kod generowany przez zadania z własnymi INSERT-ami) | do wyłapania przez QG; nie błąd silnika |
+| `OperationalError('12/16 values for 14 columns')` | pojedyncze crashe zadań | LLM-generowane testy/kod w worktree z pozycjonalnym INSERT-em do llm_jobs (stary schemat); traceback w logu workerów od v2.7.29; do naprawy: usuwanie starych worktree'ów (FIX-ALL-STALE_WORKTREES) |
+| **Missing migration `task_id`** w `ensure_table` (nowe bazy bez kolumny task_id, który steel guard INSERTuje) | świeże bazy (worktree/new projekt) padają na enqueue | **naprawione v2.7.29: ALTER w ensure_table** |
+| **Ścieżki absolutne od LLM** (`worktree / "/home/miko/..."`) | zapis wprost do MASTER repo (root cause „target dirty", m.in. dirty `engine/dashboard.py` na masterze 24.11) | **naprawione v2.7.29: `_resolve_task_rel()` we wszystkich ścieżkach zapisu (step2/3/4a/4b/4.5/agent loop)** |
 
 ## 8. Eksperyment nr 1 — wniosek weryfikacji (23.11 12:14–12:17)
 
