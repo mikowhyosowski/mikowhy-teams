@@ -321,12 +321,12 @@ def ensure_branch(repo: Path | str, branch: str, remote: str = "origin") -> bool
 
 
 def worker_push_guard(branch: str, integration_branch: str = "develop", remote: str = "origin") -> None:
-    """Ochrona: worker może pchać WYŁĄCZNIE feature/* i staging/*; categóricalnie nie master
+    """Ochrona: worker może pchać WYŁĄCZNIE feature/* i staging/*; kategorycznie nie master
     ani branch integracyjny (master aktualizuje wyłącznie release pipeline z develop)."""
     low = branch.lower()
     if low.startswith("feature/") or low.startswith("staging/"):
         return
     if low == "master" or low == integration_branch:
         raise GitError(f"Ochrona brancha: worker nie może pchać `{branch}` "
-                       f"(master/developer aktualizuje wyłącznie release pipeline)")
+                       f"(master/develop aktualizuje wyłącznie release pipeline)")
     # inne gałęzie dopuszczone (np. subtaski innych projektów)

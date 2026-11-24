@@ -40,8 +40,12 @@ wal_backup() {  # WAL-safe online backup (sqlite3 .backup — działa przy żywe
 
 svc_restart() {
   for svc in "$@"; do
-    log "🔁 systemctl --user restart $svc"
-    systemctl --user restart "$svc"
+    if systemctl --user cat "$svc" >/dev/null 2>&1; then
+      log "🔁 systemctl --user restart $svc"
+      systemctl --user restart "$svc"
+    else
+      log "⚠️  brak unitu $svc — pomijam restart (doinstaluj jednostkę z deploy/)"
+    fi
   done
 }
 
@@ -86,7 +90,11 @@ cmd_staging() {
     sqlite3 "$SHARED/.agents/state.db" ".backup '$STAGING/.agents/state.db.staging-src'"
   fi
   svc_restart mikowhy-teams-staging
-  healthcheck "$STAGING_PORT" 10 || die "staging smoke /api/state FAILED"
+  if systemctl --user cat mikowhy-teams-staging >/dev/null 2>&1; then
+    healthcheck "$STAGING_PORT" 10 || die "staging smoke /api/state FAILED"
+  else
+    log "⚠️  brak unitu mikowhy-teams-staging — pomijam smoke /api/state (regresja i tak leci)"
+  fi
   log "🧪 staging regresja: pytest (maks 120s)"
   ( cd "$STAGING" && timeout 120 python3 -m pytest tests -q --tb=line ) || die "staging regresja FAILED"
   log "✅ staging OK -> kandydat do wydania gotowy ($(git -C "$SRC_REPO" rev-parse --short origin/${INTEGRATION_BRANCH}))"
@@ -116,7 +124,10 @@ cmd_prod() {
   ln -sfn "$rel" "$PROD/current.new" && mv -T "$PROD/current.new" "$PROD/current"
   log "📦 release: $rel -> current"
   svc_restart mikowhy-teams mikowhy-teams-dashboard
-  if healthcheck "$PROD_PORT" 10 && svc_active mikowhy-teams && svc_active mikowhy-teams-dashboard; then
+  # healthcheck + usługi muszą żyć (jeśli unit istnieje — przy braku unitu decyduje sam healthcheck)
+  if healthcheck "$PROD_PORT" 10 \
+     && { ! systemctl --user cat mikowhy-teams >/dev/null 2>&1 || svc_active mikowhy-teams; } \
+     && { ! systemctl --user cat mikowhy-teams-dashboard >/dev/null 2>&1 || svc_active mikowhy-teams-dashboard; }; then
     log "✅ prod deploy OK ($rel)"
     # housekeeping: zostaw ostatnie KEEP_RELEASES wydań
     ls -1d "$PROD"/releases/* | sort | head -n -"$KEEP_RELEASES" | xargs -r rm -rf
@@ -142,8 +153,10 @@ cmd_rollback() {
 # ---RELEASE CANDIDATE: develop -> deploy_branch (ff-only) + tag ---
 cmd_promote() {
   local sha="${1:-origin/${INTEGRATION_BRANCH}}"
-  # gate: staging musi być zdrowy
-  curl -fsS --max-time 5 "http://127.0.0.1:${STAGING_PORT}/api/state" >/dev/null || die "staging DOWN — najpierw deploy staging"
+  # gate: staging musi być zdrowy (gdy środowisko staging istnieje)
+  if systemctl --user cat mikowhy-teams-staging >/dev/null 2>&1; then
+    curl -fsS --max-time 5 "http://127.0.0.1:${STAGING_PORT}/api/state" >/dev/null || die "staging DOWN — najpierw deploy staging"
+  fi
   git -C "$SRC_REPO" fetch origin
   git -C "$SRC_REPO" push origin "refs/heads/${INTEGRATION_BRANCH}:refs/heads/${DEPLOY_BRANCH}" \
     || die "fast-forward ${INTEGRATION_BRANCH} -> ${DEPLOY_BRANCH} niemożliwy (rozjazd historii) — ręczny merge"

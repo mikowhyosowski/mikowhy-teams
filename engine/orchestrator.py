@@ -549,11 +549,10 @@ class Orchestrator:
             ok, proc = False, None
         detail = (proc.stdout + proc.stderr)[-400:] if proc is not None else repr(exc)
         if ok:
-            self.state.add_notification("release", f"✅ RELEASE wdrożony na prod ({sha}); tag: vX.Y.Z; auto-rollback broń", None)
+            self.state.add_notification("release", f"✅ RELEASE wdrożony na prod ({sha}); tag: vX.Y.Z; auto-rollback wbudowany", None)
         else:
             self.state.add_notification("release", f"❌ RELEASE FAILED: {detail}", None)
 
-    def _handle_milestones(self) -> None:
     def _handle_milestones(self) -> None:
         for ms in self.state.list_milestones():
             if ms["status"] != "OPEN" or not self.state.milestone_complete(ms["id"]):
