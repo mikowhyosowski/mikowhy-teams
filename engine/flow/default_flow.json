@@ -55,8 +55,7 @@
       "lane": "main",
       "order": 0,
       "statuses": [
-        "READY",
-        "COOLING"
+        "READY"
       ],
       "color": "#6e7681",
       "hot": false,
@@ -180,13 +179,12 @@
     },
     {
       "id": "blocked",
-      "label": "Zablokowane (BLOCKED / FAILED)",
+      "label": "Zablokowane (BLOCKED)",
       "icon": "🚫",
       "lane": "bottom",
       "order": 0,
       "statuses": [
-        "BLOCKED",
-        "FAILED"
+        "BLOCKED"
       ],
       "color": "#f85149",
       "hot": true,
@@ -344,7 +342,6 @@
       "icon": "🔁",
       "type": "retry",
       "allowed_from": [
-        "FAILED",
         "BLOCKED"
       ],
       "target_status": "READY",
@@ -362,7 +359,6 @@
         "IN_REVIEW",
         "READY_TO_MERGE",
         "MERGED",
-        "FAILED",
         "BLOCKED",
         "AWAITING_OWNER"
       ],
@@ -381,7 +377,6 @@
         "CHANGES_REQUESTED",
         "IN_REVIEW",
         "READY_TO_MERGE",
-        "FAILED",
         "BLOCKED",
         "AWAITING_OWNER"
       ],

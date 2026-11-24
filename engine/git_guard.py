@@ -113,6 +113,7 @@ def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True,
             rec.fail(op_id, err)
         out = e.stdout if isinstance(e.stdout, str) else ""
         err_s = e.stderr if isinstance(e.stderr, str) else ""
+        _mirror_console(cwd, args, out or "", f"{err_s}\n{err}".strip(), 124)
         if check:
             raise GitError(f"git {' '.join(args)} (cwd={cwd}) -> {err}")
         return subprocess.CompletedProcess(["git", *args], 124, out or "", f"{err_s}\n{err}".strip())
@@ -126,8 +127,21 @@ def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True,
         else:
             rec.fail(op_id, f"rc={proc.returncode}: {proc.stderr.strip()[:300]}")
     if check and proc.returncode != 0:
+        _mirror_console(cwd, args, proc.stdout or "", proc.stderr or "", proc.returncode)
         raise GitError(f"git {' '.join(args)} (cwd={cwd}) -> rc={proc.returncode}: {proc.stderr.strip()}")
+    _mirror_console(cwd, args, proc.stdout or "", proc.stderr or "", proc.returncode)
     return proc
+
+
+def _mirror_console(cwd, args, stdout: str, stderr: str, rc: int) -> None:
+    tid = _op_task(cwd)
+    if not tid:
+        return
+    try:
+        from engine.console_streamer import append_git
+        append_git(tid, list(args), stdout or "", stderr or "", rc)
+    except Exception:
+        pass
 
 
 def assert_writable(repo: Path | str) -> None:

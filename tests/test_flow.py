@@ -34,7 +34,7 @@ def test_stage_mapping():
     assert F.stage_of_status(cfg, "AWAITING_OWNER") == "owner"
     assert F.stage_of_status(cfg, "CHANGES_REQUESTED") == "changes"
     assert F.stage_of_status(cfg, "MERGED") == "done"
-    assert F.stage_of_status(cfg, "FAILED") == "blocked"
+    assert F.stage_of_status(cfg, "BLOCKED") == "blocked"
     assert F.stage_of_status(cfg, "BLOCKED") == "blocked"
 
 
@@ -164,8 +164,7 @@ def test_model_valid_transitions():
     assert VT["AWAITING_OWNER"] == {"READY", "BLOCKED"}
     # BLOCKED odblokowuje się WYŁĄCZNIE do READY (pełny cykl — nic nie omija testów/CR)
     assert VT["BLOCKED"] == {"READY", "ESCALATED", "AWAITING_OWNER"}
-    assert "READY" in VT["FAILED"]  # automatyczny retry
-    assert "AWAITING_OWNER" in VT["FAILED"]  # po wyczerpaniu max_retries
+    assert "FAILED" not in VT
 
 
 def test_legacy_status_migration():
@@ -210,7 +209,7 @@ def test_flow_config_v2_model():
     # tor Opiekuna (góra) tylko AWAITING_OWNER i hot
     assert stages["owner"]["statuses"] == ["AWAITING_OWNER"] and stages["owner"]["lane"] == "top" and stages["owner"]["hot"]
     # tor blokad (dół): BLOCKED + FAILED (auto-retry)
-    assert set(stages["blocked"]["statuses"]) == {"BLOCKED", "FAILED"} and stages["blocked"]["lane"] == "bottom"
+    assert set(stages["blocked"]["statuses"]) == {"BLOCKED"} and stages["blocked"]["lane"] == "bottom"
     tr = {(t["from"], t["to"]) for t in cfg["transitions"]}
     assert ("review", "changes") in tr and ("changes", "working") in tr      # pętla CR
     assert ("owner", "queue") in tr and ("owner", "blocked") in tr            # decyzja -> READY / odrzucenie -> BLOCKED
@@ -219,7 +218,7 @@ def test_flow_config_v2_model():
     assert cfg["actions"]["approve"]["allowed_from"] == ["AWAITING_OWNER"]
     assert cfg["actions"]["approve"]["target_status"] == "READY"
     assert cfg["actions"]["decline"]["target_status"] == "BLOCKED"
-    assert cfg["actions"]["retry"]["allowed_from"] == ["FAILED", "BLOCKED"]
+    assert cfg["actions"]["retry"]["allowed_from"] == ["BLOCKED"]
 
 
 def test_apply_action_owner_lifecycle():

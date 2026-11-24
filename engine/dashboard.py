@@ -848,13 +848,22 @@ async function refreshInner(){
     `<span class="muted">🗂</span> ${pbadge(p.project_id)} ${p.active===false?'🛑 <b style="color:#f85149">NIEAKTYWNY</b>':''} policy=${esc(p.approval_policy||'manual')} read_only=${p.read_only?1:0} target=${esc(p.target)}`).join('<br>');
   const PIC = {'P0':'🔥','P1':'⚡','P2':'•','P3':'🐢'};
   // przepływ pracy: kanban statusów (kolejność procesu), kafelek = zadanie
-  const FLOW = ['AWAITING_OWNER','READY','RUNNING','CHANGES_REQUESTED','IN_REVIEW','READY_TO_MERGE','MERGED','FAILED','ESCALATED','BLOCKED'];
-  const byStatus = {}; for(const t of visTasks){ (byStatus[t.status] = byStatus[t.status]||[]).push(t); }
+  const FLOW = ['READY','RUNNING','IN_REVIEW','CHANGES_REQUESTED','READY_TO_MERGE','MERGED','AWAITING_OWNER','BLOCKED'];
+  const byStatus = {};
+  function boardCol(t){
+    if(t.lane==='resume') return 'RUNNING';
+    if(t.lane==='fresh') return 'READY';
+    if(t.lane==='review') return 'IN_REVIEW';
+    if(t.lane==='changes') return 'CHANGES_REQUESTED';
+    if(t.lane==='merge') return 'READY_TO_MERGE';
+    return t.status;
+  }
+  for(const t of visTasks){ const col = boardCol(t); (byStatus[col] = byStatus[col]||[]).push(t); }
   document.getElementById('flow').innerHTML = FLOW.map((st,i) => {
     const items = byStatus[st]||[];
     const hot = st==='AWAITING_OWNER' && items.length, run = st==='RUNNING';
     const chips = items.slice(0,8).map(t =>
-      `<span class="chip st-${st}" onclick="openTask('${t.id}')">${favMark(t.id)}${PIC[t.priority||'P2']||''}<b>${esc(t.id)}</b>${t.depth?' ↳':''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
+      `<span class="chip st-${st}" onclick="openTask('${t.id}')">${favMark(t.id)}${PIC[t.priority||'P2']||''}<b>${esc(t.id)}</b>${t.depth?' ↳':''} ${t.lane==='resume'?`<span class="who">${esc(t.substep||'w toku')}</span>`:''} ${t.status==='RUNNING'&&t.started_at?(`<span class="clock" data-started="${t.started_at}">⏱ ${fmtDur(Date.now()/1000-t.started_at)}</span>`):''}
        <span class="who">${esc(t.persona||t.role||'')}</span></span>`).join('') + (items.length>8?`<span class="chip muted">+${items.length-8} więcej…</span>`:'');
     const arrow = i < FLOW.length-1 ? '<span class="arrow">→</span>' : '';
     return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${sbadge(st)} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
@@ -901,7 +910,9 @@ async function refreshInner(){
   document.getElementById('team').innerHTML = (d.team||[]).map(m => {
     const col = m.color || '#8b949e';
     const curRes = m.current && m.current.res ? ` <span class="muted" title="pid ${m.current.res.pid}">⚙️${m.current.res.cpu}% 🧠${m.current.res.rss_mb}MB</span>` : '';
-    const cur = m.current ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span>${curRes}${!m.current.res?" 💤":""}</div>` : '<div class="cur muted">— wolny/a —</div>';
+    const turn = m.current
+      ? `<div class="cur">🔨 ${esc(m.current.id)} <span class="muted">${esc(m.current.substep||'tura')}</span> <span class="clock" data-started="${m.current.started_at||0}">⏱ ${m.current.started_at?fmtDur(Date.now()/1000-m.current.started_at):''}</span> <span class="prio prio-${m.current.priority||'P2'}">${m.current.priority||'P2'}</span>${curRes}${!m.current.res?" 💤":""}</div>`
+      : (m.next ? `<div class="cur">następna tura: <b>${esc(m.next.id)}</b> <span class="muted">${esc(m.next.step)}</span></div>` : '<div class="cur muted">— wolny/a —</div>');
     // liczba zadań per status (kolorowe chipsy) zamiast „zadania: X zmergowane: Y”
     const chips = Object.entries(m.by_status||{}).sort((a,b)=>b[1]-a[1]).map(([st,n]) =>
       `<span class="sbadge" style="background:${ST_COLOR[st]||'#6e7681'};font-size:9px;padding:0 6px;margin:0 3px 2px 0" title="${esc(st)}: ${n}">${d.icons[st]||''} ${n}</span>`).join('');
@@ -911,7 +922,7 @@ async function refreshInner(){
       <button class="tbtn" style="float:right;margin-right:4px" onclick="event.stopPropagation();openDuties('${esc(m.role)}')" title="obowiązki cykliczne ${esc(m.name)}">📋</button>
       <div class="pos" style="color:${col}">${esc(m.position)} · rola: ${esc(m.role)}</div>
       <div class="story">„${esc(m.backstory)}”</div>
-      ${cur}
+      ${turn}
       <div class="stats">${chips || '<span class="muted">brak zadań</span>'}</div>
       <div class="tenure" title="czas w firmie / przepracowany czas">🏅 staż ${fmtDur(m.tenure_s||0)} · ⏱ przepracowane ${fmtDur(m.work_s||0)}</div>
     </div>`;
@@ -1032,7 +1043,7 @@ async function openTask(id, keep){
         return `<div class="${cls}"><span class="muted">${new Date((e.ts||0)*1000).toLocaleTimeString()}</span> ${esc(e.event||((e.from||'?')+' → '+(e.to||'?')))}${ch}${(e.by)?(' <span class="muted">— '+esc(String(e.by).slice(0,60))+'</span>'):''}</div>`;
       }).join('')||'<span class="muted">brak historii</span>'}</div>`;
   } else if(detailTab === 'comments'){
-    body = `<h2>💬 Komentarze</h2><div class="threadbox">${(t.comments||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(c=>`<div class="tmsg ${c.author==='sponsor'||c.author==='sponsor/dashboard'?'me':'agent'} ${ccls(c.text)}"><div class="ta"><b>${esc(c.author)}</b> <span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${esc(c.text.slice(0,400))}</div></div>`).join('')||'<span class="muted">brak komentarzy</span>'}</div>
+    body = `<h2>💬 Komentarze</h2><div class="threadbox">${(t.comments||[]).slice().sort((a,b)=>((b.ts||0)-(a.ts||0))).map(c=>`<div class="tmsg ${c.author==='sponsor'||c.author==='sponsor/dashboard'?'me':'agent'} ${ccls(c.text)}"><div class="ta"><b>${esc(c.author)}</b> <span class="muted">${new Date(c.ts*1000).toLocaleTimeString()}</span></div><div class="tt">${linkify(c.text, t.id)}</div></div>`).join('')||'<span class="muted">brak komentarzy</span>'}</div>
       <h2>✍️ Twój komentarz</h2>
       <textarea id="cbox" placeholder="uwaga do zadania (też leci na PR na GitHubie)…"></textarea>
       <button onclick="sendComment()">Dodaj komentarz</button>
@@ -1884,7 +1895,7 @@ function openPerson(nodeId){
   const kids = (n.reports || []).map(rid => byId[rid]).filter(Boolean);
   const chips = Object.entries(n.by_status||{}).sort((a,b)=>b[1]-a[1]).map(([st,c]) =>
     `<span class="sbadge" style="background:${ST_COLOR[st]||'#6e7681'};font-size:9px;margin:0 3px 2px 0">${esc(st)} ${c}</span>`).join('');
-  const cur = n.current ? `<div class="cur" onclick="closeDetail();openTask('${esc(n.current.id)}')" style="cursor:pointer">🔨 <b>${esc(n.current.id)}</b> ${esc((n.current.title||'').slice(0,80))} <span class="prio prio-${n.current.priority||'P2'}">${n.current.priority||'P2'}</span> <span class="clock" data-started="${n.current.started_at||0}">⏱ ${fmtDur(n.current.elapsed||0)}</span> ${pbadge(n.current.project_id)}</div>` : '<div class="cur muted">— wolny/a (brak bieżącego zadania) —</div>';
+  const cur = n.current ? `<div class="cur" onclick="closeDetail();openTask('${esc(n.current.id)}')" style="cursor:pointer">🔨 <b>${esc(n.current.id)}</b> ${esc(n.current.substep||'tura')} <span class="prio prio-${n.current.priority||'P2'}">${n.current.priority||'P2'}</span> <span class="clock" data-started="${n.current.started_at||0}">⏱ ${fmtDur(n.current.elapsed||0)}</span></div>` : (n.next ? `<div class="cur">następna tura: <b>${esc(n.next.id)}</b> ${esc(n.next.step||'')}</div>` : '<div class="cur muted">— wolny/a (brak bieżącego zadania) —</div>');
   document.getElementById('detailBody').innerHTML = `
     <h3>${n.icon||'🧑'} <span style="color:${col}">${esc(n.name||n.label)}</span> <span class="muted" style="font-size:12px">${esc(n.title||'')} · rola: <code>${esc(n.role||'—')}</code></span></h3>
     ${n.persona && n.persona.backstory ? `<div class="story">„${esc(n.persona.backstory)}”</div>` : ''}
@@ -2559,6 +2570,8 @@ def _snapshot(s: State) -> dict:
                                              "review_notes", "created_at", "title_sponsor", "eta_s")})
         from engine.state import substep_progress
         tasks[-1]["progress"] = t.get("progress") if t.get("progress") is not None else substep_progress(t.get("substep"))
+        from engine.state import dispatch_lane
+        tasks[-1]["lane"] = dispatch_lane(t) or ""
         tasks[-1]["age"] = max(0, time.time() - (t.get("updated_at") or t.get("created_at") or time.time()))
         tasks[-1]["pr"] = github_bridge.pr_for_task(t["id"])
         p = personas.persona_for_role(t.get("role") or "")
@@ -2630,8 +2643,20 @@ def _snapshot(s: State) -> dict:
         team.append({**p, "tasks": r["tasks"], "merged": r["merged"], "by_status": by_status,
                      "tenure_s": max(0.0, now_t - first_seen), "work_s": work_s,
                      "current": ({"id": cur["id"], "started_at": cur.get("started_at"), "priority": cur.get("priority"),
+                                  "substep": cur.get("substep") or "", "title": cur.get("title") or "",
                                   "res": _proc_stats(cur.get("claimed_by"))}
-                                 if cur else None)})
+                                 if cur else None),
+                     "next": None})
+    turns = s.next_work()
+    taken = {m["current"]["id"] for m in team if m.get("current")}
+    for m in team:
+        if m.get("current"):
+            continue
+        nxt = next((t for t in turns if t["role"] == m["role"] and t["task_id"] not in taken), None)
+        if nxt:
+            m["next"] = {"id": nxt["task_id"], "step": nxt["step"], "lane": nxt["lane"],
+                         "priority": nxt["priority"], "title": nxt["title"]}
+            taken.add(nxt["task_id"])
     # kolejność wg STAŻU pracy (najstarsi pracownicy pierwsi); pracujący mają osobny badge
     team.sort(key=lambda x: (-(x.get("tenure_s") or 0), x["role"]))
     # --- nowa osoba w firmie: rola widziana pierwszy raz i ŚWIEŻA (tenure < 10 min) -> banner/toast ---

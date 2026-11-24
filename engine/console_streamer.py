@@ -41,6 +41,24 @@ MAX_BYTES = 50 * 1024 * 1024   # 50 MB – po przekroczeniu rotacja
 DB_WRITE_INTERVAL = 30.0        # min odstęp zapisów last_activity_at do SQLite
 
 
+def append_git(task_id: str, args: list[str], stdout: str, stderr: str, rc: int) -> None:
+    """Dopisuje komendę gita i to, co zwróciła, do konsoli zadania."""
+    cmd = "git " + " ".join(args)
+    path = console_path(task_id)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(_event("cmd", "git", cmd=cmd) + "\n")
+        if stdout:
+            fh.write(_event("stdout", "git", data=stdout[-2000:]) + "\n")
+        if stderr:
+            fh.write(_event("stderr", "git", data=stderr[-2000:]) + "\n")
+        fh.write(_event("meta", "git", data="exit", rc=rc) + "\n")
+    try:
+        from engine.state import State
+        State().touch_worker(task_id, phase="KOMENDA", step="git", cmd=cmd, rc=rc)
+    except Exception:
+        pass
+
+
 def console_path(task_id: str) -> Path:
     """Ścieżka pliku .jsonl dla danego zadania."""
     CONSOLE_DIR.mkdir(parents=True, exist_ok=True)
@@ -94,6 +112,7 @@ class ConsoleStreamer:
         """Loguje uruchomienie komendy."""
         self._current_step = step
         self._write(_event("cmd", step, cmd=cmd))
+        self._touch(phase="KOMENDA", step=step, cmd=cmd)
 
     def log_data(self, stream: str, step: str, data: str) -> None:
         """Loguje surowy output (stdout lub stderr)."""
@@ -102,6 +121,16 @@ class ConsoleStreamer:
     def log_meta(self, step: str, event: str, rc: int | None = None) -> None:
         """Loguje zdarzenia meta (start/exit/substep change)."""
         self._write(_event("meta", step, data=event, rc=rc))
+        phase = "SKONCZYL" if event == "exit" else "ZYJE"
+        self._touch(phase=phase, step=step, rc=rc)
+
+    def _touch(self, **kw) -> None:
+        if self.state is None:
+            return
+        try:
+            self.state.touch_worker(self.task_id, **kw)
+        except Exception:
+            pass
 
     def set_step(self, step: str) -> None:
         """Aktualizuje bieżący substep (bez zapisu zdarzenia)."""

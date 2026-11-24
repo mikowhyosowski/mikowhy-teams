@@ -25,6 +25,29 @@ from engine.state import AWAITING_OWNER, CHANGES_REQUESTED, IN_REVIEW, READY_TO_
 CIRCUIT_BREAKER_RETRIES = 3  # max prób pętli CR -> po limicie AWAITING_OWNER (pakiet dla Opiekuna)
 
 
+def _write_review_file(task_id: str, verdict: dict, sha: str, attempt: int) -> str:
+    """Jeden plik na próbę. Nigdy nie nadpisuje poprzedniej recenzji."""
+    from engine.state import ROOT as factory
+    folder = factory / ".agents" / "tasks" / task_id / "reviews"
+    folder.mkdir(parents=True, exist_ok=True)
+    name = time.strftime("code_review_%Y%m%dT%H%M%SZ.md", time.gmtime())
+    path = folder / name
+    if path.exists():
+        name = name.replace(".md", f"_{int(time.time())}.md")
+        path = folder / name
+    notes = verdict.get("notes") or []
+    lines = [f"# Code review {task_id}", "", f"- werdykt: {verdict.get('verdict')}",
+             f"- próba: {attempt}", f"- sha: {sha or 'brak'}", ""]
+    for note in notes:
+        if isinstance(note, dict):
+            lines.append(f"- {note.get('rule', '')}: {note.get('detail', '')}")
+        else:
+            lines.append(f"- {note}")
+    lines += ["", "```json", json.dumps(verdict, ensure_ascii=False, indent=2)[:8000], "```", ""]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return name
+
+
 def review(task_id: str) -> int:
     state = State()
     task = state.get_task(task_id)
@@ -47,8 +70,11 @@ def review(task_id: str) -> int:
     verdict = gw.complete_json(
         system=system, user=json.dumps(payload, ensure_ascii=False),
         step="CODE_REVIEW", model=skill_compiler.model_for_role("code-reviewer", kind="strong"),
-        priority="P1",  # CR to wąskie gardło linii — nie czeka za P2/P3
+        priority="P0",  # CR jest bramką linii — przed implementacjami P1, inaczej review stoi w kolejce strong
     )
+    sha = git_guard.run_git(["rev-parse", task["branch"]], cwd=repo, check=False).stdout.strip()
+    review_name = _write_review_file(task_id, verdict, sha, task["retry_count"] + 1)
+    token = f" [[review:{review_name}]]" if review_name else ""
 
     # GitHub: werdykt CR jako oficjalny review PR (jeśli task ma PR)
     try:
@@ -64,7 +90,7 @@ def review(task_id: str) -> int:
         print(f"[github] review post skipped: {exc!r}", flush=True)
 
     if verdict.get("verdict") == "APPROVED":
-        state.add_comment(task_id, "code-reviewer", f"✅ CR APPROVED (próba {task['retry_count'] + 1}) → READY_TO_MERGE. Proszę o merge.")
+        state.add_comment(task_id, "code-reviewer", f"✅ CR APPROVED (próba {task['retry_count'] + 1}) → READY_TO_MERGE. Proszę o merge.{token}")
         state.transition(task_id, READY_TO_MERGE, review_notes=json.dumps(verdict, ensure_ascii=False))
         state.record_metric("cr_approved", {"verdict": verdict}, task_id)
         skill_compiler.promote_role_if_probation(task["role"])  # zmiana #5
@@ -80,7 +106,7 @@ def review(task_id: str) -> int:
     notes = verdict.get("notes", [])
     reasons = "; ".join((n.get("rule", str(n)) if isinstance(n, dict) else str(n)) for n in notes)
     state.add_comment(task_id, "code-reviewer",
-                      f"🔍 CR REJECTED (próba {task['retry_count'] + 1}) → CHANGES_REQUESTED: " + reasons[:300])
+                      f"🔍 CR REJECTED (próba {task['retry_count'] + 1}) → CHANGES_REQUESTED: " + reasons[:300] + token)
     if task["retry_count"] + 1 >= CIRCUIT_BREAKER_RETRIES:
         # limit prób pętli CR wyczerpany -> pakiet dla Opiekuna (ostatnia instancja), nie rutynowa eskalacja
         state.transition(task_id, AWAITING_OWNER, substep="OWNER_PACKET", retry_count=task["retry_count"] + 1,

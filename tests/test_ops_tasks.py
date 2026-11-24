@@ -136,7 +136,7 @@ def test_stuck_requeued_with_error_history_not_owner():
 
 
 def test_queue_sort_priority_progress_retry_age():
-    """v2.7.14: kolejność claimable_tasks = priorytet → (3+ retry na koniec pasma) → wyższy postęp → najstarsze."""
+    """Prawa strona tablicy przed lewą: wznowienie przed świeżym P0. W kolumnie P0, potem wiek, 3 retry na końcu."""
     import time as _t
     s = _tmp_state()
     now = _t.time()
@@ -150,10 +150,21 @@ def test_queue_sort_priority_progress_retry_age():
     s._conn().execute("UPDATE tasks SET created_at=? WHERE id='Q-P2-PROG'", (now - 100,))
     s._conn().execute("UPDATE tasks SET created_at=? WHERE id='Q-P2-RETRY3'", (now - 50,))
     ids = [t["id"] for t in s.claimable_tasks()]
-    assert ids[0] == "Q-P0"                 # priorytet rządzi
-    assert ids.index("Q-P2-PROG") < ids.index("Q-P2-OLD")   # wyższy postęp przed starszym
-    assert ids[-1] == "Q-P2-RETRY3"         # 3+ retry na koniec (mimo najnowszego)
-    assert ids == ["Q-P0", "Q-P2-PROG", "Q-P2-OLD", "Q-P2-RETRY3"]
+    assert ids == ["Q-P2-PROG", "Q-P0", "Q-P2-OLD", "Q-P2-RETRY3"]
+
+
+def test_next_work_right_side_first():
+    """Do merge przed poprawką, poprawka przed recenzją, recenzja przed wznowieniem, wznowienie przed P0 w Gotowe."""
+    s = _tmp_state()
+    s.add_task("N-FRESH", "FACTORY-OPS", 9, "nowe", "backend-dev", status="READY", priority="P0")
+    s.add_task("N-RESUME", "FACTORY-OPS", 9, "w toku", "backend-dev", status="READY", priority="P3")
+    s.add_task("N-REV", "FACTORY-OPS", 9, "recenzja", "code-reviewer", status="IN_REVIEW", priority="P3")
+    s.add_task("N-CHG", "FACTORY-OPS", 9, "poprawki", "backend-dev", status="CHANGES_REQUESTED", priority="P3")
+    s.add_task("N-MRG", "FACTORY-OPS", 9, "merge", "backend-dev", status="READY_TO_MERGE", priority="P3")
+    s._conn().execute("UPDATE tasks SET substep='4/5_QG' WHERE id='N-RESUME'")
+    ids = [t["task_id"] for t in s.next_work()]
+    assert ids == ["N-MRG", "N-CHG", "N-REV", "N-RESUME", "N-FRESH"]
+    assert [t["kind"] for t in s.next_work()] == ["merge", "work", "review", "work", "work"]
 
 
 def test_substep_progress():
@@ -416,10 +427,9 @@ def test_resume_uses_furthest_max_substep():
 
 
 def test_failed_parked_after_max_retries_for_team_audit():
-    """v2.7.17: FAILED po max_retries zostaje ZAPARKOWANE w FAILED (czeka na audyt AUDIT-FAILED-ROOTCAUSE),
-    nie wraca samo do READY ani do Opiekuna; próby 1..2 idą do READY (koniec kolejki)."""
+    """Po max_retries zadanie idzie do opiekuna. Jedna próba wraca do READY."""
     from engine.orchestrator import Orchestrator, CIRCUIT_BREAKER_RETRIES
-    from engine.state import FAILED, READY
+    from engine.state import AWAITING_OWNER, READY
     s = _tmp_state()
     s.add_task("T-F1", "FACTORY-OPS", 9, "jedna próba", "backend-dev", status="FAILED")
     s._conn().execute("UPDATE tasks SET retry_count=1 WHERE id='T-F1'")
@@ -428,11 +438,9 @@ def test_failed_parked_after_max_retries_for_team_audit():
     o = Orchestrator.__new__(Orchestrator)
     o.state = s
     o._auto_retry_failed()
-    assert s.get_task("T-F1")["status"] == READY and s.get_task("T-F1")["retry_count"] == 2  # auto-retry dalej
+    assert s.get_task("T-F1")["status"] == READY and s.get_task("T-F1")["retry_count"] == 2
     t3 = s.get_task("T-F3")
-    assert t3["status"] == FAILED, t3["status"]                                          # zaparkowane
-    assert "ZAPARKOWANE" in (t3["review_notes"] or "")
-    # obowiązek cykliczny audytu FAILED — seedowany przez _ensure_ops_recurring dla systems-auditor
+    assert t3["status"] == AWAITING_OWNER, t3["status"]
     o._ensure_ops_recurring()
     rec = [r for r in s.list_recurring(active_only=False) if r["id"] == "AUDIT-FAILED-ROOTCAUSE"]
     assert rec and rec[0]["role"] == "systems-auditor" and rec[0]["schedule"] == "daily"

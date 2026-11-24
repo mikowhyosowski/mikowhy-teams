@@ -38,6 +38,17 @@ MAX_SPLIT_DEPTH = 1        # zmiana #7 — twardy limit głębokości podziału
 STEP_TIMEOUT_HINT = {"1/5_PLAN": 45, "2/5_IMPL": 120, "3/5_TEST": 90, "4/5_QG": 90}
 
 
+def _commit_marker(worktree: Path) -> str:
+    """Token komentarza: link do commita, albo samo sha gdy go nie ma na origin."""
+    sha = git_guard.run_git(["rev-parse", "HEAD"], cwd=worktree, check=False).stdout.strip()
+    if not sha or sha.startswith("fatal"):
+        return ""
+    remote = git_guard.run_git(["branch", "-r", "--contains", sha], cwd=worktree, check=False)
+    if remote.returncode == 0 and "origin/" in (remote.stdout or ""):
+        return f" [[commit:{sha}]]"
+    return f" [[commit-local:{sha}]]"
+
+
 def _log(task_id: str, msg: str) -> None:
     print(f"[{task_id}] {msg}", flush=True)
 
@@ -55,13 +66,12 @@ def _stage_stop(state: State, task_id: str, stage: str) -> bool:
     except Exception:
         return False  # brak tabeli/kv — gdyby feature nie było dostępne, nie blokuj pracy
     state.clear_stop(task_id)
-    state.transition(task_id, READY,
-                     review_notes=f"pauza ⏹️ na granicy etapu {stage} (żądanie Sponsora: zakończ po etapie)")
+    state.set_presence(task_id, "ZPAUZOWANE",
+                       review_notes=f"pauza na granicy etapu {stage}")
     state.add_comment(task_id, "orchestrator",
-                      f"⏹️ Cel: zakończyć pracę po etapie {stage} → ✅ Efekt: pauza na granicy etapu "
-                      f"(status READY, postęp i załączniki zachowane) — wznowienie ze standardowej kolejki")
+                      f"Cel: zakończyć pracę po etapie {stage}. Efekt: status zostaje, obecność ZPAUZOWANE")
     state.record_metric("stage_stop", {"task": task_id, "stage": stage}, task_id)
-    _log(task_id, f"stage-stop: pauza po etapie {stage} → READY")
+    _log(task_id, f"stage-stop: pauza po etapie {stage}, obecność ZPAUZOWANE")
     return True
 
 
@@ -589,7 +599,7 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         state.add_comment_report(task["id"], f"worker({task['role']})",
                                  "przekazać do Code Review mimo pustego diffu",
                                  "diff zerowy (zmiany już siedzą w branchu albo nie ma nowej treści), "
-                                 "QG zielone — oddaję decyzję Code Review")
+                                 "QG zielone — oddaję decyzję Code Review" + _commit_marker(worktree))
         _safe_transition(state, task["id"], IN_REVIEW, substep="done")
         _log(task["id"], "pusty diff + QG zielone → IN_REVIEW")
         state.record_metric("empty_diff_to_review", {}, task["id"])
@@ -608,7 +618,8 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
     git_guard.push(task["branch"], worktree)
     state.add_comment_report(task["id"], f"worker({task['role']})",
                              f"dostarczyć zmiany z {task['id']} do review",
-                             f"zacommitowano {lines} linii na gałęzi {task['branch']} i wypchnięto — czekam na niezależny Code Review")
+                             f"zacommitowano {lines} linii na gałęzi {task['branch']} i wypchnięto — czekam na niezależny Code Review"
+                             + _commit_marker(worktree))
     # GitHub: push branch + PR (base = gałąź milestonu albo master)
     try:
         from engine import github_bridge
@@ -802,13 +813,42 @@ def step_llm(state: State, task: dict, worktree: Path, base: str) -> None:
     ahead = git_guard.run_git(["diff", "--quiet", f"{base}...HEAD"], cwd=worktree, check=False).returncode != 0
     if not staged and ahead:
         git_guard.push(task["branch"], worktree)
-        state.add_comment(tid, f"llm({model})", f"✅ LLM sam zacommitował ({task['branch']}) → IN_REVIEW")
+        state.add_comment(tid, f"llm({model})", f"✅ LLM sam zacommitował ({task['branch']}) → IN_REVIEW" + _commit_marker(worktree))
         _safe_transition(state, tid, IN_REVIEW, substep="done")
         return
     step5_commit(state, task, worktree, base)
 
 
 _PIPELINE = ("1/5_PLAN", "2/5_IMPL", "3/5_TEST", "4/5_QG", "4.5_SIMPLIFY", "5/5_COMMIT")
+
+
+def _next_pipeline_step(step: str) -> str | None:
+    if step not in _PIPELINE:
+        return None
+    i = _PIPELINE.index(step)
+    return _PIPELINE[i + 1] if i + 1 < len(_PIPELINE) else None
+
+
+def _yield_turn(state: State, task_id: str, completed: str) -> bool:
+    """Koniec jednej tury. Worker wychodzi, slot bierze prawą stronę tablicy."""
+    if _stage_stop(state, task_id, completed):
+        return True
+    task = state.get_task(task_id)
+    if not task or task["status"] != RUNNING:
+        return True
+    nxt = _next_pipeline_step(completed)
+    if nxt is None:
+        return False
+    state.transition(task_id, READY, substep=nxt,
+                     review_notes=f"tura {completed} skończona, następna {nxt}")
+    try:
+        state.touch_worker(task_id, phase="SKONCZYL", step=completed, cmd=f"następna tura: {nxt}")
+    except Exception:
+        pass
+    state.add_comment(task_id, "worker",
+                      f"Cel: oddać slot po etapie {completed}. Efekt: następna tura to {nxt}")
+    _log(task_id, f"tura skończona na {completed}, następna {nxt}")
+    return True
 
 
 def _should_run(resume: str, step: str) -> bool:
@@ -884,8 +924,8 @@ def run(task_id: str) -> int:
                 telegram_reporter.post_event(state, task, "✂️ SPLIT_TASK — zadanie podzielone na podzadania (patrz karta)")
                 streamer.log_meta("1/5_PLAN", "SPLIT_TASK or non-running")
                 return 0
-            if _stage_stop(state, task_id, "1/5_PLAN"):
-                streamer.log_meta("1/5_PLAN", "stage_stop")
+            if _yield_turn(state, task_id, "1/5_PLAN"):
+                streamer.log_meta("1/5_PLAN", "yield")
                 return 0
             _tg(state, task_id)
         else:
@@ -899,8 +939,8 @@ def run(task_id: str) -> int:
                 _tg(state, task_id)
                 streamer.log_meta("2/5_IMPL", f"status transition: {task['status']}")
                 return 0
-            if _stage_stop(state, task_id, "2/5_IMPL"):
-                streamer.log_meta("2/5_IMPL", "stage_stop")
+            if _yield_turn(state, task_id, "2/5_IMPL"):
+                streamer.log_meta("2/5_IMPL", "yield")
                 return 0
             _tg(state, task_id)
         else:
@@ -909,8 +949,8 @@ def run(task_id: str) -> int:
             streamer.log_meta("3/5_TEST", "step3_tests start")
             step3_tests(state, task, worktree)
             state.set_kv(f"last_successful_step:{task_id}", "3/5_TEST")
-            if _stage_stop(state, task_id, "3/5_TEST"):
-                streamer.log_meta("3/5_TEST", "stage_stop")
+            if _yield_turn(state, task_id, "3/5_TEST"):
+                streamer.log_meta("3/5_TEST", "yield")
                 return 0
             _tg(state, task_id)
         else:
@@ -925,25 +965,29 @@ def run(task_id: str) -> int:
                 _tg(state, task_id)
                 streamer.log_meta("4/5_QG", "QG failed")
                 return 0
-            if _stage_stop(state, task_id, "4/5_QG"):
-                streamer.log_meta("4/5_QG", "stage_stop")
+            if _yield_turn(state, task_id, "4/5_QG"):
+                streamer.log_meta("4/5_QG", "yield")
                 return 0
         else:
             streamer.log_meta("4/5_QG", f"skipped (resume {resume_step})")
         if _should_run(resume_step, "4.5_SIMPLIFY"):
             streamer.log_meta("4.5_SIMPLIFY", "step45_simplify start")
             step45_simplify(state, task, worktree, base)
-        task = state.get_task(task_id)
-        if task["status"] == "RUNNING":
-            if _stage_stop(state, task_id, "4.5_SIMPLIFY"):
-                streamer.log_meta("4.5_SIMPLIFY", "stage_stop")
+            if _yield_turn(state, task_id, "4.5_SIMPLIFY"):
+                streamer.log_meta("4.5_SIMPLIFY", "yield")
                 return 0
-            streamer.log_meta("5/5_COMMIT", "step5_commit start")
-            step5_commit(state, task, worktree, base)
-        task = state.get_task(task_id)
-        if task and task["status"] == "IN_REVIEW":
-            _tg(state, task_id, "commit OK → IN_REVIEW (czeka na Code Review)")
-            streamer.log_meta("5/5_COMMIT", "commit OK -> IN_REVIEW")
+        if resume_step in ("5/5_COMMIT", "done"):
+            task = state.get_task(task_id)
+            if task and task["status"] == "RUNNING":
+                if _stage_stop(state, task_id, "5/5_COMMIT"):
+                    streamer.log_meta("5/5_COMMIT", "stage_stop")
+                    return 0
+                streamer.log_meta("5/5_COMMIT", "step5_commit start")
+                step5_commit(state, task, worktree, base)
+            task = state.get_task(task_id)
+            if task and task["status"] == "IN_REVIEW":
+                _tg(state, task_id, "commit OK → IN_REVIEW (czeka na Code Review)")
+                streamer.log_meta("5/5_COMMIT", "commit OK -> IN_REVIEW")
         return 0
     except Exception as exc:  # deterministyczny fallback — nigdy cicha śmierć
         # v2.7.29: pełny traceback do loga — bez tego błędy typu OperationalError/TypeError
@@ -973,8 +1017,10 @@ def run(task_id: str) -> int:
         except Exception:
             pass
         if worktree is not None:
-            repo = projects.repo_for_task(task, state)
-            git_guard.remove_worktree(task_id, ns=task.get("project_id") or "mikowhy-teams", repo=repo)
+            task = state.get_task(task_id) or task
+            if task and task.get("status") in ("IN_REVIEW", "READY_TO_MERGE", "MERGED", "BLOCKED"):
+                repo = projects.repo_for_task(task, state)
+                git_guard.remove_worktree(task_id, ns=task.get("project_id") or "mikowhy-teams", repo=repo)
 
 
 def main() -> None:

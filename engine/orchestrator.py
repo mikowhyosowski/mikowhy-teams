@@ -262,7 +262,7 @@ class Orchestrator:
         try:
             woken = self.state.wake_cooling()
             if woken:
-                self._notify("wake", f"❄️→▶️ pobudzono {woken} zamrożonych zadań (sleep minął) → READY")
+                self._notify("wake", f"pobudzono {woken} uśpionych zadań — etap bez zmiany, obecność AKTYWNE")
         except Exception as e:
             self.state.record_metric("wake_cooling_error", {"error": repr(e)}, None)
         self._auto_retry_failed_inner()
@@ -375,28 +375,47 @@ class Orchestrator:
         return max(4, min(32, ram_cap))
 
     def _launch_workers(self) -> None:
-        # projekty nieaktywne (wstrzymane przez opiekuna) nie dostają workerów
-        # claimable = READY (z zależnościami) + CHANGES_REQUESTED (pętla poprawek po CR wraca do pracy)
-        tasks = [t for t in self.state.claimable_tasks()
-                 if projects.is_active(t.get("project_id") or "mikowhy-teams")]
+        self._dispatch_turns()
+
+    def _dispatch_turns(self) -> None:
+        """Jedna kolejka slotów: prawa kolumna tablicy dostaje agenta pierwsza."""
         cap = self._max_workers_now()
         free = cap - len(self.running)
-        # v2.7.28 — PEŁNY PARALLELIZM (decyzja Sponsora): każde zadanie jest chwytane
-        # natychmiast (RUNNING), a honory tę kolejkę pilnuje llm_queue (roota: nauka
-        # fair-play P0→P3 + batching + „⏳ czeka na wysłanie” w Operacjach).
-        # Kończy się wymóg „jedno zadanie na rola”: role pracują równolegle,
-        # a kolejność w obrębie roli daje claimable_tasks (priorytet → postęp → wiek).
+        merged = False
         spawned = 0
-        for task in tasks:
-            if task["id"] in self.running:
+        turns = self.state.next_work()
+        for turn in turns:
+            tid = turn["task_id"]
+            if tid in self.running:
+                continue
+            task = self.state.get_task(tid)
+            if task is None or not projects.is_active(task.get("project_id") or "mikowhy-teams"):
                 continue
             if free <= 0:
-                self.state.record_metric("throttled", {"waiting": len(tasks) - spawned,
+                self.state.record_metric("throttled", {"waiting": len(turns) - spawned,
                                                        "cap": cap, "running": len(self.running)}, None)
                 break
-            self._spawn("worker_lifecycle", task["id"])
+            try:
+                self.state.touch_worker(
+                    tid, step=turn["step"], phase="ZYJE",
+                    cmd=f"{turn['kind']}:{turn['step']}")
+            except Exception:
+                pass
+            if turn["kind"] == "merge":
+                if merged:
+                    continue
+                merged = True
+                self._handle_merges(only_id=tid)
+                free -= 1
+                spawned += 1
+                continue
+            module = "code_review" if turn["kind"] == "review" else "worker_lifecycle"
+            self._spawn(module, tid)
             spawned += 1
             free -= 1
+
+    def _launch_reviews(self) -> None:
+        return
 
     # --- faza 5: code review + circuit breaker ----------------------------------
     def _launch_reviews(self) -> None:
@@ -436,12 +455,14 @@ class Orchestrator:
                     self.state.record_metric("circuit_back_of_queue", {"task": task["id"], "retry": task["retry_count"]}, task["id"])
 
     # --- faza 6: merge do gałęzi integracyjnej (develop) / release pipeline ---------
-    def _handle_merges(self) -> None:
+    def _handle_merges(self, only_id: str | None = None) -> None:
         rtm = self.state.list_tasks(status=READY_TO_MERGE)
         # v2.7.10: zadania z flagą sponsor_merge (przycisk 🚀 Wdróż w flow) idą pierwsze
         rtm.sort(key=lambda t: (0 if self.state.get_kv(f"sponsor_merge:{t['id']}") else 1,
                                 -(t.get("updated_at") or 0)))
         for task in rtm:
+            if only_id and task["id"] != only_id:
+                continue
             ns = task.get("project_id") or "mikowhy-teams"
             repo = projects.repo_for_task(task, self.state)  # multi-project: fizyczne repo projektu
             # AUTO-MERGE DO MAIN: projekt z approval_policy=auto nad samym silnikiem (fabryka)
@@ -525,6 +546,8 @@ class Orchestrator:
                 # dowolny inny błąd merge nie może blokować reszty ticka (telegram/health/milestony)
                 self.state.record_metric("merge_error", {"task": task["id"], "error": repr(exc)}, task["id"])
                 print(f"[orchestrator] błąd merge {task['id']}: {exc!r}", flush=True)
+            if only_id:
+                return
 
     # --- v2.8.0: WARSTWA 2/3 — staging + release candidates ------------------------
 
@@ -760,6 +783,8 @@ class Orchestrator:
             # IN_REVIEW zostaje: worker ma się tam skończyć. Martwy PID po oddaniu do review
             # nie jest zombie — zrzucenie do READY kasowało kolejkę code review.
             if task["status"] != RUNNING:
+                continue
+            if (task.get("presence") or "AKTYWNE") != "AKTYWNE":
                 continue
             pid = None
             m = re.search(r"(\d+)\s*$", task.get("claimed_by") or "")
@@ -1142,7 +1167,6 @@ class Orchestrator:
         self._circuit_breakers()
         self._stale_queue_watchdog()
         self._monitor_worker_errors()  # Monitorowanie błędów workerów w czasie rzeczywistym
-        self._handle_merges()
         self._handle_releases()
         self._cleanup_merged_branches()
         self._handle_milestones()

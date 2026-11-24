@@ -66,11 +66,13 @@ READY_TO_MERGE = "READY_TO_MERGE"  # CR zatwierdził
 MERGED = "MERGED"                  # zmergowane do gałęzi milestonu — koniec standardowego obiegu
 AWAITING_OWNER = "AWAITING_OWNER"  # czeka na Opiekuna (Sponsora) — TYLKO ostateczność
 BLOCKED = "BLOCKED"                # twarda blokada (odrzucenie Opiekuna / brak dostępu / wyczerpane auto-retry)
-FAILED = "FAILED"                  # legacy: błąd przejściowy — auto-retry z limitem prób (backoff)
+FAILED = "FAILED"                  # usunięty ze statusów — błąd przejściowy ustawia presence=USPIONE
 ESCALATED = "ESCALATED"            # legacy: migrowane do AWAITING_OWNER przy starcie
-COOLING = "COOLING"                # ❄️ v2.7.23: zamrożone po przejściowym błędzie — sleep bezpieczeństwa, potem orchestrator budzi -> READY
-COOLING = "COOLING"                # ❄️ v2.7.23: zamrożone po przejściowym błędzie — bezpieczny sleep, orchestrator budzi -> READY
+COOLING = "COOLING"                # legacy: sen nie jest statusem, tylko presence=USPIONE
 AWAITING_APPROVAL = AWAITING_OWNER  # alias wsteczny — stare odniesienia w kodzie = AWAITING_OWNER
+PRESENCE_ACTIVE = "AKTYWNE"
+PRESENCE_ASLEEP = "USPIONE"
+PRESENCE_PAUSED = "ZPAUZOWANE"
 
 def substep_progress(substep: str | None) -> float:
     """Postęp zadania 0..1 wyliczony z substepu: '2/5_IMPL' -> 0.4, '4.5_SIMPLIFY' -> 0.9,
@@ -154,19 +156,53 @@ def resume_substep(task: dict | None) -> str:
     return "1/5_PLAN"
 
 
+_FRESH_STEPS = {"", "0/5_PREPARE", "1/5_PLAN"}
+LANE_RANK = {"merge": 5, "changes": 4, "review": 3, "resume": 2, "fresh": 1}
+LANE_KIND = {"merge": "merge", "changes": "work", "review": "review", "resume": "work", "fresh": "work"}
+
+
+def dispatch_lane(task: dict[str, Any]) -> str | None:
+    """Kolumna, z której orchestrator bierze zadanie. Puste = nie do wzięcia."""
+    if (task.get("presence") or PRESENCE_ACTIVE) != PRESENCE_ACTIVE:
+        return None
+    status = task.get("status")
+    if status == READY_TO_MERGE:
+        return "merge"
+    if status == CHANGES_REQUESTED:
+        return "changes"
+    if status == IN_REVIEW:
+        return "review"
+    if status == READY:
+        step = (task.get("substep") or "").strip()
+        if step not in _FRESH_STEPS:
+            return "resume"
+        return "fresh"
+    return None
+
+
+def _turn_step(task: dict[str, Any], lane: str) -> str:
+    if lane == "merge":
+        return "MERGE"
+    if lane == "review":
+        return "CODE_REVIEW"
+    if lane == "changes":
+        return "2/5_IMPL"
+    step = (task.get("substep") or "").strip()
+    if step == "done":
+        return "5/5_COMMIT"
+    return step if step and step not in ("", "0/5_PREPARE") else "1/5_PLAN"
+
+
 VALID_TRANSITIONS: dict[str, set[str]] = {
-    READY: {RUNNING, BLOCKED, ESCALATED, AWAITING_OWNER},  # z kolejki też można oddać decyzję Opiekunowi (utknięte zadanie)
-    RUNNING: {IN_REVIEW, CHANGES_REQUESTED, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER, COOLING},
-    CHANGES_REQUESTED: {RUNNING, READY, FAILED, BLOCKED, ESCALATED, AWAITING_OWNER, COOLING},
-    IN_REVIEW: {READY_TO_MERGE, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER, COOLING},
+    READY: {RUNNING, BLOCKED, ESCALATED, AWAITING_OWNER},
+    RUNNING: {IN_REVIEW, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
+    CHANGES_REQUESTED: {RUNNING, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
+    IN_REVIEW: {READY_TO_MERGE, CHANGES_REQUESTED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
     READY_TO_MERGE: {MERGED, READY, BLOCKED, ESCALATED, AWAITING_OWNER},
     MERGED: set(),
-    FAILED: {READY, BLOCKED, ESCALATED, AWAITING_OWNER},  # auto-retry -> READY; po max_retries -> AWAITING_OWNER
-    BLOCKED: {READY, ESCALATED, AWAITING_OWNER},          # odblokowanie WYŁĄCZNIE do READY (pełny cykl)
-    ESCALATED: {READY, AWAITING_OWNER, BLOCKED},          # legacy
-    AWAITING_OWNER: {READY, BLOCKED},                     # decyzja Opiekuna -> READY (z decyzją w kontekście); odrzucenie -> BLOCKED
-    # ❄️ COOLING — zamrożone po przejściowym błędzie: bezpieczny sleep, orchestrator budzi -> READY (co → na co w notyfikacji)
-    COOLING: {READY, BLOCKED, AWAITING_OWNER},
+    BLOCKED: {READY, ESCALATED, AWAITING_OWNER},
+    ESCALATED: {READY, AWAITING_OWNER, BLOCKED},
+    AWAITING_OWNER: {READY, BLOCKED},
 }
 
 SCHEMA = """
@@ -362,7 +398,8 @@ class State:
                 ("tasks", "substep_since", "REAL NOT NULL DEFAULT 0"),  # v2.7.11: kiedy zaczął się bieżący sub-etap (live timer na kafelku)
                 ("tasks", "max_substep", "TEXT"),  # v2.7.16: NAJDALEJ wypracowany sub-etap w całej historii — przy powrocie do READY wznawiamy od niego
                 ("tasks", "eta_s", "REAL NOT NULL DEFAULT 0"),  # v2.7.19: szacowany czas zadania (s) — ETA, raport „za ile będzie”
-                ("tasks", "cooldown_until", "REAL NOT NULL DEFAULT 0"),  # v2.7.23: ❄️ COOLING — aż kiedy śpić (epoch)
+                ("tasks", "cooldown_until", "REAL NOT NULL DEFAULT 0"),  # sen: aż kiedy obecność USPIONE
+                ("tasks", "presence", "TEXT NOT NULL DEFAULT 'AKTYWNE'"),  # AKTYWNE | USPIONE | ZPAUZOWANE
                 ("tasks", "last_activity_at", "REAL NOT NULL DEFAULT 0"),  # v2.8.1: mtime / PTY activity timestamp
                 ("llm_jobs", "task_id", "TEXT"),  # v2.7.24: steel guard — 1 aktywny job per (task, kind, step)
                 ("tasks", "priority", "TEXT DEFAULT 'P2'"),  # P0=najwyższy … P3=najniższy
@@ -381,8 +418,29 @@ class State:
                 config TEXT NOT NULL DEFAULT '{}')""")
             # migracja statusów do docelowego modelu: AWAITING_APPROVAL/ESCALATED -> AWAITING_OWNER
             # (Opiekun jako ostatnia instancja; stare zadania nie wiszą w martwych statusach)
+            now = time.time()
             conn.execute("UPDATE tasks SET status='AWAITING_OWNER', updated_at=? "
-                         "WHERE status IN ('AWAITING_APPROVAL','ESCALATED')", (time.time(),))
+                         "WHERE status IN ('AWAITING_APPROVAL','ESCALATED')", (now,))
+            # FAILED znika. Mało prób: zostaje etap (READY) i sen. Dużo prób: opiekun.
+            conn.execute(
+                """UPDATE tasks SET status='AWAITING_OWNER', substep='OWNER_PACKET',
+                          presence='USPIONE', updated_at=?
+                   WHERE status='FAILED' AND COALESCE(retry_count,0) >= 3""",
+                (now,))
+            conn.execute(
+                """UPDATE tasks SET status='READY', presence='USPIONE', updated_at=?
+                   WHERE status='FAILED'""",
+                (now,))
+            # COOLING nie jest już statusem — sen zostaje w presence, etap wraca do pracy.
+            conn.execute(
+                """UPDATE tasks SET status=CASE
+                     WHEN substep IN ('1/5_PLAN','2/5_IMPL','3/5_TEST','4/5_QG','4.5_SIMPLIFY','5/5_COMMIT','LLM_EXEC')
+                       THEN 'RUNNING'
+                     WHEN substep='done' THEN 'IN_REVIEW'
+                     ELSE 'READY' END,
+                   presence='USPIONE', updated_at=?
+                   WHERE status='COOLING'""",
+                (now,))
         # v2.7.23: podpięcie rejestru operacji (ops) pod wszystkie moduły wykonujące operacje zewnętrzne —
         # każdy git/qg/tg/llm leci przez jeden spójny rejestr ze statusem kolejki (QUEUED->RUNNING->DONE/FAILED)
         try:
@@ -573,37 +631,56 @@ class State:
         """Zadania READY, których wszystkie zależności są MERGED — sortowane po priorytecie (P0 pierwsze)."""
         tasks = self.list_tasks(status=READY)
         merged = {t["id"] for t in self.list_tasks(status=MERGED)}
-        ok = [t for t in tasks if set(t["depends_on"]) <= merged]
+        ok = [t for t in tasks if set(t["depends_on"]) <= merged
+              and (t.get("presence") or PRESENCE_ACTIVE) == PRESENCE_ACTIVE]
         order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
         ok.sort(key=lambda t: (order.get(t.get("priority") or "P2", 2), t.get("created_at") or 0))
         return ok
 
     def claimable_tasks(self) -> list[dict[str, Any]]:
-        """READY (z zależnościami) + CHANGES_REQUESTED — oba statusy worker przejmuje do RUNNING.
+        """Praca wykonawcza (Gotowe, W toku między turami, Do poprawy) w kolejności next_work."""
+        by_id = {t["id"]: t for t in self.list_tasks()}
+        return [by_id[turn["task_id"]] for turn in self.next_work()
+                if turn["kind"] == "work" and turn["task_id"] in by_id]
 
-        CHANGES_REQUESTED = pętla poprawek po Code Review: zadanie wraca do pracy
-        bez angażowania Opiekuna (lista poprawek jest w review_notes).
+    def next_work(self) -> list[dict[str, Any]]:
+        """Jedna kolejka tur. Prawa strona tablicy przed lewą.
+
+        merge > poprawki > recenzja > wznowienie > świeże Gotowe.
+        W tej samej kolumnie P0 przed P3, potem najdłużej czekające.
+        Trzy i więcej prób schodzi na koniec swojej kolumny.
         """
-        out = self.ready_tasks()
-        for t in self.list_tasks(status=CHANGES_REQUESTED):
-            if t["id"] not in {x["id"] for x in out}:
-                out.append(t)
-        # v2.7.14 — kolejność pobierania przez agentów:
-        #   1) wyższy priorytet pierwszy (P0 > P1 > P2 > P3)
-        #   2) zadanie po 3+ retry (FAILED) -> KONIEC kolejki w swoim paśmie priorytetu (nie do Opiekuna!)
-        #   3) wyższy stopień ukończenia pierwszy (mniej kroków do merge'a = szybciej zmergowane)
-        #   4) od najstarszych (created_at rosnąco)
+        turns: list[dict[str, Any]] = []
+        for task in self.list_tasks():
+            lane = dispatch_lane(task)
+            if lane is None:
+                continue
+            if lane == "fresh" and set(task.get("depends_on") or []) - {
+                    t["id"] for t in self.list_tasks(status=MERGED)}:
+                continue
+            step = _turn_step(task, lane)
+            turns.append({
+                "task_id": task["id"],
+                "kind": LANE_KIND[lane],
+                "lane": lane,
+                "step": step,
+                "role": task.get("role") or "worker",
+                "priority": task.get("priority") or "P2",
+                "title": task.get("title") or "",
+            })
         prio_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
-        def _queue_key(t: dict) -> tuple:
-            failed3 = 1 if (t.get("retry_count") or 0) >= 3 else 0
-            return (prio_order.get(t.get("priority") or "P2", 2),
-                    failed3,
-                    -substep_progress(t.get("substep")),
-                    t.get("created_at") or 0)
+        def _key(turn: dict) -> tuple:
+            task = self.get_task(turn["task_id"]) or {}
+            retry_back = 1 if (task.get("retry_count") or 0) >= 3 else 0
+            waited = task.get("updated_at") or task.get("created_at") or 0
+            return (-LANE_RANK[turn["lane"]],
+                    prio_order.get(turn["priority"], 2),
+                    retry_back,
+                    waited)
 
-        out.sort(key=_queue_key)
-        return out
+        turns.sort(key=_key)
+        return turns
 
     def claim_task(self, task_id: str, claimed_by: str) -> dict[str, Any] | None:
         """Atomowe przejęcie: tylko jeśli status nadal READY lub CHANGES_REQUESTED (ACID, bez fcntl)."""
@@ -611,6 +688,7 @@ class State:
         cur = self._conn().execute(
             """UPDATE tasks SET status='RUNNING', claimed_by=?, updated_at=?, started_at=?, substep_since=?
                WHERE id=? AND status IN ('READY','CHANGES_REQUESTED')
+                 AND COALESCE(presence,'AKTYWNE')='AKTYWNE'
                RETURNING *""",
             (claimed_by, now, now, now, task_id),  # v2.7.11: przejęcie = start timera bieżącego etapu
         )
@@ -626,8 +704,20 @@ class State:
         task = self.get_task(task_id)
         if task is None:
             raise StateError(f"Nieznane zadanie: {task_id}")
+        # FAILED i COOLING nie są już statusami. Sen zostawia etap, zmienia tylko obecność.
+        if new_status in (FAILED, COOLING):
+            notes = fields.get("review_notes")
+            seconds = float(fields.pop("cooldown_s", None) or 300)
+            if new_status == FAILED and (task.get("retry_count") or 0) >= 3:
+                return self.transition(
+                    task_id, AWAITING_OWNER, substep="OWNER_PACKET",
+                    review_notes=(notes or "wyczerpane próby") + " | u opiekuna po wyczerpaniu prób")
+            return self.sleep_task(task_id, seconds=seconds, review_notes=notes)
         current = task["status"]
-        if new_status != current and new_status not in VALID_TRANSITIONS.get(current, set()):
+        legacy = current in (FAILED, COOLING)
+        if legacy and new_status not in (READY, AWAITING_OWNER, BLOCKED):
+            new_status = AWAITING_OWNER if (task.get("retry_count") or 0) >= 3 else READY
+        if not legacy and new_status != current and new_status not in VALID_TRANSITIONS.get(current, set()):
             raise InvalidTransition(f"{current} -> {new_status} niedozwolone dla {task_id}")
         sets = ["status=?", "updated_at=?"]
         cooldown_s = fields.pop("cooldown_s", None)  # v2.7.23: długość bezp. sleepu dla COOLING (sekundy)
@@ -1062,13 +1152,85 @@ class State:
         self.record_metric("favorite_toggle", {"task": task_id, "on": is_fav}, task_id)
         return is_fav
 
+    def set_presence(self, task_id: str, presence: str, review_notes: str | None = None) -> dict[str, Any]:
+        """Obecność nie rusza statusu. AKTYWNE / USPIONE / ZPAUZOWANE."""
+        if presence not in (PRESENCE_ACTIVE, PRESENCE_ASLEEP, PRESENCE_PAUSED):
+            raise StateError(f"nieznana obecność: {presence}")
+        task = self.get_task(task_id)
+        if task is None:
+            raise StateError(f"Nieznane zadanie: {task_id}")
+        sets = ["presence=?", "updated_at=?"]
+        params: list[Any] = [presence, time.time()]
+        if review_notes is not None:
+            sets.append("review_notes=?")
+            params.append(review_notes)
+        if presence == PRESENCE_ACTIVE:
+            sets.append("cooldown_until=0")
+        params.append(task_id)
+        self._conn().execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", params)
+        self.record_metric("presence", {"task": task_id, "from": task.get("presence"), "to": presence}, task_id)
+        return self.get_task(task_id)  # type: ignore[return-value]
+
+    def sleep_task(self, task_id: str, seconds: float = 300, review_notes: str | None = None) -> dict[str, Any]:
+        """Błąd przejściowy: status zostaje, obecność schodzi na USPIONE do cooldown_until."""
+        task = self.get_task(task_id)
+        if task is None:
+            raise StateError(f"Nieznane zadanie: {task_id}")
+        until = time.time() + float(seconds)
+        note = review_notes if review_notes is not None else task.get("review_notes")
+        self._conn().execute(
+            "UPDATE tasks SET presence=?, cooldown_until=?, review_notes=?, updated_at=? WHERE id=?",
+            (PRESENCE_ASLEEP, until, note, time.time(), task_id))
+        self.record_metric("presence", {"task": task_id, "to": PRESENCE_ASLEEP, "seconds": seconds,
+                                        "status": task["status"]}, task_id)
+        self.add_comment(task_id, "orchestrator",
+                         f"Cel: przeczekać błąd bez zmiany etapu. Efekt: {task['status']} zostaje, obecność USPIONE na {int(seconds)}s")
+        return self.get_task(task_id)  # type: ignore[return-value]
+
     def wake_cooling(self) -> int:
-        """❄️→▶️ v2.7.23: budzi zamrożone zadania (status COOLING), których sleep bezpieczeństwa minął -> READY."""
+        """Budzi zadania, którym minął sen. Status się nie zmienia, obecność wraca na AKTYWNE."""
         cur = self._conn().execute(
-            "UPDATE tasks SET status='READY', updated_at=?, cooldown_until=0 "
-            "WHERE status='COOLING' AND (cooldown_until IS NULL OR cooldown_until<=?)",
-            (time.time(), time.time()))
+            """UPDATE tasks SET presence=?, cooldown_until=0, updated_at=?
+               WHERE presence=? AND (cooldown_until IS NULL OR cooldown_until<=?)""",
+            (PRESENCE_ACTIVE, time.time(), PRESENCE_ASLEEP, time.time()))
         return cur.rowcount or 0
+
+    def ensure_worker_sessions(self) -> None:
+        self._conn().execute(
+            """CREATE TABLE IF NOT EXISTS worker_sessions (
+                 task_id TEXT PRIMARY KEY, pid INTEGER, cwd TEXT, step TEXT,
+                 phase TEXT, cmd TEXT, rc INTEGER, started_at REAL, last_beat REAL)""")
+
+    def touch_worker(self, task_id: str, *, pid: int | None = None, cwd: str | None = None,
+                     step: str | None = None, phase: str | None = None,
+                     cmd: str | None = None, rc: int | None = None) -> None:
+        """Ostatni znany stan procesu workera. Dashboard czyta to przy każdym odświeżeniu."""
+        self.ensure_worker_sessions()
+        now = time.time()
+        row = self._conn().execute(
+            "SELECT task_id, started_at FROM worker_sessions WHERE task_id=?", (task_id,)).fetchone()
+        if row is None:
+            self._conn().execute(
+                """INSERT INTO worker_sessions(task_id,pid,cwd,step,phase,cmd,rc,started_at,last_beat)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (task_id, pid, cwd, step, phase or "ZYJE", (cmd or "")[:300], rc, now, now))
+            return
+        sets = ["last_beat=?"]
+        params: list[Any] = [now]
+        for col, val in (("pid", pid), ("cwd", cwd), ("step", step), ("phase", phase), ("rc", rc)):
+            if val is not None:
+                sets.append(f"{col}=?")
+                params.append(val)
+        if cmd is not None:
+            sets.append("cmd=?")
+            params.append(cmd[:300])
+        params.append(task_id)
+        self._conn().execute(f"UPDATE worker_sessions SET {', '.join(sets)} WHERE task_id=?", params)
+
+    def worker_session(self, task_id: str) -> dict[str, Any] | None:
+        self.ensure_worker_sessions()
+        row = self._conn().execute("SELECT * FROM worker_sessions WHERE task_id=?", (task_id,)).fetchone()
+        return dict(row) if row else None
 
     def recent_ops(self, limit: int = 100) -> list[dict]:
         return [dict(r) for r in self._conn().execute(
