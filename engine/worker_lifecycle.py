@@ -28,6 +28,7 @@ from engine.state import (
     FAILED,
     IN_REVIEW,
     READY,
+    RUNNING,
     State,
     resume_substep,
 )
@@ -814,30 +815,40 @@ def run(task_id: str) -> int:
         _log(task_id, "zadanie niedostępne do przejęcia")
         return 1
     
-    # 🔴 NOWE: Użyj substep z task (załadowanego z bazy przez claim_task) jako hlavní checkpoint
-    # resume_substep teraz priorytetyzuje: substep > last_completed_step > max_substep
-    resume_step = os.environ.get("MIKOWHY_RESUME_FROM_STEP", "")
+    # 🔥 Użyj resume_substep z task (substep > last_completed_step > max_substep)
+    resume_step = resume_substep(task)
+    _log(task_id, f"Resuming from: {resume_step}")
+    
+    # Ustaw substep, jeśli wznawiamy od kroku innego niż 0/5_PREPARE
+    if resume_step and resume_step != "0/5_PREPARE":
+        try:
+            state.transition(task_id, RUNNING, substep=resume_step,
+                           review_notes=f"{(task.get('review_notes') or '')} | Resumed from {resume_step}")
+            task = state.get_task(task_id)
+        except Exception:
+            pass
     
     telegram_reporter.ensure_topic(state, task)
     streamer = ConsoleStreamer(task_id, state)
-    streamer.log_meta("init", f"worker-{os.getpid()} claim task {task_id}" + 
-                      (f" (RESUMING from {resume_step})" if resume_step else ""))
-    
-    # 🔴 NOWE: Jeśli mamy kontynuować od konkretnego kroku, przerzuć substep (używa resume_substep, który teraz czyta last_completed_step)
-    if resume_step:
-        # Użyj resume_substep, które teraz bierze pod uwagę last_completed_step
-        actual_resume = resume_substep(task)
-        if actual_resume != resume_step:
-            _log(task_id, f"🔄 resume_substep skorygował z {resume_step} na {actual_resume}")
-            resume_step = actual_resume
-        state.transition(task_id, RUNNING, substep=resume_step,
-                        review_notes=f"{(task.get('review_notes') or '')} | Resumed from {resume_step}")
-        task = state.get_task(task_id)
+    streamer.log_meta("init", f"worker-{os.getpid()} claim task {task_id} (RESUMING from {resume_step})"
+                      if resume_step and resume_step != "0/5_PREPARE" else
+                      f"worker-{os.getpid()} claim task {task_id}")
     
     worktree: Path | None = None
     try:
-        streamer.log_meta("0/5_PREPARE", "step0_prepare start")
-        worktree = step0_prepare(state, task)
+        # Pomijaj step0_prepare, jeśli wznawiamy od późniejszego kroku
+        if resume_step not in ("0/5_PREPARE", "", None):
+            streamer.log_meta("0/5_PREPARE", f"step0_prepare SKIPPED (resuming from {resume_step})")
+            existing_worktree = task.get("worktree")
+            if existing_worktree and Path(existing_worktree).exists():
+                worktree = Path(existing_worktree)
+                _log(task_id, f"✅ using existing worktree: {worktree}")
+            else:
+                _log(task_id, "⚠️ worktree missing, recreating...")
+        
+        if worktree is None:
+            streamer.log_meta("0/5_PREPARE", "step0_prepare start")
+            worktree = step0_prepare(state, task)
         state.set_kv(f"last_successful_step:{task_id}", "0/5_PREPARE")
         _tg(state, task_id, "worktree gotowy")
         base = state.get_milestone(task["milestone"])["branch"]
