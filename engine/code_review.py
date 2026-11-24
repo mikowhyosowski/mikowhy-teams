@@ -54,8 +54,15 @@ def review(task_id: str) -> int:
     if task is None or task["status"] != IN_REVIEW:
         return 1
     milestone = state.get_milestone(task["milestone"])
-    base = milestone["branch"] if milestone else git_guard.default_branch()
     repo = projects.repo_for_task(task, state)  # diff względem fizycznego repo projektu
+    if not git_guard.is_git_repo(repo):
+        # katalog wydania bez .git / literówka w target_repo_path — nie udawaj pustego diffa
+        print(f"[{task_id}] repo {repo} nie jest repozytorium gita — review pominięty", file=sys.stderr)
+        return 1
+    # worker odgałęzia zadanie od gałęzi integracyjnej projektu, więc review musi liczyć diff od niej;
+    # usable_base odsiewa nieistniejącą gałąź milestonu (rc=128 udawał pusty diff)
+    integration = projects.integration_branch(task.get("project_id") or projects.SELF_ID)
+    base = git_guard.usable_base(repo, integration or (milestone["branch"] if milestone else None))
 
     diff = git_guard.run_git(["diff", f"{base}...{task['branch']}"], cwd=repo, check=False).stdout
     tests = state.get_kv(f"tests:{task_id}", {})

@@ -1,8 +1,9 @@
 {
   "project_id": "mikowhy-brand",
   "name": "mikowhy-brand (wizerunek w internecie)",
-  "target_repo_path": "/home/miko/Projekty/M+/mikowhy-brand",
-  "read_only": true,
+  "target_repo_path": "/home/miko/Projekty/M+/mikowhy-teams",
+  "integration_branch": "develop",
+  "read_only": false,
   "created": 1795386317.9587119,
   "pipeline_snapshot": ".agents/projects/mikowhy-brand/pipeline.json",
   "approval_policy": "auto_readonly"
