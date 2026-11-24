@@ -102,19 +102,26 @@ def estimate_eta_s(title: str = "", scope_paths: list | None = None, read_only: 
 
 def resume_substep(task: dict | None) -> str:
     """v2.7.9 + v2.7.16 — kontynuacja od NAJDALEJ wypracowanego sub-etapu przy powrocie do READY.
-    Bierzemy last_completed_step (checkpoint z bazy), max_substep (rekord postępu z całej historii),
-    albo substep (bieżący krok). Priorytet: last_completed_step > max_substep > substep.
-    Markery specjalne (ASK_OWNER/OWNER_PACKET/brak) -> 1/5_PLAN; 'done' (po IN_REVIEW) -> 2/5_IMPL (poprawki)."""
+    Priorytet godności: substep (bieżący krok z bazy) > last_completed_step (checkpoint) > max_substep (rekord postępu).
+    Markery specjalne (ASK_OWNER/OWNER_PACKET/brak) -> 1/5_PLAN; 'done' (po IN_REVIEW) -> 2/5_IMPL (poprawki).
+    
+    ZASADA: Jeśli substep jest ustawiony (np. 5/5_COMMIT), wznawiamy OD NIEGO, nie od 0/5_PREPARE."""
     t = task or {}
-    # 🔴 NOWE: Sprawdź last_completed_step (checkpoint z bazy SQLite)
+    # 🔴 NOWE: Najpierw sprawdź bieżący substep z bazy (to jest to, co chce sponsor/orchestrator)
+    cur = str(t.get("substep") or "")
+    if cur and cur not in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
+        # Jeśli substep jest poprawnym krokiem (np. 5/5_COMMIT), użyj go
+        if substep_progress(cur) > 0:
+            return cur
+    # 🟢 Fallback 1: last_completed_step (checkpoint z bazy)
     last_completed = t.get("last_completed_step") or ""
     if last_completed and substep_progress(last_completed) > 0:
         return last_completed
-    # 🟢 Fallback: max_substep (stare zachowanie)
-    cur = str(t.get("substep") or "")
+    # 🟣 Fallback 2: max_substep (rekord postępu z całej historii)
     mx = str(t.get("max_substep") or "")
-    if mx and substep_progress(mx) > substep_progress(cur):
-        cur = mx  # wracamy do najdalej zapracowanego etapu, nie do bieżącego (cofnietego) 
+    if mx and substep_progress(mx) > 0:
+        return mx
+    # 🟣 Ostatnia deska ratunku: domyślny start
     if not cur or cur in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
         return "1/5_PLAN"
     if cur == "done":

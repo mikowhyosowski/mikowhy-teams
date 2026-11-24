@@ -813,22 +813,9 @@ def run(task_id: str) -> int:
         _log(task_id, "zadanie niedostępne do przejęcia")
         return 1
     
-    # 🔴 NOWE: Odczytaj ostatni ukończony krok z bazy SQLite
-    last_completed_row = state._conn().execute(
-        "SELECT last_completed_step FROM tasks WHERE id = ?",
-        (task_id,)
-    ).fetchone()
-    
-    # 🔴 NOWE: Jeśli mamy checkpoint w bazie, użyj go jako resume_step
-    resume_step = ""
-    if last_completed_row and last_completed_row[0]:
-        resume_step = last_completed_row[0]
-        task["last_completed_step"] = resume_step  # Ustaw w tasku, aby resume_substep działał
-        _log(task_id, f"🔄 RESUMING from checkpoint (DB): {resume_step}")
-    
-    # 🟢 Fallback: sprawdź environment variable (stare zachowanie)
-    if not resume_step:
-        resume_step = os.environ.get("MIKOWHY_RESUME_FROM_STEP", "")
+    # 🔴 NOWE: Użyj substep z task (załadowanego z bazy przez claim_task) jako hlavní checkpoint
+    # resume_substep teraz priorytetyzuje: substep > last_completed_step > max_substep
+    resume_step = os.environ.get("MIKOWHY_RESUME_FROM_STEP", "")
     
     telegram_reporter.ensure_topic(state, task)
     streamer = ConsoleStreamer(task_id, state)
