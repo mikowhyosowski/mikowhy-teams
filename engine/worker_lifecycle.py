@@ -213,7 +213,7 @@ def step1_plan(state: State, task: dict) -> None:
             state.record_metric("eta_estimated", {"eta_s": round(eta), "via": "plan"}, task["id"])
     except Exception:
         pass
-    plan = result.get("plan", "")
+    plan = _coerce_file_content(result.get("plan", ""))
     plan_rel = f".agents/runtime/{task['id']}.plan.md"
     Path(ROOT / plan_rel).write_text(plan, encoding="utf-8")
     state.add_attachment(task["id"], plan_rel, "📋 plan zadania (1/5_PLAN)", "md")  # v2.7.10: rezultat = załącznik zadania
@@ -221,6 +221,16 @@ def step1_plan(state: State, task: dict) -> None:
                              f"zaplanować realizację: {(task.get('title') or '')[:80]}",
                              f"plan gotowy ({len(plan)} znaków, zapisany jako załącznik 📎 {plan_rel}) — przechodzę do implementacji")
     _safe_transition(state, task["id"], "RUNNING", substep="2/5_IMPL")
+
+
+def _coerce_file_content(content) -> str:
+    """v2.7.29: LLM potrafi zwrócić content jako dict/list/bool — koercja do str
+    zamiast TypeError('data must be str, not ...') wybijającego cały krok."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (dict, list)):
+        return json.dumps(content, ensure_ascii=False, indent=2)
+    return "" if content is None else str(content)
 
 
 def step2_implement(state: State, task: dict, worktree: Path) -> None:
@@ -282,7 +292,7 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
             state.record_metric("llm_dir_instead_of_file", {"path": rel}, task["id"])
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_text(_coerce_file_content(content), encoding="utf-8")
     state.record_metric("step_time", {"step": "2/5_IMPL", "seconds": round(time.time() - t0, 2)}, task["id"])
     state.add_comment_report(task["id"], f"worker({task['role']})",
                              f"zaimplementować zmiany w zakresie {', '.join(task.get('scope_paths') or [])[:80]}",
@@ -294,7 +304,7 @@ def step3_tests(state: State, task: dict, worktree: Path) -> None:
     """Krok 3 (LLM, ~90s): testy jednostkowe + integracyjne względem acceptance_criteria."""
     t0 = time.time()
     code_files = {p: (worktree / p).read_text(encoding="utf-8")
-                  for p in task["scope_paths"] if (worktree / p).exists()}
+                  for p in task["scope_paths"] if (worktree / p).is_file()}  # v2.7.29: is_file, nie exists (katalog w scope = IsADirectoryError)
     payload = {"code": code_files, "acceptance_criteria": task["acceptance_criteria"],
                "SCHEMA": 'Zwróć wyłącznie kompaktowy JSON: {"test_files": {"tests/<plik>_test.py": "<kod testu>"}}. '
                          'Żadnych innych kluczy, żadnego tekstu poza JSON.'}
@@ -303,8 +313,16 @@ def step3_tests(state: State, task: dict, worktree: Path) -> None:
     test_files = result.get("test_files") or {}
     for rel, content in test_files.items():
         target = worktree / rel
+        if target.exists() and target.is_dir():
+            # spójnie ze step2: LLM zwrócił katalog zamiast pliku — pomijamy z logiem,
+            # zamiast wybijać całe zadanie IsADirectoryError(21)
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"zapisać test `{rel}`",
+                                     f"LLM zwrócił katalog zamiast pliku testu — pomijam wpis (auto-heal), reszta idzie dalej")
+            state.record_metric("llm_dir_instead_of_file", {"path": rel, "step": "3/5_TEST"}, task["id"])
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_text(_coerce_file_content(content), encoding="utf-8")
     state.record_metric("step_time", {"step": "3/5_TEST", "seconds": round(time.time() - t0, 2)}, task["id"])
     _safe_transition(state, task["id"], "RUNNING", substep="4/5_QG")
 
@@ -341,7 +359,7 @@ def step4_quality_gate(state: State, task: dict, worktree: Path, base: str) -> N
                     task = state.get_task(task["id"])
                 if (worktree / rel).is_dir():
                     continue
-                (worktree / rel).write_text(content, encoding="utf-8")
+                (worktree / rel).write_text(_coerce_file_content(content), encoding="utf-8")
         except RuntimeError:
             _safe_transition(state, task["id"], FAILED, review_notes="LLM niedostępny w kroku 4b")
             return
@@ -383,7 +401,7 @@ def _run_preflight(state: State, task: dict, worktree: Path) -> None:
                     task = state.get_task(task["id"])
                 if (worktree / rel).is_dir():
                     continue
-                (worktree / rel).write_text(content, encoding="utf-8")
+                (worktree / rel).write_text(_coerce_file_content(content), encoding="utf-8")
             state.record_metric("preflight_fix", {"attempt": attempt}, task["id"])
         except RuntimeError:
             return  # LLM niedostępny — Zwykłe QG wyłapi to dalej
@@ -417,13 +435,15 @@ def step45_simplify(state: State, task: dict, worktree: Path, base: str) -> None
     files = {p: c for p, c in files.items() if p in task["scope_paths"]}
     if not files:
         return
-    backup = {p: (worktree / p).read_text(encoding="utf-8") for p in files if (worktree / p).exists()}
+    backup = {p: (worktree / p).read_text(encoding="utf-8") for p in files if (worktree / p).is_file()}
     for rel, content in files.items():
-        (worktree / rel).write_text(content, encoding="utf-8")
+        if (worktree / rel).is_dir():  # v2.7.29: katalog zamiast pliku — skip (jak w step2/step3)
+            continue
+        (worktree / rel).write_text(_coerce_file_content(content), encoding="utf-8")
     results = quality_gates.local_gates(worktree)
     if any(not r["ok"] for r in results if not r.get("skipped")):
         for p, c in backup.items():  # revert
-            (worktree / p).write_text(c, encoding="utf-8")
+            (worktree / p).write_text(_coerce_file_content(c), encoding="utf-8")
         state.record_metric("simplify_reverted", {"task": task["id"]}, task["id"])
         _log(task["id"], "simplify: QG po uproszczeniu padło -> revert")
         return
@@ -578,7 +598,11 @@ def _llm_agent_loop(state: State, task: dict, worktree: Path, base: str, max_tur
                 continue
             p.parent.mkdir(parents=True, exist_ok=True)
             content = str(resp.get("content", ""))
-            p.write_text(content, encoding="utf-8")
+            if p.is_dir():  # v2.7.29: path = katalog — nie wybijać zadania IsADirectoryError
+                history.append(f"t{turn} write_file ODRZUCONE (katalog zamiast pliku): {rel}")
+                _log(tid, f"LLM t{turn} write_file odrzucone (katalog): {rel}")
+                continue
+            p.write_text(_coerce_file_content(content), encoding="utf-8")
             history.append(f"t{turn} write_file {rel} OK ({len(content)} znaków)")
             _log(tid, f"LLM t{turn} write_file {rel} ({len(content)}B)")
         elif action == "read_file":
