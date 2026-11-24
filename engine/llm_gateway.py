@@ -61,7 +61,14 @@ def _llm_process_lock(timeout_s: float = 900.0):
 
 
 def _load_dotenv(path: Path = ROOT / ".env") -> None:
-    """Ładuje .env do os.environ (bez nadpisywania istniejących) — klucze API dla vibe."""
+    """Ładuje .env do os.environ — klucze API dla vibe.
+
+    Opcja A′ (WORKER_OBSERVABILITY_PLAN.md §1.3):
+    Klucze API (*_API_KEY, *_KEY) są zapisywane BEZWARUNKOWO do os.environ —
+    vibe preferuje zmienne środowiskowe nad systemowym keyringiem (gnome-keyring/libsecret),
+    co eliminuje błąd rc=3 "Reading API keys from the system keyring" przy równoległych
+    wywołaniach. Pozostałe zmienne używają setdefault (nie nadpisują wartości z shella).
+    """
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -74,6 +81,9 @@ def _load_dotenv(path: Path = ROOT / ".env") -> None:
         key = key.strip()
         if key.startswith(("VIBE_", "TELEGRAM_", "HEALTH_")):
             os.environ[key] = value  # config z .env repo wygrywa (leczy trujące env z shella)
+        elif key.endswith(("_API_KEY", "_KEY", "_SECRET", "_TOKEN")):
+            # Opcja A′: klucze auth zawsze z .env → vibe nie pyta keyringa → koniec rc=3
+            os.environ[key] = value
         else:
             os.environ.setdefault(key, value)
 
