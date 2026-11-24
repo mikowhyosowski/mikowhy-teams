@@ -304,3 +304,29 @@ def rebase_onto(worktree: Path, base: str) -> None:
 def merge_no_ff(worktree: Path, branch: str, message: str) -> None:
     assert_writable(worktree)
     run_git(["merge", "--no-ff", branch, "-m", message], cwd=worktree)
+
+
+# --- v2.8.0: branch integracyjny develop (Workspace/Staging/Prod) --------------
+
+def ensure_branch(repo: Path | str, branch: str, remote: str = "origin") -> bool:
+    """Upewnij się, że branch istnieje lokalnie (tworzy z origin/branch albo z HEAD). True=gdy utworzony."""
+    if run_git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo, check=False).returncode == 0:
+        return False
+    if run_git(["fetch", remote, branch], cwd=repo, check=False).returncode == 0:
+        proc = run_git(["branch", branch, f"{remote}/{branch}"], cwd=repo, check=False)
+        if proc.returncode == 0:
+            return True
+    run_git(["branch", branch, "HEAD"], cwd=repo)  # ostatnia Deską ratunku: z HEAD
+    return True
+
+
+def worker_push_guard(branch: str, integration_branch: str = "develop", remote: str = "origin") -> None:
+    """Ochrona: worker może pchać WYŁĄCZNIE feature/* i staging/*; categóricalnie nie master
+    ani branch integracyjny (master aktualizuje wyłącznie release pipeline z develop)."""
+    low = branch.lower()
+    if low.startswith("feature/") or low.startswith("staging/"):
+        return
+    if low == "master" or low == integration_branch:
+        raise GitError(f"Ochrona brancha: worker nie może pchać `{branch}` "
+                       f"(master/developer aktualizuje wyłącznie release pipeline)")
+    # inne gałęzie dopuszczone (np. subtaski innych projektów)

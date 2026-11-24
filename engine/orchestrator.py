@@ -402,8 +402,15 @@ class Orchestrator:
             # merguje READY_TO_MERGE od razu do default branch (master) — bez milestonu i bez ręcznego mergowania
             auto_main = (projects.approval_policy(ns) == "auto"
                          and repo.resolve() == projects.ROOT.resolve())
-            if auto_main:
-                base = git_guard.default_branch(repo)       # cel pusha: master
+            # v2.8.0 W-1: branch integracyjny (develop) ma PIERWSZEŃSTWO — worker merguje
+            # wyłącznie do develop; master aktualizuje wyłącznie release pipeline (deploy.sh promote)
+            ib = projects.integration_branch(ns)
+            if ib:
+                git_guard.ensure_branch(repo, ib)
+                base = ib
+                tmp = f"_auto/{task['id']}"
+            elif auto_main:
+                base = git_guard.default_branch(repo)       # cel pusha: master (legacy, bez develop)
                 # master jest zajęty w głównym worktree — worktree integracyjny stawiamy na temp branchu z origin/master
                 tmp = f"_auto/{task['id']}"
             else:
@@ -459,6 +466,9 @@ class Orchestrator:
                 git_guard.remove_worktree("_integration", ns=ns, repo=repo)
                 if auto_main:
                     git_guard.run_git(["branch", "-D", tmp], cwd=repo, check=False)  # sprzątnij temp branch
+                # v2.8.0: develop jako branch integracyjny -> staging deploy + RELEASE_CANDIDATE
+                if base == projects.integration_branch(ns):
+                    self._after_develop_merge(ns, base)
                 self.state.export_snapshot(project_id=ns)  # snapshot po każdym mergu
                 lessons_gardener.garden(self.state)  # zmiana #2: co 10 mergy
                 skill_curator.prune_if_needed(self.state)  # Skill Fitness: auto-prune + promocja lekcji
@@ -470,7 +480,80 @@ class Orchestrator:
                 self.state.record_metric("merge_error", {"task": task["id"], "error": repr(exc)}, task["id"])
                 print(f"[orchestrator] błąd merge {task['id']}: {exc!r}", flush=True)
 
-    # --- QG-3 + zamknięcie milestonu + faza 7 -------------------------------------
+    # --- v2.8.0: WARSTWA 2/3 — staging + release candidates ------------------------
+
+    def _after_develop_merge(self, ns: str, ib: str) -> None:
+        """Po merge do develop: (1) RELEASE_CANDIDATE — powiadomienie z propagowaną wersją,
+        (2) kandydat do deployu staging/notyfikacje (deploy staging uruchamia deploy.sh staging)."""
+        sha = git_guard.run_git(["rev-parse", "--short", ib], cwd=projects.ROOT, check=False).stdout.strip()
+        ver = f"v{time.strftime('%Y.%m.%d')}-{sha}"
+        cands = dict(self.state.get_kv("release_candidates") or {})
+        cands[sha] = {"version": ver, "branch": ib, "created_at": time.time()}
+        self.state.set_kv("release_candidates", cands)
+        self.state.add_notification(
+            "release",
+            f"📦 RELEASE CANDIDATE {ver} na `{ib}` — staging: `deploy.sh staging`; "
+            f"prod po akceptacji: [🚀 Deploy Prod] (kv release_approved={sha}) / [🛑 Rollback] (kv release_rollback=1)",
+            None)
+        self._deploy_staging(ns)
+
+    def _deploy_staging(self, ns: str = "mikowhy-teams") -> bool:
+        """Po merge do develop: aktualizuje środowisko staging (kopia bazy + regresja + smoke /api/state).
+        Faile NIE blokują orkiestracji — dostają powiadomienie (staging to piaskownica)."""
+        sp = projects.staging_path(ns)
+        if not sp:
+            return False
+        t0 = time.time()
+        try:
+            proc = subprocess.run(["bash", str(projects.ROOT / "scripts" / "deploy.sh"), "staging"],
+                                  capture_output=True, text=True, timeout=900)
+        except Exception as exc:
+            self.state.add_notification("staging", f"❌ deploy staging: {exc!r}", None)
+            return False
+        ok = proc.returncode == 0
+        took = round(time.time() - t0)
+        if ok:
+            self.state.add_notification("staging", f"🧪 staging zaaktualizowany z develop w {took}s — smoke + regresja OK", None)
+        else:
+            self.state.add_notification("staging",
+                                        f"❌ deploy staging FAILED rc={proc.returncode} ({took}s): {(proc.stdout+proc.stderr)[-300:]}",
+                                        None)
+        return ok
+
+    def _handle_releases(self) -> None:
+        """W-3 RELEASE CANDIDATE: sponsor zatwierdza [🚀 Deploy Prod] (kv release_approved=<sha>)
+        -> develop -> master (ff-only z gate'em staging) + tag vX.Y.Z + deploy.sh prod
+        (auto-rollback w deploy.sh przy złym healthchecku). [🛑 Rollback] = kv release_rollback=true."""
+        if str(self.state.get_kv("release_rollback") or "") in ("1", "true"):
+            try:
+                subprocess.run(["bash", str(projects.ROOT / "scripts" / "deploy.sh"), "rollback"],
+                               timeout=900)
+                self.state.add_notification("release", "⏪ ROLLBACK prod wykonany (deploy.sh rollback)", None)
+            except Exception as exc:
+                self.state.add_notification("release", f"❌ rollback: {exc!r}", None)
+            self.state.set_kv("release_rollback", "")
+            return
+        rc = self.state.get_kv("release_candidates") or {}
+        approved = str(self.state.get_kv("release_approved") or "")
+        if not approved:
+            return
+        # wyślij tylko raz: wyczyść kv przed deployem (idempotencja przycisku)
+        self.state.set_kv("release_approved", "")
+        sha = approved
+        self.state.add_notification("release", f"🚀 RELEASE: develop({sha}) -> master + deploy prod startuje", None)
+        try:
+            proc = subprocess.run(["bash", str(projects.ROOT / "scripts" / "deploy.sh"), "promote", sha],
+                                  capture_output=True, text=True, timeout=1200)
+            ok = proc.returncode == 0
+        except Exception as exc:
+            ok, proc = False, None
+        detail = (proc.stdout + proc.stderr)[-400:] if proc is not None else repr(exc)
+        if ok:
+            self.state.add_notification("release", f"✅ RELEASE wdrożony na prod ({sha}); tag: vX.Y.Z; auto-rollback broń", None)
+        else:
+            self.state.add_notification("release", f"❌ RELEASE FAILED: {detail}", None)
+
+    def _handle_milestones(self) -> None:
     def _handle_milestones(self) -> None:
         for ms in self.state.list_milestones():
             if ms["status"] != "OPEN" or not self.state.milestone_complete(ms["id"]):
@@ -735,6 +818,7 @@ class Orchestrator:
         self._circuit_breakers()
         self._stale_queue_watchdog()
         self._handle_merges()
+        self._handle_releases()
         self._cleanup_merged_branches()
         self._handle_milestones()
         self._notify_approvals()

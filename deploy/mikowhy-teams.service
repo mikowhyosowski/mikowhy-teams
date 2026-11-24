@@ -1,15 +1,16 @@
 [Unit]
-Description=Dark Factory mikowhy-teams — orchestrator (run --poll 1)
+Description=Dark Factory mikowhy-teams — orchestrator (run --poll 1, 3-warstwowa architektura: workspace/staging/prod)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+# v2.8.0: repo/dispatcher w katalogu fabryki; agent-workspace i staging są osobnymi katalogami
+# (/srv/mikowhy-teams/staging — patrz scripts/deploy.sh), żeby orchestrator nie gonił własnego ogona.
 WorkingDirectory=/home/miko/Projekty/M+/mikowhy-teams
 ExecStart=/usr/bin/python3 -m engine.orchestrator run --poll 1
 Restart=always
 RestartSec=3
-KillMode=control-group
 TimeoutStopSec=10
 StandardOutput=append:/home/miko/Projekty/M+/mikowhy-teams/.agents/logs/orchestrator.service.log
 StandardError=append:/home/miko/Projekty/M+/mikowhy-teams/.agents/logs/orchestrator.service.log

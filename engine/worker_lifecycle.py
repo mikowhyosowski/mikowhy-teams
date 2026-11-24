@@ -65,11 +65,18 @@ def _stage_stop(state: State, task_id: str, stage: str) -> bool:
 
 def step0_prepare(state: State, task: dict) -> Path:
     """Krok 0 (Python): izolowany worktree + gałąź feature/<task>.
-    Repo worktree = target_repo_path projektu (lub katalog silnika gdy task['repo']=='factory')."""
+    v2.8.0 W-1: base = branch integracyjny projektu (develop) gdy projekt go ma
+    (worktree WYŁĄCZNIE od develop); fallback: branch milestonu / default branch."""
     milestone = state.get_milestone(task["milestone"])
-    base = milestone["branch"] if milestone else git_guard.default_branch()
+    ns = task.get("project_id") or "mikowhy-teams"
+    repo = projects.repo_for_task(task, state)
+    ib = projects.integration_branch(ns)
+    if ib:
+        git_guard.ensure_branch(repo, ib)
+        base = ib
+    else:
+        base = milestone["branch"] if milestone else git_guard.default_branch(repo)
     branch = task["branch"] or f"feature/{task['id'].lower()}"
-    repo = projects.repo_for_task(task, state)          # multi-project: fizyczne repo na dysku
     # fallback: gdy gałąź milestonu jeszcze nie istnieje (np. FIX z health) — leć z głównej gałęzi
     if base != git_guard.default_branch(repo):
         chk = git_guard.run_git(["rev-parse", "--verify", "--quiet", base], cwd=repo, check=False)
@@ -248,6 +255,9 @@ def _resolve_task_rel(rel: str, worktree: Path) -> str | None:
     return None  # mystyczna ścieżka absolutna poza fabryką — odrzucamy z logiem
 
 
+PATCH_OVERWRITE_LIMIT = 150  # W-2: pliki > 150 linii NIE mogą być nadpisywane w całości (tylko SEARCH/REPLACE)
+
+
 def _coerce_file_content(content) -> str:
     """v2.7.29: LLM potrafi zwrócić content jako dict/list/bool — koercja do str
     zamiast TypeError('data must be str, not ...') wybijającego cały krok."""
@@ -256,6 +266,35 @@ def _coerce_file_content(content) -> str:
     if isinstance(content, (dict, list)):
         return json.dumps(content, ensure_ascii=False, indent=2)
     return "" if content is None else str(content)
+
+
+def _apply_patches(state: State, task: dict, worktree: Path, patches) -> int:
+    """W-2 GATE (Search/Replace): aplikuje patche (diff semantyczny) zamiast nadpisywania plików.
+    patch: {"path": ..., "search": ..., "replace": ...}. search musi wystąpić DOKŁADNIE raz.
+    Zwraca liczbę zaaplikowanych patchy; problemy trafiają jako komentarz do zadania."""
+    applied = 0
+    problems: list[str] = []
+    for pt in patches or []:
+        rel = _resolve_task_rel(str(pt.get("path", "")), worktree)
+        if not rel or (task.get("scope_paths") and rel not in task["scope_paths"]
+                        and not _scope_autoextend(state, task, rel)):
+            problems.append(f"{rel or pt.get('path')}: poza scope")
+            continue
+        target = worktree / rel
+        if not target.is_file():
+            problems.append(f"{rel}: brak pliku (patch do nieistniejącego pliku)")
+            continue
+        cur = target.read_text(encoding="utf-8")
+        search, replace = str(pt.get("search", "")), str(pt.get("replace", ""))
+        if not search or cur.count(search) != 1:
+            problems.append(f"{rel}: search znaleziony {cur.count(search)}× (wymagane dokładnie 1×)")
+            continue
+        target.write_text(cur.replace(search, replace, 1), encoding="utf-8")
+        applied += 1
+    if problems:
+        state.add_comment_report(task["id"], f"worker({task['role']})",
+                                 "patch-search-replace", "; ".join(problems)[:300])
+    return applied
 
 
 def step2_implement(state: State, task: dict, worktree: Path) -> None:
@@ -322,8 +361,21 @@ def step2_implement(state: State, task: dict, worktree: Path) -> None:
                                      f"LLM zwrócił katalog zamiast pliku — pomijam ten wpis (auto-heal), reszta idzie dalej")
             state.record_metric("llm_dir_instead_of_file", {"path": rel}, task["id"])
             continue
+        # W-2 GATE: istniejący plik >150 linii NIE może być nadpisany w całości (pętle QG!) —
+        # dopuszczalny wyłącznie tryb SEARCH/REPLACE (patches)
+        if target.is_file() and len(target.read_text(encoding="utf-8").splitlines()) > PATCH_OVERWRITE_LIMIT:
+            state.add_comment_report(task["id"], f"worker({task['role']})",
+                                     f"przepisać `{rel}` w całości — BLOKADA W-2",
+                                     f"plik ma {len(target.read_text(encoding='utf-8').splitlines())} linii "
+                                     f"(>{PATCH_OVERWRITE_LIMIT}) — użyj trybu patches (search/replace), pełne nadpisanie odrzucone")
+            state.record_metric("overwrite_gate_rejected", {"path": rel}, task["id"])
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(_coerce_file_content(content), encoding="utf-8")
+    # W-2: tryb Search/Replace — patche aplikowane PO zwykłych plikach
+    n_patches = _apply_patches(state, task, worktree, result.get("patches"))
+    if n_patches:
+        _log(task["id"], f"W-2 patches: zaaplikowano {n_patches}")
     state.record_metric("step_time", {"step": "2/5_IMPL", "seconds": round(time.time() - t0, 2)}, task["id"])
     state.add_comment_report(task["id"], f"worker({task['role']})",
                              f"zaimplementować zmiany w zakresie {', '.join(task.get('scope_paths') or [])[:80]}",

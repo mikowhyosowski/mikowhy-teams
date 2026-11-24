@@ -162,3 +162,36 @@ def snapshot_path_for(project_id: str) -> Path:
     if project_id == SELF_ID:
         return AGENTS / "pipeline.json"
     return AGENTS / "projects" / project_id / "pipeline.json"
+
+
+# --- v2.8.0: 3-warstwowa architektura (Workspace / Staging / Prod) -------------
+
+def integration_branch(project_id: str = SELF_ID) -> str:
+    """Branch integracyjny workerów (default: konfiguracja `integration_branch`,
+    puste = legacy flow milestone). Dla mikowhy-teams → 'develop' (ZAKAZ auto-merge workerów do mastera)."""
+    try:
+        return str(project_config(project_id).get("integration_branch", "") or "")
+    except KeyError:
+        return ""
+
+
+def deploy_branch(project_id: str = SELF_ID) -> str:
+    """Branch wydawniczy (production). Master tylko przez release pipeline (fast-forward + tag)."""
+    try:
+        return str(project_config(project_id).get("deploy_branch", "") or "master")
+    except KeyError:
+        return "master"
+
+
+def staging_path(project_id: str = SELF_ID) -> str:
+    try:
+        return str(project_config(project_id).get("staging_path", "") or "")
+    except KeyError:
+        return ""
+
+
+def prod_path(project_id: str = SELF_ID) -> str:
+    try:
+        return str(project_config(project_id).get("prod_path", "") or "")
+    except KeyError:
+        return ""
