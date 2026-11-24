@@ -604,7 +604,24 @@ def step5_commit(state: State, task: dict, worktree: Path, base: str) -> None:
         _log(task["id"], "pusty diff + QG zielone → IN_REVIEW")
         state.record_metric("empty_diff_to_review", {}, task["id"])
         return
-    how = git_guard.commit_task(worktree, task["id"], f"feat({task['id'].lower()}): {task['title']}")
+    try:
+        how = git_guard.commit_task(worktree, task["id"], f"feat({task['id'].lower()}): {task['title']}")
+    except RuntimeError as exc:
+        if "Brak zmian w scope_paths" not in str(exc):
+            raise
+        # wznowienie po 5/5_COMMIT: commit już jest na gałęzi, worktree czysty — to dostawa,
+        # nie błąd. Bez tego worker wracał do COOLING i był respawnowany w kółko.
+        try:
+            git_guard.push(task["branch"], worktree)
+        except Exception as push_exc:
+            _log(task["id"], f"push przy wznowieniu nieudany: {push_exc!r}")
+        state.add_comment_report(task["id"], f"worker({task['role']})",
+                                 f"dostarczyć zmiany z {task['id']} do review",
+                                 "wznowienie po 5/5_COMMIT: commit już jest na gałęzi, brak nowych zmian "
+                                 "w worktree — czekam na niezależny Code Review" + _commit_marker(worktree))
+        _safe_transition(state, task["id"], IN_REVIEW, substep="done")
+        _log(task["id"], "brak nowych zmian (commit już na gałęzi) → IN_REVIEW")
+        return
     if how == "amended":
         state.record_metric("commit_amended", {"branch": task["branch"]}, task["id"])
     try:
@@ -905,7 +922,14 @@ def run(task_id: str) -> int:
             worktree = step0_prepare(state, task)
         state.set_kv(f"last_successful_step:{task_id}", "0/5_PREPARE")
         _tg(state, task_id, "worktree gotowy")
-        base = state.get_milestone(task["milestone"])["branch"]
+        milestone = state.get_milestone(task["milestone"])
+        # baza musi być tą samą gałęzią, od której step0_prepare odgałęził zadanie —
+        # inaczej wznowienie liczy diff od mastera i wpada w "zbyt duży diff" -> READY -> re-claim
+        wanted = projects.integration_branch(task.get("project_id") or projects.SELF_ID) \
+            or (milestone or {}).get("branch") or ""
+        base = git_guard.usable_base(worktree, wanted)
+        if wanted and base != wanted:
+            _log(task_id, f"base {wanted} nie istnieje — diff względem {base}")
         task = state.get_task(task_id)  # świeży wiersz (branch z step0)
         if (task.get("mode") or "pipeline") == "llm":
             streamer.log_meta("LLM_EXEC", "step_llm start")
