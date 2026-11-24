@@ -497,6 +497,7 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
   <button data-tab="chat" onclick="showTab('chat')">💬 Czat Vibe</button>
   <button data-tab="live" onclick="showTab('live')">⚡ Live</button>
   <button data-tab="firma" onclick="showTab('firma')">🏢 Firma</button>
+  <button data-tab="errors" onclick="showTab('errors')">🔴 Błędy & LLM</button>
 </nav>
 <section class="tabpage" id="tab-overview">
 <h2>🚨 Wymaga interwencji Sponsora</h2>
@@ -608,6 +609,19 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 <h2>📜 Logi procesów (.agents/logs) — klik = tail</h2>
 <div class="feed" id="logs"></div>
 <pre id="viewer" style="background:#0d1117;border:1px solid #30363d;padding:8px;max-height:300px;overflow:auto;font-size:11px"></pre>
+</section>
+<section class="tabpage" id="tab-errors">
+<h2>🔴 Błędy & Monitor LLM <button onclick="loadErrors()" style="background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:4px 12px;cursor:pointer">🔄 Odśwież</button></h2>
+<div id="errorsContainer" style="display:flex;gap:20px;margin-bottom:20px">
+  <div style="flex:1">
+    <h3>🔥 Ostatnie Błędy <span id="errorsCount"></span></h3>
+    <div id="errorsList" style="max-height:400px;overflow-y:auto"></div>
+  </div>
+  <div style="flex:1">
+    <h3>🤖 Wiadomości LLM <span id="llmCount"></span></h3>
+    <div id="llmList" style="max-height:400px;overflow-y:auto"></div>
+  </div>
+</div>
 </section>
 <section class="tabpage" id="tab-firma">
 <h2>🏢 Firma — mapka osiedla <span class="muted">(biuro=projekt · pokój=agent · biurko=zadanie · 🏆=milestone; klik biurko=szczegóły zadania, klik pokój=wątek z osobą, klik biuro=filtr projektu, klik legendę=podświetl status; kółko=zoom, drag=przesuwaj)</span>
@@ -1185,6 +1199,100 @@ async function taskCtl(id, act){
   }catch(e){ toast('⚠ '+e); }
   openTask(id, true); refresh();
 }
+
+// ===== ERRORS & LLM MESSAGES =====
+async function loadErrors() {
+  const errorsContainer = document.getElementById('errorsContainer');
+  const errorsList = document.getElementById('errorsList');
+  const llmList = document.getElementById('llmList');
+  const errorsCount = document.getElementById('errorsCount');
+  const llmCount = document.getElementById('llmCount');
+  
+  if(!errorsList || !llmList) return;
+  
+  try {
+    // Pobierz błędy
+    const errRes = await fetch('http://127.0.0.1:8767/api/errors');
+    const errData = await errRes.json();
+    
+    // Pobierz wiadomości LLM
+    const llmRes = await fetch('http://127.0.0.1:8767/api/llm-messages');
+    const llmData = await llmRes.json();
+    
+    // Wyświetl błędy
+    if(errData.errors && errData.errors.length > 0) {
+      errorsCount.textContent = `(${errData.errors.length})`;
+      errorsList.innerHTML = errData.errors.map(err => {
+        const dt = new Date(err.timestamp * 1000).toLocaleString();
+        const severityColor = {
+          'ERROR': '#f85149',
+          'CRITICAL': '#cb2431',
+          'WARNING': '#d29922'
+        }[err.severity] || '#f85149';
+        
+        return `
+          <div style="border-left:4px solid ${severityColor};padding-left:12px;margin-bottom:8px;background:#0d1117;border-radius:4px;padding:8px">
+            <div style="font-size:11px;color:#8b949e">[${err.source}] ${dt}</div>
+            <div style="font-size:13px;font-weight:600">
+              ${err.task_id ? `<a href="#" onclick="openTask('${esc(err.task_id)}')" style="color:#58a6ff">${esc(err.task_id)}</a>` : 'System'}
+              ${err.step ? ` · <span style="color:#a371f7">${esc(err.step)}</span>` : ''}
+            </div>
+            <div style="color:#e6edf3;margin-top:4px">${esc(err.message)}</div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      errorsCount.textContent = '(0)';
+      errorsList.innerHTML = '<div style="color:#8b949e;font-size:12px">Brak błędów do wyświetlenia</div>';
+    }
+    
+    // Wyświetl wiadomości LLM
+    if(llmData.messages && llmData.messages.length > 0) {
+      llmCount.textContent = `(${llmData.messages.length})`;
+      llmList.innerHTML = llmData.messages.map(msg => {
+        const dt = new Date(msg.timestamp * 1000).toLocaleString();
+        const statusColor = {
+          'sent': '#3fb950',
+          'received': '#58a6ff',
+          'error': '#f85149',
+          'timeout': '#d29922'
+        }[msg.status] || '#8b949e';
+        
+        // Skróć prompt i response
+        const shortPrompt = msg.prompt ? msg.prompt.slice(0, 100) + (msg.prompt.length > 100 ? '...' : '') : '';
+        const shortResponse = msg.response ? msg.response.slice(0, 100) + (msg.response.length > 100 ? '...' : '') : '';
+        
+        return `
+          <div style="border-left:4px solid ${statusColor};padding-left:12px;margin-bottom:8px;background:#0d1117;border-radius:4px;padding:8px">
+            <div style="font-size:11px;color:#8b949e">[${msg.model}] ${dt} · ${msg.tokens} tokens</div>
+            <div style="font-size:13px;font-weight:600">
+              ${msg.task_id ? `<a href="#" onclick="openTask('${esc(msg.task_id)}')" style="color:#58a6ff">${esc(msg.task_id)}</a>` : 'System'}
+              ${msg.status ? ` · <span style="color:${statusColor}">${msg.status}</span>` : ''}
+            </div>
+            ${msg.prompt ? `<div style="color:#8b949e;margin-top:4px;font-size:11px">📤 <b>Prompt:</b> ${esc(shortPrompt)}</div>` : ''}
+            ${msg.response ? `<div style="color:#8b949e;margin-top:4px;font-size:11px">📥 <b>Response:</b> ${esc(shortResponse)}</div>` : ''}
+            ${msg.error ? `<div style="color:#f85149;margin-top:4px;font-size:11px">❌ <b>Error:</b> ${esc(msg.error)}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+    } else {
+      llmCount.textContent = '(0)';
+      llmList.innerHTML = '<div style="color:#8b949e;font-size:12px">Brak wiadomości LLM do wyświetlenia</div>';
+    }
+    
+  } catch(e) {
+    errorsList.innerHTML = `<div style="color:#f85149">⚠️ Błąd ładowania błędów: ${esc(e.message)}</div>`;
+    llmList.innerHTML = `<div style="color:#f85149">⚠️ Błąd ładowania wiadomości LLM: ${esc(e.message)}</div>`;
+  }
+}
+
+// Auto-refresh co 30s dla zakładki errors
+setInterval(() => {
+  if(document.getElementById('tab-errors').classList.contains('on')) {
+    loadErrors();
+  }
+}, 30000);
+
 async function loadTaskConsole(tid, streamFilter){
   const box = document.getElementById('taskConsoleBox');
   const st = document.getElementById('taskConsoleStatus');
@@ -1257,7 +1365,7 @@ async function approvalAction(id, action){
   refresh();
 }
 // zakładki: stan w URL hash (#tasks), przeżywa odświeżenie; nav jest sticky
-const TABS = ['overview','sponsor','sys','tasks','flow','team','chat','live','firma'];
+const TABS = ['overview','sponsor','sys','tasks','flow','team','chat','live','firma','errors'];
 function showTab(name, push){
   if(!TABS.includes(name)) name = 'overview';
   document.querySelectorAll('.tabpage').forEach(el => el.classList.toggle('on', el.id === 'tab-'+name));
@@ -1267,6 +1375,7 @@ function showTab(name, push){
   if(name === 'flow') showFlowView(flowView, false);
   if(name === 'sponsor') renderSponsor();
   if(name === 'sys') renderSys();
+  if(name === 'errors') loadErrors();
 }
 // ===== 🗂️ Kolejka & Logi + 🔔 powiadomienia (v2.7.15/17 — panel prezesa w sub-tabach) =====
 let sysView = 'queue';
@@ -2779,6 +2888,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _proxy_to_error_agent(self, path: str) -> None:
+        """Proxy request do agenta monitorowania błędów (port 8767)."""
+        import urllib.request
+        try:
+            # Usunięcie /api z początku path (np. /api/errors -> /errors)
+            agent_path = path.replace("/api", "", 1) if path.startswith("/api") else path
+            url = f"http://127.0.0.1:8767{agent_path}"
+            
+            with urllib.request.urlopen(url, timeout=5) as response:
+                body = response.read()
+                self.send_response(response.status)
+                self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+        except Exception as e:
+            # Jeśli agent nie działa, zwróć pustą listę
+            self._send(503, 
+                      json.dumps({"error": f"Error agent not available: {str(e)}", "errors": [], "messages": []}).encode(),
+                      "application/json; charset=utf-8")
+
     def do_GET(self):
         try:
             self._do_GET()
@@ -2808,6 +2938,12 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self._send(200, json.dumps(snapshot(), ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
+        elif u.path.startswith("/api/errors"):
+            # Proxy do agenta monitorowania błędów (port 8767)
+            self._proxy_to_error_agent(u.path)
+        elif u.path.startswith("/api/llm-messages"):
+            # Proxy do agenta monitorowania błędów (port 8767)
+            self._proxy_to_error_agent(u.path)
         elif u.path == "/api/firma":
             # FIRMA-002: świat „firma” (osiedle→biura→pokoje→biurka) + config widoku
             from engine.firma.view import build_world
