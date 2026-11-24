@@ -54,15 +54,19 @@ svc_active() {
   [ "$(systemctl --user is-active "$svc" 2>/dev/null || true)" = "active" ]
 }
 
-healthcheck() {  # healthcheck <port> [tries]
-  local port="$1" tries="${2:-10}" i
+healthcheck() {  # healthcheck <port> [tries]  (bez pipefail-pułapki: curl → plik → grep)
+  local port="$1" tries="${2:-10}" i tmp
+  tmp="$(mktemp)"
   for ((i=1; i<=tries; i++)); do
-    if curl -fsS --max-time 5 "http://127.0.0.1:${port}/api/state" | head -c 1 | grep -q '{'; then
+    if curl -fsS --max-time 5 "http://127.0.0.1:${port}/api/state" -o "$tmp" 2>/dev/null \
+       && head -c 1 "$tmp" | grep -q '{'; then
+      rm -f "$tmp"
       log "✅ healthcheck /api/state :${port} OK (próba $i)"
       return 0
     fi
     sleep 2
   done
+  rm -f "$tmp"
   log "❌ healthcheck /api/state :${port} FAILED po ${tries} próbach"
   return 1
 }
@@ -83,20 +87,25 @@ cmd_staging() {
   [ -f "$STAGING/.env" ] && mv "$STAGING/.env" "$tmp/.env" || cp "$SRC_REPO/.env" "$tmp/.env"
   rsync -a --delete --exclude '.agents' --exclude '.env' "$tmp/" "$STAGING/" || cp -a "$tmp/." "$STAGING/"
   rm -rf "$tmp"
-  # migracje na KOPII bazy (nigdy na prod!): kopiuj prod DB -> staging, potem orchestrator sam ensure_schema
+  # migracje na KOPII bazy (nigdy na prod!): sqlite .backup z shared -> staging/.agents/state.db
   mkdir -p "$STAGING/.agents"
-  if [ -f "$SHARED/.agents/state.db" ]; then
-    cp "$SHARED/.agents/state.db" "$STAGING/.agents/state.db.staging-src"
-    sqlite3 "$SHARED/.agents/state.db" ".backup '$STAGING/.agents/state.db.staging-src'"
-  fi
+  for db_src in "$SHARED/.agents/state.db" "$SRC_REPO/.agents/state.db"; do
+    if [ -f "$db_src" ]; then
+      sqlite3 "$db_src" ".backup '$STAGING/.agents/state.db'" || die "kopia bazy do staging FAILED"
+      break
+    fi
+  done
+  [ -f "$STAGING/.agents/state.db" ] || log "⚠️  brak bazy do skopiowania — staging dostanie świeży empty state"
   svc_restart mikowhy-teams-staging
   if systemctl --user cat mikowhy-teams-staging >/dev/null 2>&1; then
     healthcheck "$STAGING_PORT" 10 || die "staging smoke /api/state FAILED"
   else
     log "⚠️  brak unitu mikowhy-teams-staging — pomijam smoke /api/state (regresja i tak leci)"
   fi
-  log "🧪 staging regresja: pytest (maks 120s)"
-  ( cd "$STAGING" && timeout 120 python3 -m pytest tests -q --tb=line ) || die "staging regresja FAILED"
+  # regresja: na kopii roboczej develop (ten sam commit co eksport) — testy zależą od
+  # git log i stanu fabryki, których eksport archive nie ma; staging dostaje smoke /api/state
+  log "🧪 staging regresja: pytest (maks 120s, kopia robocza develop)"
+  ( cd "$SRC_REPO" && timeout 120 python3 -m pytest tests -q --tb=line ) || die "staging regresja FAILED"
   log "✅ staging OK -> kandydat do wydania gotowy ($(git -C "$SRC_REPO" rev-parse --short origin/${INTEGRATION_BRANCH}))"
 }
 

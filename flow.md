@@ -180,7 +180,7 @@ WARSTWA 1 — WORKSPACE (Workspace / Git)                branch docelowy: develo
 orchestrator (tick co 1s)
   worker_lifecycle per task
     step0: git worktree z develop (W-1: base = integration_branch projektu)
-    step2/3: kod wg JSON files={{path: content}}           (nowe pliki/s<small pliki)
+    step2/3: kod wg JSON files {path: content}           (nowe pliki/s<small pliki)
              + PATCHES search/replace (W-2: pliki >150 linii — zakaz nadpisywania w całości!)
     step5: commit feature/* → push (worker_push_guard: zakaz pushu master/develop)
   _handle_merges: READY_TO_MERGE → rebase + REGRESSION → merge --no-ff → develop
