@@ -319,6 +319,70 @@ class ProcessHealthMonitor:
         except Exception:
             pass
         return zombie_pids
+    
+    def kill_orphan_processes(self, task_id: str) -> list[int]:
+        """Zabija osierocone procesy dla danego zadania. Zwraca listę zabitych PID-ów."""
+        import signal
+        killed = []
+        
+        # Znajdź osierocone procesy
+        # Najpierw znajdź aktualny PID
+        current_pid = None
+        if self.state_db_path:
+            try:
+                from state import State
+                s = State(db_path=self.state_db_path)
+                task = s.get_task(task_id)
+                if task and task.get("claimed_by"):
+                    m = re.search(r"(\d+)\s*$", task["claimed_by"])
+                    if m:
+                        current_pid = int(m.group(1))
+            except Exception:
+                pass
+        
+        orphan_pids, has_duplicates = self._find_orphan_processes(task_id, current_pid)
+        if not orphan_pids:
+            return killed
+        
+        # Znajdź aktualny PID workera z bazy
+        current_pid = None
+        if self.state_db_path:
+            try:
+                from state import State
+                s = State(db_path=self.state_db_path)
+                task = s.get_task(task_id)
+                if task and task.get("claimed_by"):
+                    m = re.search(r"(\d+)\s*$", task["claimed_by"])
+                    if m:
+                        current_pid = int(m.group(1))
+            except Exception:
+                pass
+        
+        # Zabij osierocone procesy, pozostawiając najnowszy
+        for orphan_pid in orphan_pids:
+            if orphan_pid == current_pid:
+                continue  # Nie zabijaj aktualnego workera
+            try:
+                # Spróbuj SIGTERM
+                os.kill(orphan_pid, signal.SIGTERM)
+                killed.append(orphan_pid)
+                # Czekaj chwilę
+                time.sleep(0.1)
+                # Sprawdź, czy proces nadal żyje
+                try:
+                    os.kill(orphan_pid, 0)
+                    # Jeszcze żyje, użyj SIGKILL
+                    os.kill(orphan_pid, signal.SIGKILL)
+                    time.sleep(0.1)
+                except ProcessLookupError:
+                    pass  # Proces został zabity
+            except ProcessLookupError:
+                pass  # Proces już nie istnieje
+            except Exception as e:
+                # Loguj błąd
+                pass
+        
+        return killed
 
 
 def get_process_monitor() -> ProcessHealthMonitor:

@@ -37,6 +37,44 @@ ICON = {"READY": "⏳", "RUNNING": "🔄", "IN_REVIEW": "🔍", "CHANGES_REQUEST
 VERSION = "2.6.4"
 
 
+def _check_task_process_health(task_id: str, s: State) -> dict:
+    """Weryfikacja na żywo stanu procesu OS dla zadania."""
+    from process_health import get_process_monitor
+    monitor = get_process_monitor()
+    task = s.get_task(task_id)
+    claimed_by = task.get("claimed_by") if task else None
+    check_result = monitor.check_task_process(task_id, claimed_by)
+    
+    result = {
+        "task_id": task_id,
+        "claimed_by": claimed_by,
+        "current_pid": check_result.current_pid,
+        "check_timestamp": check_result.check_timestamp,
+        "orphan_pids": check_result.orphan_pids,
+        "has_duplicate_workers": check_result.has_duplicate_workers,
+        "zombie_pids": check_result.zombie_pids,
+    }
+    
+    if check_result.process_status:
+        ps = check_result.process_status
+        result["process_status"] = {
+            "pid": ps.pid, "alive": ps.alive, "status": ps.status,
+            "state": ps.state, "cmdline": ps.cmdline[:500] if ps.cmdline else "",
+            "cpu_pct": round(ps.cpu_pct, 2), "rss_mb": round(ps.rss_mb, 2),
+            "uptime_s": round(ps.uptime_s, 2), "children": ps.children, "comm": ps.comm
+        }
+        result.update({
+            "status": ps.status, "pid": ps.pid, "cmdline": ps.cmdline,
+            "cpu_pct": round(ps.cpu_pct, 2), "rss_mb": round(ps.rss_mb, 2),
+            "uptime_s": round(ps.uptime_s, 2), "children": ps.children
+        })
+    else:
+        result.update({"status": "UNKNOWN", "pid": None, "cmdline": "",
+                       "cpu_pct": 0.0, "rss_mb": 0.0, "uptime_s": 0.0, "children": []})
+    
+    return result
+
+
 def _version_info() -> dict:
     """Wersja dashboardu + ostatni commit + changelog (do badge'a w nagłówku)."""
     import subprocess
@@ -953,6 +991,7 @@ async function openTask(id, keep){
   let body = '';
   if(detailTab === 'console'){
     body = `<h2>🖥️ Konsola agenta na żywo <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}')">🔄 Odśwież</button> <button class="tbtn" style="border-color:#da3633;color:#f85149" onclick="killAndRetry('${esc(d.id)}')">🔄 Zabij i ponów</button></h2>
+      <div id="processStatusBar" style="margin-bottom:6px"></div>
       <div id="taskConsoleStatus" class="kv muted" style="margin-bottom:6px">Ładowanie konsoli...</div>
       <div style="margin-bottom:6px;display:flex;gap:6px;flex-wrap:wrap">
         <button class="tbtn" onclick="loadTaskConsole('${esc(d.id)}', null)">wszystko</button>
@@ -1149,6 +1188,7 @@ async function taskCtl(id, act){
 async function loadTaskConsole(tid, streamFilter){
   const box = document.getElementById('taskConsoleBox');
   const st = document.getElementById('taskConsoleStatus');
+  const bar = document.getElementById('processStatusBar');
   if(!box || !st) return;
   try{
     let url = '/api/task/'+encodeURIComponent(tid)+'/console?tail=250';
@@ -1158,6 +1198,7 @@ async function loadTaskConsole(tid, streamFilter){
     st.innerHTML = `Plik: <code>${esc(j.file_path||'')}</code> · Linii: ${j.total_lines||0} · ` +
       (j.stall ? `<b style="color:#f85149">🔴 STALLED: ${fmtDur(j.idle_s||0)} bez outputu</b>` :
                  `<b style="color:#3fb950">🟢 Ostatni output: ${fmtDur(j.idle_s||0)} temu</b>`);
+    if(j.process_check) renderProcessStatus(j.process_check, tid);
     const evs = j.events || [];
     if(!evs.length){
       box.innerHTML = '<span class="muted">Brak wpisów w konsoli dla tego zadania</span>';
@@ -2228,6 +2269,51 @@ function toggleAutoRefresh(){
   document.getElementById('ts').textContent = autoRefreshOn ? new Date().toLocaleTimeString() : '⏸ zatrzymano';
   if(autoRefreshOn) refresh();
 }
+function renderProcessStatus(pc, tid) {
+  const bar = document.getElementById('processStatusBar');
+  if(!bar) return;
+  if(!pc || !pc.status || pc.pid === null || pc.pid === undefined){
+    bar.innerHTML = '<div class="kv" style="color:#8b949e">⚙️ Proces: nieznany</div>';
+    return;
+  }
+  const status = pc.status;
+  const pid = pc.pid;
+  const rss = pc.rss_mb ? pc.rss_mb.toFixed(0) : '?';
+  const uptime = pc.uptime_s ? fmtDur(pc.uptime_s) : '?';
+  const orphans = pc.orphan_pids || [];
+  const has_duplicates = pc.has_duplicate_workers || false;
+  let html = '';
+  if(status === 'RUNNING'){
+    html = `<div class="kv" style="color:#3fb950">⚙️ Proces: <b style="color:#3fb950">🟢</b> worker-${pid} działa (PID ${pid} · RAM: ${rss} MB · czas: ${uptime})</div>`;
+  } else if(status === 'DEAD'){
+    html = `<div class="kv" style="color:#f85149">⚙️ Proces: <b style="color:#f85149">🔴 ZATRZYMANY</b> — brak procesu PID ${pid} w systemie!</div>`;
+    html += `<button class="tbtn" style="border-color:#f85149;" onclick="forceRetryTask('${esc(tid)}')">♻️ Odblokuj</button>`;
+  } else if(status === 'ZOMBIE'){
+    html = `<div class="kv" style="color:#d29922">⚙️ Proces: <b style="color:#d29922">💀 ZOMBIE</b> (PID ${pid} defunct)</div>`;
+  }
+  if(has_duplicates && orphans.length > 0){
+    html += `<div class="kv" style="color:#d29922">⚠️ Stare procesy: PID ${orphans.join(', ')}</div>`;
+    html += `<button class="tbtn" onclick="killOrphans('${esc(tid)}')">🧹 Zabij stare</button>`;
+  }
+  bar.innerHTML = html;
+}
+async function forceRetryTask(tid){
+  if(!confirm(`Odblokować ${tid}?`)) return;
+  try{
+    const r = await fetch('/api/task/'+encodeURIComponent(tid)+'/force_retry', {method: 'POST'});
+    const j = await r.json();
+    toast(j.ok ? '♻️ Odblokowano' : '⚠ Błąd'); refresh();
+  }catch(e){ toast('⚠ '+e); }
+}
+async function killOrphans(tid){
+  if(!confirm(`Zabić osierocone procesy dla ${tid}?`)) return;
+  try{
+    const r = await fetch('/api/task/'+encodeURIComponent(tid)+'/kill-orphans', {method: 'POST'});
+    const j = await r.json();
+    toast(`🧹 Zabito ${j.killed.length} procesów`);
+    setTimeout(() => loadTaskConsole(tid), 1000);
+  }catch(e){ toast('⚠ '+e); }
+}
 (async function initFilters(){
   // kolejność: URL hash -> localStorage -> serwer (kv, współdzielone między urządzeniami) -> default
   if(!applyHashFilters()){
@@ -2893,7 +2979,33 @@ class Handler(BaseHTTPRequestHandler):
                 "idle_s": round(idle_s, 1),
                 "stall": (idle_s >= threshold_s),
                 "events": events,
+                "process_check": _check_task_process_health(tid, s),
             }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path.startswith("/api/task/") and u.path.endswith("/process-check"):
+            parts = [p for p in u.path.split("/") if p]
+            tid = parts[2]
+            s = State()
+            process_check = _check_task_process_health(tid, s)
+            self._send(200, json.dumps({"task_id": tid, "process_check": process_check}, 
+                       ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path.startswith("/api/task/") and u.path.endswith("/kill-orphans"):
+            parts = [p for p in u.path.split("/") if p]
+            tid = parts[2]
+            from process_health import get_process_monitor
+            monitor = get_process_monitor()
+            killed = monitor.kill_orphan_processes(tid)
+            self._send(200, json.dumps({"task_id": tid, "killed": killed, "result": "OK"}, 
+                       ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path.startswith("/api/task/") and u.path.endswith("/force_retry"):
+            parts = [p for p in u.path.split("/") if p]
+            tid = parts[2]
+            from engine.state import READY
+            s = State()
+            task = s.get_task(tid)
+            if task and task.get("status") == "RUNNING":
+                s.transition(tid, READY, review_notes=f"{(task.get('review_notes') or '')} | ♻️ Odblokowano z konsoli (brak procesu)")
+            self._send(200, json.dumps({"task_id": tid, "ok": True, "action": "requeued"}, 
+                       ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
         elif u.path.startswith("/api/task/"):
             tid = u.path.rsplit("/", 1)[-1]
             self._send(200, json.dumps(task_detail(tid), ensure_ascii=False, default=str).encode(),
