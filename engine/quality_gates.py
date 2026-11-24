@@ -43,7 +43,12 @@ def _qg_run(op_label: str, worktree: Path, cmd: list[str], timeout: int) -> subp
         op_id = rec("qg", op_label, _qg_task(worktree))
         if op_id:
             rec.start(op_id)
-    proc = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True, timeout=timeout)
+    # sponsor-shell: przy włączonym capture bramki jakości też lądują w process_runs
+    from engine import sponsor_shell
+    cap = sponsor_shell.maybe_run(cmd, agent_role="engine/quality_gates", substep=op_label,
+                                  cwd=worktree, timeout_s=float(timeout))
+    proc = cap if cap is not None else subprocess.run(
+        cmd, cwd=worktree, capture_output=True, text=True, timeout=timeout)
     if op_id:
         if proc.returncode == 0:
             rec.done(op_id, "rc=0")

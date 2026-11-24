@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Centrum Dowodzenia",
+    "slug": "centrum-dowodzenia",
+    "version": "0.1.0",
+    "orientation": "landscape",
+    "userInterfaceStyle": "dark",
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    }
+  }
+}

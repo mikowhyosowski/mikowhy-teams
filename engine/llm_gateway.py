@@ -296,6 +296,13 @@ class VibeCliGateway(LLMGateway):
             # narzędzia włączamy wyłącznie flagą --enabled-tools powyżej
             clean_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_ENABLED_TOOLS")}
             with _llm_process_lock():
+                # sponsor-shell: przy włączonym capture wywołanie vibe CLI też jest rejestrowane
+                # w process_runs (pełny log + pgid do zabicia); bez capture = stare subprocess.run
+                from engine import sponsor_shell
+                cap = sponsor_shell.maybe_run(cmd, agent_role="llm-gateway", substep=step,
+                                              cwd=ROOT, timeout_s=self.timeout + 60)
+                if cap is not None:
+                    return cap
                 return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                       timeout=self.timeout + 60, env=clean_env)
 
@@ -385,8 +392,13 @@ class VibeCliGateway(LLMGateway):
                     cmd += ["--enabled-tools", t]
             clean_env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_ENABLED_TOOLS")}
             with _llm_process_lock(timeout_s=time_limit + 180):
-                proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                                      timeout=time_limit + 120, env=clean_env)
+                # sponsor-shell: tryb agentowy vibe (z narzędziami) też przechodzi przez gateway
+                from engine import sponsor_shell
+                cap = sponsor_shell.maybe_run(cmd, agent_role="llm-gateway/agent", substep=step,
+                                              cwd=cwd, timeout_s=time_limit + 120)
+                proc = cap if cap is not None else subprocess.run(
+                    cmd, cwd=str(cwd), capture_output=True, text=True,
+                    timeout=time_limit + 120, env=clean_env)
         try:
             (RUNTIME / f"raw-{safe_step}-{int(time.time())}.txt").write_text(
                 f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}",

@@ -2971,6 +2971,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # CORS: centrum_dowodzenia (Expo Web) woła API prosto z przeglądarki
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
@@ -3172,6 +3176,52 @@ class Handler(BaseHTTPRequestHandler):
                 "stalled": stalled_out,
                 "stall_threshold_s": threshold_s,
             }, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8")
+        elif u.path == "/api/pipeline/runs":
+            # sponsor-shell: lista runów procesów z filtrami (task_id, agent_role, status, limit)
+            q = parse_qs(u.query)
+            s = State()
+            runs = s.list_process_runs(
+                task_id=q.get("task_id", [None])[0],
+                agent_role=q.get("agent_role", [None])[0],
+                status=q.get("status", [None])[0],
+                limit=int(q.get("limit", ["100"])[0]))
+            self._send(200, json.dumps({"runs": runs, "count": len(runs)},
+                                       ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
+        elif u.path.startswith("/api/pipeline/runs/") and u.path.endswith("/log"):
+            # pełny log runu (ANSI-safe: surowy tekst, klient renderuje w <pre>)
+            run_id = u.path.split("/")[4]
+            s = State()
+            run = s.get_process_run(run_id)
+            if not run:
+                self._send(404, json.dumps({"error": "nieznany run"}).encode(), "application/json")
+                return
+            log_rel = run.get("log_path") or f".agents/logs/runs/{run_id}.log"
+            f = (ROOT / log_rel).resolve()
+            if not str(f).startswith(str(ROOT.resolve())) or not f.is_file():
+                # awaryjnie: log może jeszcze nie istnieć — zwróć tail z bazy
+                body = (run.get("stdout_tail") or "") + "\n--- stderr ---\n" + (run.get("stderr_tail") or "")
+                self._send(200, body.encode(), "text/plain; charset=utf-8")
+                return
+            q = parse_qs(u.query)
+            tail = int(q.get("tail", ["0"])[0])  # 0 = cały log
+            data = f.read_text(encoding="utf-8", errors="replace")
+            if tail > 0:
+                data = "\n".join(data.splitlines()[-tail:])
+            self._send(200, data.encode(), "text/plain; charset=utf-8")
+        elif u.path.startswith("/api/pipeline/runs/"):
+            # szczegóły pojedynczego runu
+            run_id = u.path.rsplit("/", 1)[-1]
+            run = State().get_process_run(run_id)
+            self._send(200 if run else 404,
+                       json.dumps(run or {"error": "nieznany run"}, ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
+        elif u.path.startswith("/api/agents/") and u.path.endswith("/pipeline"):
+            # Agent Execution Pipeline: pełna historia zadań + procesów danego agenta
+            role = u.path.split("/")[3]
+            s = State()
+            self._send(200, json.dumps(s.agent_pipeline(role), ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
         elif u.path.startswith("/api/task/") and u.path.endswith("/console"):
             from engine import console_streamer as cs
             parts = [p for p in u.path.split("/") if p]
@@ -3330,6 +3380,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({"error": repr(e)}).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
+
+    def do_OPTIONS(self):
+        # CORS preflight (centrum_dowodzenia z przeglądarki)
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self):
         try:
@@ -3618,6 +3677,15 @@ class Handler(BaseHTTPRequestHandler):
                              "error": str(e) or "operacja odrzucona"})
             except Exception as e:
                 _reply(400, {"ok": False, "task_id": tid, "from": status, "error": repr(e)})
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "pipeline", "runs"] and parts[4] == "kill":
+            # sponsor-shell: Sponsor zabija zawieszony proces (całą grupę) z poziomu UI
+            from engine import sponsor_shell
+            run_id = parts[3]
+            result = sponsor_shell.kill_run(run_id)
+            code = 200 if result.get("ok") else 404
+            self._send(code, json.dumps(result, ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
             return
         else:
             self._send(404, b"not found", "text/plain")

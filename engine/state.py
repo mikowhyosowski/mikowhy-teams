@@ -360,6 +360,31 @@ CREATE TABLE IF NOT EXISTS ops (
 CREATE INDEX IF NOT EXISTS idx_ops_task ON ops(task_id, queued_at);
 CREATE INDEX IF NOT EXISTS idx_ops_ref ON ops(kind, ref);
 CREATE INDEX IF NOT EXISTS idx_ops_status ON ops(status, queued_at);
+-- sponsor-shell (Command Execution Gateway): każda komenda agenta/silnika w izolowanej
+-- grupie procesów — jeden spójny model Proces ↔ Zadanie ↔ Agent
+CREATE TABLE IF NOT EXISTS process_runs (
+  run_id       TEXT PRIMARY KEY,
+  task_id      TEXT,
+  agent_role   TEXT,
+  substep      TEXT,
+  command      TEXT NOT NULL,
+  cwd          TEXT,
+  pid          INTEGER,
+  pgid         INTEGER,
+  status       TEXT NOT NULL DEFAULT 'QUEUED',  -- QUEUED|RUNNING|SUCCEEDED|FAILED|TIMEOUT|KILLED
+  started_at   TEXT,                            -- ISO-8601 UTC
+  finished_at  TEXT,                            -- ISO-8601 UTC
+  duration_ms  INTEGER,
+  exit_code    INTEGER,
+  timeout_s    REAL,
+  log_path     TEXT,                            -- względem ROOT (.agents/logs/runs/<run_id>.log)
+  stdout_tail  TEXT NOT NULL DEFAULT '',
+  stderr_tail  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_pruns_task ON process_runs(task_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_pruns_agent ON process_runs(agent_role, started_at);
+CREATE INDEX IF NOT EXISTS idx_pruns_status ON process_runs(status, started_at);
+CREATE INDEX IF NOT EXISTS idx_pruns_started ON process_runs(started_at);
 """
 
 
@@ -1236,6 +1261,82 @@ class State:
         self.ensure_worker_sessions()
         row = self._conn().execute("SELECT * FROM worker_sessions WHERE task_id=?", (task_id,)).fetchone()
         return dict(row) if row else None
+
+    # --- process_runs (sponsor-shell): Proces ↔ Zadanie ↔ Agent -----------------
+    _PRUNS_COLS = ("run_id, task_id, agent_role, substep, command, cwd, pid, pgid, status, "
+                   "started_at, finished_at, duration_ms, exit_code, timeout_s, log_path, "
+                   "stdout_tail, stderr_tail")
+
+    def add_process_run(self, rec: dict[str, Any]) -> str:
+        """Rejestracja runu PRZED startem procesu (status QUEUED)."""
+        run_id = rec["run_id"]
+        self._conn().execute(
+            f"INSERT OR REPLACE INTO process_runs({self._PRUNS_COLS}) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, rec.get("task_id"), rec.get("agent_role"), rec.get("substep"),
+             rec.get("command", ""), rec.get("cwd"), rec.get("pid"), rec.get("pgid"),
+             rec.get("status", "QUEUED"), rec.get("started_at"), rec.get("finished_at"),
+             rec.get("duration_ms"), rec.get("exit_code"), rec.get("timeout_s"),
+             rec.get("log_path"), rec.get("stdout_tail", ""), rec.get("stderr_tail", "")))
+        return run_id
+
+    def update_process_run(self, run_id: str, **fields: Any) -> None:
+        allowed = {c.strip() for c in self._PRUNS_COLS.split(",")} - {"run_id"}
+        sets = [f"{k}=?" for k in fields if k in allowed]
+        if not sets:
+            return
+        self._conn().execute(f"UPDATE process_runs SET {', '.join(sets)} WHERE run_id=?",
+                             (*[v for k, v in fields.items() if k in allowed], run_id))
+
+    def get_process_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            f"SELECT {self._PRUNS_COLS} FROM process_runs WHERE run_id=?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_process_runs(self, task_id: str | None = None, agent_role: str | None = None,
+                          status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """Chronologiczna oś czasu runów (najnowsze pierwsze) z filtrami pipeline'u."""
+        q = f"SELECT {self._PRUNS_COLS} FROM process_runs WHERE 1=1"
+        params: list[Any] = []
+        if task_id:
+            q += " AND task_id=?"
+            params.append(task_id)
+        if agent_role:
+            q += " AND agent_role=?"
+            params.append(agent_role)
+        if status:
+            q += " AND status=?"
+            params.append(status)
+        q += " ORDER BY started_at DESC LIMIT ?"
+        params.append(int(limit))
+        return [dict(r) for r in self._conn().execute(q, params).fetchall()]
+
+    def active_process_runs(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._conn().execute(
+            f"SELECT {self._PRUNS_COLS} FROM process_runs WHERE status IN ('QUEUED','RUNNING') "
+            "ORDER BY started_at DESC").fetchall()]
+
+    def agent_pipeline(self, role: str, limit: int = 200) -> dict[str, Any]:
+        """Agent Execution Pipeline: pełna historia zadań i procesów danego agenta —
+        zadania (wszystkie statusy) + podpięte runy sponsor-shell, pogrupowane per zadanie."""
+        tasks = [t for t in self.list_tasks() if (t.get("role") or "") == role]
+        tasks.sort(key=lambda t: t.get("updated_at") or 0, reverse=True)
+        runs = self.list_process_runs(agent_role=role, limit=limit)
+        known = {t["id"] for t in tasks}
+        by_task: dict[str, list[dict]] = {}
+        unassigned: list[dict] = []
+        for r in runs:
+            tid = r.get("task_id")
+            if tid and tid in known:
+                by_task.setdefault(tid, []).append(r)
+            else:
+                unassigned.append(r)  # brak zadania (lub spoza limitu) — nie gubiemy runu
+        return {
+            "role": role,
+            "tasks": [{**t, "runs": by_task.get(t["id"], [])} for t in tasks],
+            "runs_unassigned": unassigned,
+            "runs_total": len(runs),
+        }
 
     def recent_ops(self, limit: int = 100) -> list[dict]:
         return [dict(r) for r in self._conn().execute(

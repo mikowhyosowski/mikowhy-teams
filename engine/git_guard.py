@@ -116,7 +116,14 @@ def run_git(args: list[str], cwd: Path | str = ROOT, check: bool = True,
             rec.start(op_id)
     limit = GIT_TIMEOUT_S if timeout is None else timeout
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=limit)
+        # sponsor-shell: przy włączonym capture (SPONSOR_SHELL_CAPTURE=1 lub kontekst
+        # SPONSOR_TASK_ID) mutujące git leci przez Command Execution Gateway — pełny log
+        # w .agents/logs/runs/ + wpis w process_runs; bez capture = stare subprocess.run
+        from engine import sponsor_shell
+        cap = sponsor_shell.maybe_run(["git", *args], agent_role="engine/git_guard",
+                                      substep=f"git {' '.join(args[:2])}", cwd=cwd, timeout_s=limit)
+        proc = cap if cap is not None else subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=limit)
     except subprocess.TimeoutExpired as e:
         err = f"timeout {limit:.0f}s"
         if op_id:
