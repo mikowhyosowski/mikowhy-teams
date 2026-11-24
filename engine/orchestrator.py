@@ -126,49 +126,23 @@ class Orchestrator:
         proc = subprocess.Popen(
             [sys.executable, "-m", f"engine.{module}", task_id],
             cwd=FACTORY_ROOT, stdout=log, stderr=subprocess.STDOUT,
-            env=resume_env)
+            env=resume_env, start_new_session=True)
         self.running[task_id] = proc
+        try:
+            from engine.worker_supervisor import note_spawn
+            note_spawn(self.state, proc.pid, task_id,
+                       "review" if module == "code_review" else "worker",
+                       cwd=str(FACTORY_ROOT))
+        except Exception:
+            pass
 
     def _reap(self) -> None:
-        from engine.process_health import get_process_monitor
-        import signal
-        monitor = get_process_monitor()
+        from engine.worker_supervisor import reconcile
+        reconcile(self.state)
         for task_id, proc in list(self.running.items()):
-            rc = proc.poll()
-            if rc is not None:
-                self.state.record_metric("process_exit", {"rc": rc}, task_id)
+            if proc.poll() is not None:
+                self.state.record_metric("process_exit", {"rc": proc.returncode}, task_id)
                 del self.running[task_id]
-                task = self.state.get_task(task_id)
-                if task and task.get("status") == RUNNING:
-                    last_exit = self.state.get_kv(f"process_exit:{task_id}", 0) or 0
-                    if time.time() - last_exit > 15:
-                        self.state.set_kv(f"process_exit:{task_id}", time.time())
-                        try:
-                            self.state.transition(
-                                task_id, READY,
-                                review_notes=f"{(task.get('review_notes') or '')} | ⚠️ Zombie-recovery: proces martwy -> READY")
-                            self.state.record_metric("zombie_recovery", {
-                                "task": task_id, "pid": proc.pid, "rc": rc
-                            }, task_id)
-                        except Exception as e:
-                            self.state.record_metric("zombie_recovery_error", {
-                                "task": task_id, "pid": proc.pid, "error": repr(e)
-                            }, task_id)
-            else:
-                pid = proc.pid
-                proc_status = monitor.check_pid(pid)
-                if proc_status.status == "ZOMBIE":
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                        proc.wait(timeout=5)
-                        del self.running[task_id]
-                        task = self.state.get_task(task_id)
-                        if task and task.get("status") == RUNNING:
-                            self.state.transition(task_id, READY,
-                                review_notes=f"Zombie zebrany: {proc.pid}")
-                            self._notify("zombie", f"Zombie {task_id} zebrany", task_id)
-                    except Exception as e:
-                        self.state.record_metric("zombie_kill_error", {"pid": pid, "error": repr(e)})
 
     # --- auto-approve wg approval_policy projektu (config: project.json) --------
     def _auto_approve(self) -> None:
@@ -710,108 +684,15 @@ class Orchestrator:
         return True
 
     def _reap_orphan_workers(self) -> int:
-        """Duplikaty i workery przy statusie innym niż RUNNING.
-
-        Zostaje proces z claimed_by, gdy zadanie jest RUNNING i PID żyje.
-        Reszta (drugi worker tego samego zadania, worker po IN_REVIEW/COOLING,
-        code review poza IN_REVIEW) dostaje SIGTERM. Jedyny żywy worker RUNNING
-        zostaje — inaczej start skasowałby worktree w połowie implementacji.
-        """
-        import signal
-        groups: dict[tuple[str, str], list[int]] = {}
-        proc_root = Path("/proc")
-        if not proc_root.is_dir():
-            return 0
-        for entry in proc_root.iterdir():
-            if not entry.name.isdigit():
-                continue
-            pid = int(entry.name)
-            try:
-                cmd = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-            except OSError:
-                continue
-            if "engine.worker_lifecycle" in cmd:
-                module = "worker"
-            elif "engine.code_review" in cmd:
-                module = "review"
-            else:
-                continue
-            parts = cmd.split()
-            task_id = parts[-1] if parts else ""
-            if not task_id or "/" in task_id or task_id.endswith(".py"):
-                continue
-            groups.setdefault((module, task_id), []).append(pid)
-        killed: list[int] = []
-        for (module, task_id), pids in groups.items():
-            task = self.state.get_task(task_id)
-            status = (task or {}).get("status") or ""
-            claimed = 0
-            m = re.search(r"(\d+)\s*$", (task or {}).get("claimed_by") or "")
-            if m:
-                claimed = int(m.group(1))
-            keep: int | None = None
-            if module == "worker" and status == RUNNING and claimed in pids and self._proc_alive(claimed):
-                keep = claimed
-            elif module == "review" and status == IN_REVIEW:
-                keep = claimed if claimed in pids and self._proc_alive(claimed) else max(pids)
-            for pid in pids:
-                if pid == keep:
-                    continue
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    killed.append(pid)
-                    self.state.record_metric("orphan_worker_kill",
-                                             {"pid": pid, "task": task_id, "module": module}, task_id)
-                    print(f"[orchestrator] orphan {module} {task_id} pid={pid} → SIGTERM", flush=True)
-                except ProcessLookupError:
-                    pass
-                except PermissionError as exc:
-                    print(f"[orchestrator] orphan kill {pid}: {exc}", flush=True)
-        deadline = time.time() + 2
-        while killed and time.time() < deadline:
-            if all(not self._proc_alive(pid) for pid in killed):
-                break
-            time.sleep(0.1)
-        return len(killed)
+        """Sprzątanie należy do nadzorcy. Tu tylko jedno wywołanie."""
+        from engine.worker_supervisor import reconcile
+        return len(reconcile(self.state).get("signals") or [])
 
     # --- odzyskiwanie po crashu (zombie tasks) ------------------------------------
     def _recover_zombies(self) -> list[str]:
-        """Przy starcie: zadania RUNNING/IN_REVIEW bez żywego procesu wracają do READY.
-        Inaczej wisiałyby w martwym punkcie na zawsze (Ctrl+C / OOM / SIGKILL)."""
-        recovered: list[str] = []
-        for task in self.state.list_tasks():
-            # IN_REVIEW zostaje: worker ma się tam skończyć. Martwy PID po oddaniu do review
-            # nie jest zombie — zrzucenie do READY kasowało kolejkę code review.
-            if task["status"] != RUNNING:
-                continue
-            if (task.get("presence") or "AKTYWNE") != "AKTYWNE":
-                continue
-            pid = None
-            m = re.search(r"(\d+)\s*$", task.get("claimed_by") or "")
-            if m:
-                pid = int(m.group(1))
-            alive = False
-            if pid is not None:
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except ProcessLookupError:
-                    alive = False
-                except PermissionError:
-                    alive = True
-            if not alive:
-                try:
-                    self.state.transition(
-                        task["id"], READY,
-                        review_notes=f"{(task.get('review_notes') or '')} | zombie-recovery: proces {pid} martwy -> READY")
-                except Exception:
-                    self.state._conn().execute(
-                        "UPDATE tasks SET status='READY', updated_at=? WHERE id=?", (time.time(), task["id"]))
-                git_guard.remove_worktree(task["id"])
-                self.state.record_metric("zombie_recovery", {"task": task["id"], "pid": pid}, task["id"])
-                recovered.append(task["id"])
-                print(f"[orchestrator] zombie-recovery: {task['id']} -> READY (pid={pid} martwy)", flush=True)
-        return recovered
+        """Martwy worker RUNNING wraca do wznowienia. Worktree zostaje. Robi to nadzorca."""
+        from engine.worker_supervisor import reconcile
+        return list(reconcile(self.state).get("recovered") or [])
 
     # --- powiadomienia o AWAITING_APPROVAL na Telegramu (przyciski) ---------------
     def _notify_approvals(self) -> None:

@@ -1214,18 +1214,23 @@ class State:
                 """INSERT INTO worker_sessions(task_id,pid,cwd,step,phase,cmd,rc,started_at,last_beat)
                    VALUES(?,?,?,?,?,?,?,?,?)""",
                 (task_id, pid, cwd, step, phase or "ZYJE", (cmd or "")[:300], rc, now, now))
-            return
-        sets = ["last_beat=?"]
-        params: list[Any] = [now]
-        for col, val in (("pid", pid), ("cwd", cwd), ("step", step), ("phase", phase), ("rc", rc)):
-            if val is not None:
-                sets.append(f"{col}=?")
-                params.append(val)
-        if cmd is not None:
-            sets.append("cmd=?")
-            params.append(cmd[:300])
-        params.append(task_id)
-        self._conn().execute(f"UPDATE worker_sessions SET {', '.join(sets)} WHERE task_id=?", params)
+        else:
+            sets = ["last_beat=?"]
+            params: list[Any] = [now]
+            for col, val in (("pid", pid), ("cwd", cwd), ("step", step), ("phase", phase), ("rc", rc)):
+                if val is not None:
+                    sets.append(f"{col}=?")
+                    params.append(val)
+            if cmd is not None:
+                sets.append("cmd=?")
+                params.append(cmd[:300])
+            params.append(task_id)
+            self._conn().execute(f"UPDATE worker_sessions SET {', '.join(sets)} WHERE task_id=?", params)
+        try:
+            from engine.worker_supervisor import beat
+            beat(self, task_id, phase=phase, step=step, cmd=cmd, rc=rc)
+        except Exception:
+            pass
 
     def worker_session(self, task_id: str) -> dict[str, Any] | None:
         self.ensure_worker_sessions()

@@ -77,7 +77,21 @@ def _check_task_process_health(task_id: str, s: State) -> dict:
     else:
         result.update({"status": "UNKNOWN", "pid": None, "cmdline": "",
                        "cpu_pct": 0.0, "rss_mb": 0.0, "uptime_s": 0.0, "children": []})
-    
+    try:
+        from engine.worker_supervisor import inspect
+        mine = [w for w in inspect(s) if w.get("task_id") == task_id]
+        live = next((w for w in mine if w.get("alive")), None)
+        result["supervisor"] = live or (mine[0] if mine else None)
+        if result["supervisor"]:
+            sup = result["supervisor"]
+            result["status"] = "RUNNING" if sup.get("alive") else "DEAD"
+            result["pid"] = sup.get("pid")
+            result["phase"] = sup.get("phase")
+            result["cmd"] = sup.get("cmd")
+            result["rc"] = sup.get("rc")
+            result["worker_state"] = sup.get("state")
+    except Exception:
+        result["supervisor"] = None
     return result
 
 
@@ -512,6 +526,8 @@ tr.st-CHANGES_REQUESTED td{background:#2e2410}
 <div id="now"></div>
 <h2>🔀 Przepływ pracy <span class="muted">(kliknij kafelek = szczegóły zadania)</span></h2>
 <div id="flow"></div>
+<h2>Workery <span class="muted">(prawda z /proc przy odświeżeniu)</span></h2>
+<div id="workers"></div>
 <h2>Projekty</h2><div id="projects"></div>
 </section>
 <section class="tabpage" id="tab-sponsor">
@@ -868,6 +884,7 @@ async function refreshInner(){
     const arrow = i < FLOW.length-1 ? '<span class="arrow">→</span>' : '';
     return `<div class="stage ${hot?'hot':''} ${run?'run':''}"><h4>${d.icons[st]||''} ${sbadge(st)} <span class="cnt">${items.length}</span></h4>${chips}</div>${arrow}`;
   }).join('');
+  loadWorkers();
   const tb = document.querySelector('#tasks tbody'); tb.innerHTML = '';
   let awaiting = 0;
   const PRIO = {'P0':0,'P1':1,'P2':2,'P3':3};
@@ -1310,6 +1327,17 @@ setInterval(() => {
   }
 }, 30000);
 
+async function loadWorkers(){
+  const box = document.getElementById('workers');
+  if(!box) return;
+  try{
+    const r = await fetch('/api/workers');
+    const j = await r.json();
+    const rows = j.workers || [];
+    if(!rows.length){ box.innerHTML = '<span class="muted">brak procesów workerów</span>'; return; }
+    box.innerHTML = rows.map(w => `<div class="kv">${w.alive?'🟢':'⚪'} <b>${esc(w.task_id||'')}</b> ${esc(w.module||'')} pid ${w.pid} · ${esc(w.state||'')} · ${esc(w.phase||'')} · ${esc(w.step||'')} <span class="muted">${esc((w.cmd||'').slice(0,120))}</span></div>`).join('');
+  }catch(e){ box.textContent = 'nie udało się odczytać workerów'; }
+}
 async function loadTaskConsole(tid, streamFilter){
   const box = document.getElementById('taskConsoleBox');
   const st = document.getElementById('taskConsoleStatus');
@@ -2398,6 +2426,15 @@ function toggleAutoRefresh(){
 function renderProcessStatus(pc, tid) {
   const bar = document.getElementById('processStatusBar');
   if(!bar) return;
+  const sup = pc && pc.supervisor;
+  if(sup){
+    if(sup.alive){
+      bar.innerHTML = `<div class="kv" style="color:#3fb950">⚙️ <b>🟢 ${esc(sup.state||'ZYJE')}</b> ${esc(sup.module||'')} pid ${sup.pid} · ${esc(sup.phase||'')} · ${esc(sup.step||'')} <span class="muted">${esc(sup.cmd||'')}</span></div>`;
+    } else {
+      bar.innerHTML = `<div class="kv" style="color:#f85149">⚙️ <b>🔴 ${esc(sup.state||'SKONCZYL')}</b> pid ${sup.pid} rc=${sup.rc==null?'?':sup.rc} · ${esc(sup.phase||'')} <span class="muted">${esc(sup.cmd||'')}</span></div>`;
+    }
+    return;
+  }
   if(!pc || !pc.status || pc.pid === null || pc.pid === undefined){
     bar.innerHTML = '<div class="kv" style="color:#8b949e">⚙️ Proces: nieznany</div>';
     return;
@@ -3067,6 +3104,12 @@ class Handler(BaseHTTPRequestHandler):
             # obowiązki cykliczne per rola (zakładka „Obowiązki” na karcie pracownika)
             role = parse_qs(u.query).get("role", [None])[0]
             self._send(200, json.dumps(State().list_recurring(role=role), ensure_ascii=False, default=str).encode(),
+                       "application/json; charset=utf-8")
+        elif u.path == "/api/workers":
+            from engine.worker_supervisor import inspect
+            s = State()
+            rows = inspect(s)
+            self._send(200, json.dumps({"workers": rows}, ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
         elif u.path == "/api/workers/health":
             from engine import console_streamer as cs
