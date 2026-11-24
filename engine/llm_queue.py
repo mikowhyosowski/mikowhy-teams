@@ -224,6 +224,31 @@ def claim_next(s: State, lease_s: int = LEASE_S) -> dict | None:
     return dict(row) if row else None
 
 
+def claim_retry(s: State, lease_s: int = LEASE_S) -> dict | None:
+    """v2.7.29: FAIRNESS — pika DUE retry (attempts>0, delay_until<=now) zanim policzymy batch.
+
+    Root cause (eksperyment nr 1, 23.11): dispatch_once serwisował ciągle świeże
+    joby attempts=0 (claim_batch filtruje tylko attempts=0), więc joby po retry
+    (attempts>0) wisiały w QUEUED godzinami aż do timeoutu 3600s workera —
+    nawet gdy ich backoff (4-16s) dawno minął. Retry musi być obsłużony PRZED
+    biletowaniem kolejnego batcha."""
+    ensure_table(s)
+    now = time.time()
+    cur = s._conn().execute(
+        """UPDATE llm_jobs SET status='RUNNING', lease_until=?, attempts=attempts+1
+           WHERE id = (SELECT id FROM llm_jobs
+                       WHERE status='QUEUED' AND delay_until<=? AND attempts>0
+                       ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+                                created_at
+                       LIMIT 1)
+           RETURNING *""",
+        (now + lease_s, now))
+    row = cur.fetchone()
+    if row:
+        s.op_start_ref("llm", row["id"], "wysłano do modelu (retry)")
+    return dict(row) if row else None
+
+
 def claim_batch(s: State, model: str, n: int, lease_s: int = LEASE_S) -> list[dict]:
     """v3: atomowy claim do `n` jobów (kind=complete, dany model, tylko pierwsza próba attempts=0)
     — grupa do jednego requestu batchowego. Retry (attempts>0) idą pojedynczo, żeby nie zapętlić batcha."""
@@ -467,6 +492,18 @@ def dispatch_once(s: State, max_jobs: int = 4, min_interval_s: float = MIN_INTER
     did = 0
     while did < max_jobs:
         _rate_limit(s, min_interval_s)
+        # v2.7.29 FAIRNESS: due retry (attempts>0, backoff już minął) obsłużony
+        # PRZED biletowaniem kolejnego świeżego batcha — inaczej przy ciągłym
+        # napływie fresh jobów retry wisiał w QUEUED do timeoutu 3600s workera
+        # (root cause „zadań kręcących się w RUNNING”, eksperyment nr 1 z 23.11).
+        retry = claim_retry(s)
+        if retry:
+            try:
+                _run_job(s, retry)
+            except Exception as e:
+                fail(s, retry["id"], repr(e))
+            did += 1
+            continue
         # v3: najpierw spróbuj batch (model z największą kolejką)
         busy = _busy_model(s)
         if busy and batch_size >= BATCH_MIN:

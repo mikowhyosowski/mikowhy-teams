@@ -88,6 +88,47 @@ def _resolve_binary(binary: str) -> str:
     return binary  # niech subprocess rzuci czytelny błąd, jeśli naprawdę brak
 
 
+def _autoclose_json(cand: str) -> str | None:
+    """v2.7.29: naprawa UCIĘTEJ odpowiedzi (time limit / max-tokens): skan stanu
+    napisów i nawiasów od pierwszego '{' i domknięcie napisu + nawiasów
+    w odwrotnej kolejności. Zwraca zamkniętego kandydata albo None, gdy w tekście
+    w ogóle nie ma '{'."""
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    start = cand.find("{")
+    if start == -1:
+        return None
+    end = len(cand)
+    for i in range(start, len(cand)):
+        c = cand[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c in "{[":
+            stack.append("}" if c == "{" else "]")
+        elif c in "}]" and stack:
+            stack.pop()
+            if not stack:
+                end = i + 1  # kompletny obiekt — jednoznacznie zamknięty
+                break
+    body = cand[start:end]
+    # obetnij zawieszoną przecinek/przed napisem (trailing comma przed domknięciem)
+    body = re.sub(r",\s*$", "", body)
+    closers = ''
+    if in_str:
+        # zawieszony napis (ucięty time-limit) — domknij z escapowanym końcem
+        body = body.rstrip("\\")
+        closers += '"'
+    closers += "".join(reversed(stack))
+    return body + closers
+
 def extract_json(text: str) -> dict[str, Any]:
     """Wyciąga JSON z wyjścia modelu odpornie na:
     - bloki markdown ```json ... ``` (również bez znacznika języka),
@@ -137,6 +178,17 @@ def extract_json(text: str) -> dict[str, Any]:
         if end > start:
             try:
                 return json.loads(cand[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+    # v2.7.29 FALLBACK: odpowiedź ucięta (time limit) lub z napisem bez domknięcia —
+    # autodomykannie napis/nawiasy z przeplaymi po liczby prób. Ratuje pełne pliki z 2/5_IMPL
+    for cand in candidates:
+        fixed = _autoclose_json(cand)
+        if not fixed:
+            continue
+        for attempt in (fixed, fixed.replace(",}", "}").replace(",]", "]")):
+            try:
+                return json.loads(attempt)
             except json.JSONDecodeError:
                 continue
     raise ValueError(f"Nie udało się wyciągnąć JSON z odpowiedzi ({len(text)} znaków): {text[:300]!r}")
