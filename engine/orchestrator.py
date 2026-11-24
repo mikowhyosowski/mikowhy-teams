@@ -118,11 +118,45 @@ class Orchestrator:
         self.running[task_id] = proc
 
     def _reap(self) -> None:
+        from process_health import get_process_monitor
+        import signal
+        monitor = get_process_monitor()
         for task_id, proc in list(self.running.items()):
             rc = proc.poll()
             if rc is not None:
                 self.state.record_metric("process_exit", {"rc": rc}, task_id)
                 del self.running[task_id]
+                task = self.state.get_task(task_id)
+                if task and task.get("status") == RUNNING:
+                    last_exit = self.state.get_kv(f"process_exit:{task_id}", 0) or 0
+                    if time.time() - last_exit > 15:
+                        self.state.set_kv(f"process_exit:{task_id}", time.time())
+                        try:
+                            self.state.transition(
+                                task_id, READY,
+                                review_notes=f"{(task.get('review_notes') or '')} | ⚠️ Zombie-recovery: proces martwy -> READY")
+                            self.state.record_metric("zombie_recovery", {
+                                "task": task_id, "pid": proc.pid, "rc": rc
+                            }, task_id)
+                        except Exception as e:
+                            self.state.record_metric("zombie_recovery_error", {
+                                "task": task_id, "pid": proc.pid, "error": repr(e)
+                            }, task_id)
+            else:
+                pid = proc.pid
+                proc_status = monitor.check_pid(pid)
+                if proc_status.status == "ZOMBIE":
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        proc.wait(timeout=5)
+                        del self.running[task_id]
+                        task = self.state.get_task(task_id)
+                        if task and task.get("status") == RUNNING:
+                            self.state.transition(task_id, READY,
+                                review_notes=f"Zombie zebrany: {proc.pid}")
+                            self._notify("zombie", f"Zombie {task_id} zebrany", task_id)
+                    except Exception as e:
+                        self.state.record_metric("zombie_kill_error", {"pid": pid, "error": repr(e)})
 
     # --- auto-approve wg approval_policy projektu (config: project.json) --------
     def _auto_approve(self) -> None:
