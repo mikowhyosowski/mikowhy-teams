@@ -112,6 +112,7 @@ def resume_substep(task: dict | None) -> str:
     - Jeśli nic, domyślny start: 1/5_PLAN."""
     t = task or {}
     cur = str(t.get("substep") or "")
+    mx = str(t.get("max_substep") or "")
     
     # 🔴 Specjalne markery: ASK_OWNER/OWNER_PACKET → zawsze 1/5_PLAN
     if cur in ("ASK_OWNER", "ASK_SPONSOR", "OWNER_PACKET"):
@@ -121,8 +122,20 @@ def resume_substep(task: dict | None) -> str:
     if cur == "done":
         return "2/5_IMPL"
     
-    # 🟢 Jeśli substep jest poprawnym krokiem (np. 5/5_COMMIT), użyj GO
-    if cur and substep_progress(cur) > 0:
+    # 🟢 Jeśli substep i max_substep są poprawne, sprawdź cofnięcie
+    cur_p = substep_progress(cur)
+    mx_p = substep_progress(mx)
+    
+    if cur_p > 0 and mx_p > 0:
+        # Cofnięto! (np. z 4/5_QG do 2/5_IMPL) → wznawiaj od max_substep
+        if mx_p > cur_p:
+            return mx
+        else:
+            # Progresywny (np. 5/5_COMMIT > 4/5_QG) → wznawiaj od substep
+            return cur
+    
+    # 🟢 Jeśli substep jest poprawnym krokiem (i nie ma max_substep), użyj substep
+    if cur and cur_p > 0:
         return cur
     
     # 🟢 Fallback 1: last_completed_step (checkpoint z bazy)
@@ -131,8 +144,7 @@ def resume_substep(task: dict | None) -> str:
         return last_completed
     
     # 🟣 Fallback 2: max_substep (rekord postępu z całej historii)
-    mx = str(t.get("max_substep") or "")
-    if mx and substep_progress(mx) > 0:
+    if mx and mx_p > 0:
         return mx
     
     # 🟣 Brak wszystkiego → 1/5_PLAN
