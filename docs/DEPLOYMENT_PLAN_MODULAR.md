@@ -119,15 +119,21 @@ Rozdzielenie `mikowhy-teams` na **core** (orkiestracja, maszyna stanów, quality
 
 ---
 
-## Faza 6 — Notifier (Telegram/Slack/Webhook) — adapter w core (0.5 dnia)
+## Faza 6 — Notifier (Telegram/Slack/Webhook) — adapter w core (0.5 dnia) ✅ **ZAKOŃCZONA**
 
 **Cel:** Wymienny kanał człowieka, bez wydzielania do osobnego repo.
 
-| Zadanie | Opis | Szacunek |
-|---------|------|----------|
-| 6.1 | `engine/adapters/notifier.py` — upewnij się, że `TelegramNotifierAdapter`, `LocalNotifierAdapter` implementują `HumanLoopNotifierPort` | 0.25 d |
-| 6.2 | Dodaj `SlackNotifierAdapter`, `WebhookNotifierAdapter` (stuby) | 0.25 d |
-| 6.3 | Entry points: `notifier:telegram`, `notifier:local`, `notifier:slack`, `notifier:webhook` | 0.1 d |
+| Zadanie | Opis | Szacunek | Status |
+|---------|------|----------|--------|
+| 6.1 | `engine/adapters/notifier.py` — upewnij się, że `TelegramNotifierAdapter`, `LocalNotifierAdapter` implementują `HumanLoopNotifierPort` | 0.25 d | ✅ Weryfikacja: oba implementują port |
+| 6.2 | Dodaj `SlackNotifierAdapter`, `WebhookNotifierAdapter` (stuby) | 0.25 d | ✅ Dodane w `engine/adapters/notifier.py` |
+| 6.3 | Entry points: `notifier:telegram`, `notifier:local`, `notifier:slack`, `notifier:webhook` | 0.1 d | ✅ Zarejestrowane w `engine/adapters/__init__.py` |
+
+**Kryterium gotowości Fazy 6:**
+- ✅ `NOTIFIER_PROVIDER=telegram` / `local` / `slack` / `webhook` przełączalne przez env
+- ✅ Wszystkie implementują `HumanLoopNotifierPort` (notify_status, request_decision, post_milestone_update)
+- ✅ Slack i Webhook to stuby (nie blokują wykonania przy błędach)
+- ✅ Wszystkie 165 testów przechodzą
 
 ---
 

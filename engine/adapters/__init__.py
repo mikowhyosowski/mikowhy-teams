@@ -33,7 +33,7 @@ def _register_defaults() -> None:
     from engine.adapters.process_runner import LocalProcessRunner
     from engine.adapters.git_workspace import GitWorktreeAdapter
     from engine.adapters.github_api import GitHubApiAdapter
-    from engine.adapters.notifier import TelegramNotifierAdapter, LocalNotifierAdapter
+    from engine.adapters.notifier import TelegramNotifierAdapter, LocalNotifierAdapter, SlackNotifierAdapter, WebhookNotifierAdapter
 
     register_adapter("task", "sqlite", SqliteTaskAdapter)
     register_adapter("task", "memory", InMemoryTaskAdapter)
@@ -44,6 +44,8 @@ def _register_defaults() -> None:
     register_adapter("vcs", "github_api", GitHubApiAdapter)
     register_adapter("notifier", "telegram", TelegramNotifierAdapter)
     register_adapter("notifier", "local", LocalNotifierAdapter)
+    register_adapter("notifier", "slack", SlackNotifierAdapter)
+    register_adapter("notifier", "webhook", WebhookNotifierAdapter)
 
 
 _register_defaults()
