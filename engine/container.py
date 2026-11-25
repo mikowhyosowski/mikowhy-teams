@@ -36,7 +36,8 @@ def _discover_entry_points() -> None:
     for ep in eps:
         try:
             kind, _, name = ep.name.partition(":")
-            adapters_registry.register_adapter(kind, name, ep.load)
+            factory = ep.load()  # Call load() to get the actual class/factory
+            adapters_registry.register_adapter(kind, name, factory)
         except Exception:
             continue
 

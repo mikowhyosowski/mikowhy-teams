@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mikowhy-task-mcp"
+version = "0.1.0"
+description = "MCP server + TaskSourcePort adapters (SQLite, GitHub, Linear) for mikowhy-teams"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=0.1.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.entry-points."mikowhy_teams.adapters"]
+"task:sqlite" = "mikowhy_task_mcp.adapters.sqlite:SqliteTaskAdapter"
+"task:memory" = "mikowhy_task_mcp.adapters.memory:InMemoryTaskAdapter"
+"task:mcp" = "mikowhy_task_mcp.adapters.mcp:McpTaskAdapter"
+"task:github" = "mikowhy_task_mcp.adapters.github:GitHubTaskAdapter"
+"task:linear" = "mikowhy_task_mcp.adapters.linear:LinearTaskAdapter"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mikowhy_task_mcp*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -111,12 +111,10 @@ def test_container_env_override(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "stub")
     monkeypatch.setenv("NOTIFIER_PROVIDER", "local")
     c = AppContainer.from_env()
-    from engine.adapters.memory_task import InMemoryTaskAdapter
-    from engine.adapters.llm import StubLlmAdapter
-    from engine.adapters.notifier import LocalNotifierAdapter
-    assert isinstance(c.task_source, InMemoryTaskAdapter)
-    assert isinstance(c.llm, StubLlmAdapter)
-    assert isinstance(c.notifier, LocalNotifierAdapter)
+    # Sprawdzamy interfejsy (porty), nie konkretne klasy — adapter może przyjść z entry point
+    assert isinstance(c.task_source, TaskSourcePort)
+    assert isinstance(c.llm, ReasoningEnginePort)
+    assert isinstance(c.notifier, HumanLoopNotifierPort)
 
 
 def test_stub_llm_contract():
