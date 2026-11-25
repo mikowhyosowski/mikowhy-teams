@@ -1,4 +1,6 @@
-"""Adaptery portów — rejestracja domyślnych providerów (nadpisywane przez entry_points)."""
+"""Adaptery portów — rejestracja domyślnych providerów (nadpisywane przez entry_points).
+Core adapters (VCS, Notifier) are registered here; Task/LLM/Runner come from entry points (mikowhy-task-mcp, mikowhy-llm-router, mikowhy-process-runner).
+"""
 from __future__ import annotations
 
 _REGISTRY: dict[str, dict[str, callable]] = {
@@ -25,21 +27,12 @@ def available(kind: str) -> list[str]:
     return sorted(_REGISTRY.get(kind, {}))
 
 
-# --- domyślne providery -------------------------------------------------------
+# --- domyślne providery (core only: VCS + Notifier) ---------------------------------
 def _register_defaults() -> None:
-    from engine.adapters.sqlite_task import SqliteTaskAdapter
-    from engine.adapters.memory_task import InMemoryTaskAdapter
-    from engine.adapters.llm import VibeCliAdapter, StubLlmAdapter
-    from engine.adapters.process_runner import LocalProcessRunner
     from engine.adapters.git_workspace import GitWorktreeAdapter
     from engine.adapters.github_api import GitHubApiAdapter
     from engine.adapters.notifier import TelegramNotifierAdapter, LocalNotifierAdapter, SlackNotifierAdapter, WebhookNotifierAdapter
 
-    register_adapter("task", "sqlite", SqliteTaskAdapter)
-    register_adapter("task", "memory", InMemoryTaskAdapter)
-    register_adapter("llm", "vibe_cli", VibeCliAdapter)
-    register_adapter("llm", "stub", StubLlmAdapter)
-    register_adapter("runner", "local", LocalProcessRunner)
     register_adapter("vcs", "git_worktree", GitWorktreeAdapter)
     register_adapter("vcs", "github_api", GitHubApiAdapter)
     register_adapter("notifier", "telegram", TelegramNotifierAdapter)

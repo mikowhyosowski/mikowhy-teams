@@ -21,15 +21,21 @@ from engine.ports import (
     VcsWorkspacePort,
 )
 from engine.state import InvalidTransition
+from engine.container import _discover_entry_points
 
 
 def make_task_source(kind: str):
+    # Ensure entry points are discovered
+    _discover_entry_points()
+    from engine import adapters as adapters_registry
+    
     if kind == "sqlite":
-        from engine.adapters.sqlite_task import SqliteTaskAdapter
         tmp = tempfile.mkdtemp()
-        return SqliteTaskAdapter(db_path=Path(tmp) / "state.db")
-    from engine.adapters.memory_task import InMemoryTaskAdapter
-    return InMemoryTaskAdapter()
+        factory = adapters_registry.get_adapter_factory("task", "sqlite")
+        return factory(db_path=Path(tmp) / "state.db")
+    if kind == "memory":
+        factory = adapters_registry.get_adapter_factory("task", "memory")
+        return factory()
 
 
 def _create(adapter, title="Tytuł", role="backend-dev"):
@@ -118,8 +124,10 @@ def test_container_env_override(monkeypatch):
 
 
 def test_stub_llm_contract():
-    from engine.adapters.llm import StubLlmAdapter
-    llm = StubLlmAdapter()
+    _discover_entry_points()
+    from engine import adapters as adapters_registry
+    factory = adapters_registry.get_adapter_factory("llm", "stub")
+    llm = factory()
     assert llm.health_check() is True
     out = llm.complete_structured(dict, system="s", user="u", step="1/5_PLAN")
     assert out["step"] == "1/5_PLAN"

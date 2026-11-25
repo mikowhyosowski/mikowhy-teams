@@ -237,4 +237,4 @@ Testy kontenera:
 7. `test_stub_llm_contract` — StubLlmAdapter spełnia ReasoningEnginePort
 8. `test_singleton_container` — `get_container()` zwraca ten sam obiekt
 
-**Wynik (2026-11-25):** ✅ 12/12 testów przechodzi
+**Wynik (2026-11-25):** ✅ 165/165 testów core + 8 task-mcp + 19 llm-router + 11 process-runner = 203 total

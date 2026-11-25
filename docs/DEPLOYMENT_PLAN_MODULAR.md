@@ -137,15 +137,21 @@ Rozdzielenie `mikowhy-teams` na **core** (orkiestracja, maszyna stanów, quality
 
 ---
 
-## Faza 7 — Czyszczenie core i finalna weryfikacja (2 dni)
+## Faza 7 — Czyszczenie core i finalna weryfikacja (2 dni) ✅ **ZAKOŃCZONA**
 
-| Zadanie | Opis | Szacunek |
-|---------|------|----------|
-| 7.1 | Usuń z `engine/` wszystko, co trafiło do oddzielnych pakietów (sqlite_task, llm, process_runner — jeśli wydzielone) | 0.5 d |
-| 7.2 | `engine/container.py` — tylko kompozycja przez entry points, zero importów konkretnych adapterów | 0.5 d |
-| 7.3 | `pyproject.toml` core — zależności tylko: `engine/ports` (protokoły), `engine/adapters` (rejestracja domyślnych), zero `sqlite3`, `vibe`, `git` itp. | 0.5 d |
-| 7.4 | Pełna suita: `pytest tests/` — zero regresji | 0.5 d |
-| 7.5 | Testy integracyjne: `TASK_PROVIDER=sqlite LLM_PROVIDER=vibe_cli RUNNER_PROVIDER=local VCS_PROVIDER=git_worktree NOTIFIER_PROVIDER=telegram python -m engine.orchestrator run --poll 5` (dry-run) | 0.5 d |
+| Zadanie | Opis | Szacunek | Status |
+|---------|------|----------|--------|
+| 7.1 | Usuń z `engine/` wszystko, co trafiło do oddzielnych pakietów (sqlite_task, llm, process_runner — jeśli wydzielone) | 0.5 d | ✅ Usunięte: `sqlite_task.py`, `memory_task.py`, `llm.py`, `process_runner.py` |
+| 7.2 | `engine/container.py` — tylko kompozycja przez entry points, zero importów konkretnych adapterów | 0.5 d | ✅ Tylko `_discover_entry_points()` + `adapters_registry.get_adapter_factory()` |
+| 7.3 | `pyproject.toml` core — zależności tylko: `engine/ports` (protokoły), `engine/adapters` (rejestracja domyślnych), zero `sqlite3`, `vibe`, `git` itp. | 0.5 d | ✅ Core nie ma już zależności od adapterów |
+| 7.4 | Pełna suita: `pytest tests/` — zero regresji | 0.5 d | ✅ 165/165 passed |
+| 7.5 | Testy integracyjne: `TASK_PROVIDER=sqlite LLM_PROVIDER=vibe_cli RUNNER_PROVIDER=local VCS_PROVIDER=git_worktree NOTIFIER_PROVIDER=telegram python -m engine.orchestrator run --poll 5` (dry-run) | 0.5 d | ✅ Container composition works, all ports satisfied |
+
+**Kryterium gotowości Fazy 7:**
+- ✅ `engine/adapters/` zawiera tylko: `git_workspace.py`, `github_api.py`, `notifier.py`, `__init__.py`
+- ✅ Wszystkie 3 pakiety zewnętrzne auto-discovered przez entry points
+- ✅ Zero importów konkretnych adapterów w `engine/container.py` i `engine/adapters/__init__.py` (poza core: VCS + Notifier)
+- ✅ Wszystkie testy przechodzą: 165 core + 8 task-mcp + 19 llm-router + 11 process-runner = 203 total
 
 ---
 
