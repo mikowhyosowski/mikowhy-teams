@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mikowhy-llm-router"
+version = "0.1.0"
+description = "LLM Router with queue, batching, cache + adapters (vibe_cli, LiteLLM, Ollama, stub) for mikowhy-teams"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "vibe-cli>=0.1.0",
+]
+litellm = ["litellm>=1.50"]
+ollama = ["ollama>=0.3"]
+
+[project.entry-points."mikowhy_teams.adapters"]
+"llm:vibe_cli" = "mikowhy_llm_router.adapters.vibe_cli:VibeCliAdapter"
+"llm:stub" = "mikowhy_llm_router.adapters.stub:StubLlmAdapter"
+"llm:litellm" = "mikowhy_llm_router.adapters.litellm:LiteLLMAdapter"
+"llm:ollama" = "mikowhy_llm_router.adapters.ollama:OllamaAdapter"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mikowhy_llm_router*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# pytest-asyncio config
+markers = [
+    "asyncio: mark test as async",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

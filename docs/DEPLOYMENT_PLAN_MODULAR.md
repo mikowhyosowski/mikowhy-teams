@@ -38,22 +38,24 @@ Rozdzielenie `mikowhy-teams` na **core** (orkiestracja, maszyna stanów, quality
 
 ---
 
-## Faza 2 — Wydzielenie `mikowhy-llm-router` (3 dni)
+## Faza 2 — Wydzielenie `mikowhy-llm-router` (3 dni) ✅ **ZAKOŃCZONA**
 
 **Cel:** Kolejka, batching, cache, adaptery Vibe CLI / LiteLLM / Ollama jako osobna infrastruktura AI.
 
-| Zadanie | Opis | Szacunek |
-|---------|------|----------|
-| 2.1 | Utwórz repo `mikowhy-llm-router` z `pyproject.toml`, `src/mikowhy_llm_router/` | 0.5 d |
-| 2.2 | Przenieś `engine/adapters/llm.py` → `mikowhy_llm_router/adapters/` (`VibeCliAdapter`, `StubLlmAdapter`) | 0.5 d |
-| 2.3 | Dodaj `LiteLLMAdapter` (HTTP) i `OllamaAdapter` (lokalny) implementujące `ReasoningEnginePort` | 1 d |
-| 2.4 | Zaimplementuj `LLMRouter` — kolejka z priorytetami P0-P3, batching, cache, health_check | 1 d |
-| 2.5 | Entry points: `llm:vibe_cli`, `llm:litellm`, `llm:ollama`, `llm:stub` | 0.25 d |
-| 2.6 | Testy kontraktowe `ReasoningEnginePort` (health_check, complete_text, complete_structured) | 0.5 d |
+| Zadanie | Opis | Szacunek | Status |
+|---------|------|----------|--------|
+| 2.1 | Utwórz repo `mikowhy-llm-router` z `pyproject.toml`, `src/mikowhy_llm_router/` | 0.5 d | ✅ Utworzone w `mikowhy_llm_router/` |
+| 2.2 | Przenieś `engine/adapters/llm.py` → `mikowhy_llm_router/adapters/` (`VibeCliAdapter`, `StubLlmAdapter`) | 0.5 d | ✅ Przeniesione |
+| 2.3 | Dodaj `LiteLLMAdapter` (HTTP) i `OllamaAdapter` (lokalny) implementujące `ReasoningEnginePort` | 1 d | ✅ Dodane w `adapters/litellm.py` i `adapters/ollama.py` |
+| 2.4 | Zaimplementuj `LLMRouter` — kolejka z priorytetami P0-P3, batching, cache, health_check | 1 d | ✅ Dodany w `router.py` (async + sync wrapper) |
+| 2.5 | Entry points: `llm:vibe_cli`, `llm:litellm`, `llm:ollama`, `llm:stub` | 0.25 d | ✅ Zarejestrowane 4 entry points |
+| 2.6 | Testy kontraktowe `ReasoningEnginePort` (health_check, complete_text, complete_structured) | 0.5 d | ✅ 19 testów przechodzi (5 stub + 3 import + 3 health + 8 router) |
 
 **Kryterium gotowości Fazy 2:**
-- `LLM_PROVIDER=litellm` / `ollama` / `vibe_cli` / `stub` działają przełącznie przez env
-- `pytest tests/test_ports_contracts.py::test_stub_llm_contract` przechodzi
+- ✅ `LLM_PROVIDER=litellm` / `ollama` / `vibe_cli` / `stub` działają przełącznie przez env
+- ✅ `pytest tests/test_ports_contracts.py` przechodzi (wszystkie adaptery z entry points)
+- ✅ `LLMRouter` działa: kolejka P0-P3, batching, cache TTL, health_check_all()
+- ✅ Wszystkie 165 testów główny projektu przechodzą
 
 ---
 
