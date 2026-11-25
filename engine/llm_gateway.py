@@ -212,6 +212,11 @@ MODEL_ALIASES = {
     "strong-model": os.environ.get("VIBE_STRONG_MODEL", "mistral-large-4-0"),
 }
 
+KILO_MODEL_ALIASES = {
+    "fast-model": os.environ.get("KILO_FAST_MODEL", os.environ.get("KILO_MODEL", "kilo/kilo-auto/free")),
+    "strong-model": os.environ.get("KILO_STRONG_MODEL", os.environ.get("KILO_MODEL", "kilo/kilo-auto/free")),
+}
+
 
 class LLMGateway:
     def complete(self, *, system: str, user: str, step: str, model: str) -> str:
@@ -408,7 +413,144 @@ class VibeCliGateway(LLMGateway):
         return proc
 
 
-_REGISTRY: dict[str, type[LLMGateway]] = {"stub": StubGateway, "vibe": VibeCliGateway}
+class KiloCliGateway(LLMGateway):
+    """Provider `kilo_cli`: lokalny Kilo Code CLI w trybie headless.
+
+    Wywołanie: kilo run <prompt> --auto -m <model>
+    Kilo CLI jest agentowy; do kompletacji tekstowej używamy go jako one-shot.
+    """
+
+    def __init__(self, binary: str = "kilo", timeout: int = 300):
+        _load_dotenv()
+        self.binary = _resolve_binary(binary)
+        self.timeout = timeout
+
+    @staticmethod
+    def _strip_ansi(text: str) -> str:
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+
+    def _clean_output(self, raw: str) -> str:
+        text = self._strip_ansi(raw).strip()
+        lines = text.splitlines()
+        # usuń nagłówek "> code · model" i puste linie na początku
+        while lines:
+            s = lines[0].strip()
+            if not s or s.startswith("> code") or s.startswith("INFO "):
+                lines.pop(0)
+                continue
+            break
+        # usuń trailing prompt artifacts
+        while lines and lines[-1].strip() in {"", ">"}:
+            lines.pop()
+        return "\n".join(lines).strip()
+
+    def _build_prompt(self, system: str, user: str, step: str) -> str:
+        return (
+            f"<system>\n{system}\n</system>\n\n"
+            f"<user>\n{user}\n</user>\n\n"
+            f"<step>{step}</step>\n\n"
+            "Odpowiedz WYŁĄCZNIE treścią odpowiedzi (najlepiej JSON), bez komentarzy narzędzi."
+        )
+
+    def _run_once(self, system: str, user: str, alias: str, step: str) -> subprocess.CompletedProcess:
+        RUNTIME.mkdir(parents=True, exist_ok=True)
+        safe_step = "".join(c if c.isalnum() or c in "-_" else "_" for c in step)
+        prompt = self._build_prompt(system, user, step)
+        with tempfile.TemporaryDirectory(dir=RUNTIME, prefix=f"kgw-{safe_step}-") as tmp:
+            prompt_file = Path(tmp) / "prompt.md"
+            prompt_file.write_text(prompt, encoding="utf-8")
+            cmd = [self.binary, "run", "--auto", "-m", alias]
+            # kilo run przyjmuje message jako argument pozycyjny; dla długich promptów
+            # przekazujemy przez stdin-like argument z pliku przez --file nie jest właściwe.
+            # Używamy argumentu pozycyjnego z treścią promptu.
+            cmd.append(prompt)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
+            with _llm_process_lock():
+                from engine import sponsor_shell
+                cap = sponsor_shell.maybe_run(cmd, agent_role="llm-gateway/kilo", substep=step,
+                                              cwd=ROOT, timeout_s=self.timeout + 60)
+                if cap is not None:
+                    return cap
+                try:
+                    return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                                          timeout=self.timeout + 60, env=env)
+                except subprocess.TimeoutExpired as e:
+                    stdout = (e.stdout or "") if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", errors="replace")
+                    stderr = (e.stderr or "") if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", errors="replace")
+                    return subprocess.CompletedProcess(cmd, 124, stdout, stderr + "\nTIMEOUT")
+
+    def complete(self, *, system: str, user: str, step: str, model: str, _direct: bool = False,
+                 priority: str = "P2", timeout_s: int | None = None, **_kw) -> str:
+        s = None
+        queue_on = False
+        try:
+            from engine.state import State
+            from engine import llm_queue
+            s = State()
+            queue_on = llm_queue.enabled(s)
+        except Exception:
+            queue_on = False
+        if queue_on and s is not None and not _direct:
+            from engine import llm_queue
+            job_timeout = int(timeout_s or llm_queue.model_timeout_s(model))
+            jid = llm_queue.enqueue(s, "complete",
+                                    {"system": system, "user": user, "step": step, "model": model,
+                                     "timeout_s": job_timeout},
+                                    requester="gateway", step=step, priority=priority)
+            return llm_queue.wait_result(s, jid, timeout=3600)
+        alias = KILO_MODEL_ALIASES.get(model, MODEL_ALIASES.get(model, model))
+        attempts = 2
+        proc = self._run_once(system, user, alias, step)
+        for i in range(1, attempts):
+            if proc.returncode == 0:
+                break
+            reminder = "\n\nREMINDER: Reply with plain text/JSON only."
+            proc = self._run_once(system, user + reminder * i, alias, step)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"kilo CLI rc={proc.returncode} (model={alias}, step={step}): "
+                f"{self._strip_ansi(proc.stderr or '').strip()[-800:]}"
+            )
+        raw = self._clean_output(proc.stdout or "")
+        try:
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in step)
+            (RUNTIME / f"raw-{safe}-{int(time.time())}.txt").write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
+        return raw
+
+    def agent(self, *, system: str, user: str, cwd: Path, step: str, model: str,
+              max_turns: int = 40, time_limit: int = 1800,
+              enabled_tools: str = "") -> subprocess.CompletedProcess:
+        """Tryb agentowy: kilo run z --auto w katalogu roboczym."""
+        alias = KILO_MODEL_ALIASES.get(model, MODEL_ALIASES.get(model, model))
+        RUNTIME.mkdir(parents=True, exist_ok=True)
+        safe_step = "".join(c if c.isalnum() or c in "-_" else "_" for c in step)
+        prompt = self._build_prompt(system, user, step)
+        cmd = [self.binary, "run", "--auto", "-m", alias, prompt]
+        env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
+        with _llm_process_lock(timeout_s=time_limit + 180):
+            from engine import sponsor_shell
+            cap = sponsor_shell.maybe_run(cmd, agent_role="llm-gateway/kilo-agent", substep=step,
+                                          cwd=cwd, timeout_s=time_limit + 120)
+            proc = cap if cap is not None else subprocess.run(
+                cmd, cwd=str(cwd), capture_output=True, text=True,
+                timeout=time_limit + 120, env=env)
+        try:
+            (RUNTIME / f"raw-{safe_step}-{int(time.time())}.txt").write_text(
+                f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}",
+                encoding="utf-8")
+        except OSError:
+            pass
+        return proc
+
+
+_REGISTRY: dict[str, type[LLMGateway]] = {
+    "stub": StubGateway,
+    "vibe": VibeCliGateway,
+    "kilo_cli": KiloCliGateway,
+    "kilo": KiloCliGateway,
+}
 
 
 def register_gateway(name: str, cls: type[LLMGateway]) -> None:
@@ -418,7 +560,13 @@ def register_gateway(name: str, cls: type[LLMGateway]) -> None:
 def get_gateway() -> LLMGateway:
     name = os.environ.get("LLM_PROVIDER")
     if not name:
-        name = "vibe" if shutil.which("vibe") else "stub"  # vibe CLI domyślnie, gdy dostępny
+        # Preferuj kilo CLI (jeśli dostępny), potem vibe, potem stub
+        if shutil.which("kilo") or (Path.home() / ".kilo" / "bin" / "kilo").exists():
+            name = "kilo_cli"
+        elif shutil.which("vibe"):
+            name = "vibe"
+        else:
+            name = "stub"
     cls = _REGISTRY.get(name)
     if cls is None:
         raise RuntimeError(f"Nieznany LLM_PROVIDER={name!r}; dostępne: {sorted(_REGISTRY)}")
