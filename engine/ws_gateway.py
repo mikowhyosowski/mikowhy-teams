@@ -230,12 +230,22 @@ class WsGateway:
                 self._subs.pop(ws, None)
 
     # --- lifecycle ---
-    def start(self) -> None:
+    def start(self) -> int:
         from websockets.sync.server import serve
-        self._srv = serve(self._handle, self.host, self.port)
-        self._thread = threading.Thread(target=self._broadcaster, daemon=True)
-        self._thread.start()
-        threading.Thread(target=self._srv.serve_forever, daemon=True).start()
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            try:
+                self._srv = serve(self._handle, self.host, self.port)
+                self._thread = threading.Thread(target=self._broadcaster, daemon=True)
+                self._thread.start()
+                threading.Thread(target=self._srv.serve_forever, daemon=True).start()
+                return self.port
+            except OSError as e:
+                if e.errno == 98 and attempt < max_attempts - 1:
+                    self.port += 1
+                    continue
+                raise
+        raise OSError(f"Could not bind to any port after {max_attempts} attempts")
 
     def stop(self) -> None:
         self._stop.set()

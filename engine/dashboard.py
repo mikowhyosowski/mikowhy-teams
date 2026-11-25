@@ -3716,8 +3716,8 @@ def main() -> None:
     args = ap.parse_args()
     if not args.no_ws:
         from engine.ws_gateway import WsGateway
-        WsGateway(args.host, args.ws_port).start()
-        print(f"🔌 WebSocket: ws://{args.host}:{args.ws_port}  (live procesy/logi)", flush=True)
+        actual_ws_port = WsGateway(args.host, args.ws_port).start()
+        print(f"🔌 WebSocket: ws://{args.host}:{actual_ws_port}  (live procesy/logi)", flush=True)
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"🏭 Dashboard: http://{args.host}:{args.port}  (Ctrl+C stop)", flush=True)
