@@ -55,7 +55,7 @@ class AppContainer:
         _discover_entry_points()
         cfg = {
             "task": os.environ.get("TASK_PROVIDER", "sqlite"),
-            "llm": os.environ.get("LLM_PROVIDER", "ollama"),
+            "llm": os.environ.get("LLM_PROVIDER", "vibe_cli"),
             "runner": os.environ.get("RUNNER_PROVIDER", "local"),
             "vcs": os.environ.get("VCS_PROVIDER", "git_worktree"),
             "notifier": os.environ.get("NOTIFIER_PROVIDER", "telegram"),
