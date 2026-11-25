@@ -40,7 +40,7 @@ Rozdzielenie `mikowhy-teams` na **core** (orkiestracja, maszyna stanów, quality
 
 ## Faza 2 — Wydzielenie `mikowhy-llm-router` (3 dni) ✅ **ZAKOŃCZONA**
 
-**Cel:** Kolejka, batching, cache, adaptery Vibe CLI / LiteLLM / Ollama jako osobna infrastruktura AI.
+**Cel:** Kolejka, batching, cache, adaptery Vibe CLI / LiteLLM / Ollama / **Kilo CLI** jako osobna infrastruktura AI.
 
 | Zadanie | Opis | Szacunek | Status |
 |---------|------|----------|--------|
@@ -48,14 +48,16 @@ Rozdzielenie `mikowhy-teams` na **core** (orkiestracja, maszyna stanów, quality
 | 2.2 | Przenieś `engine/adapters/llm.py` → `mikowhy_llm_router/adapters/` (`VibeCliAdapter`, `StubLlmAdapter`) | 0.5 d | ✅ Przeniesione |
 | 2.3 | Dodaj `LiteLLMAdapter` (HTTP) i `OllamaAdapter` (lokalny) implementujące `ReasoningEnginePort` | 1 d | ✅ Dodane w `adapters/litellm.py` i `adapters/ollama.py` |
 | 2.4 | Zaimplementuj `LLMRouter` — kolejka z priorytetami P0-P3, batching, cache, health_check | 1 d | ✅ Dodany w `router.py` (async + sync wrapper) |
-| 2.5 | Entry points: `llm:vibe_cli`, `llm:litellm`, `llm:ollama`, `llm:stub` | 0.25 d | ✅ Zarejestrowane 4 entry points |
-| 2.6 | Testy kontraktowe `ReasoningEnginePort` (health_check, complete_text, complete_structured) | 0.5 d | ✅ 19 testów przechodzi (5 stub + 3 import + 3 health + 8 router) |
+| 2.5 | Entry points: `llm:vibe_cli`, `llm:litellm`, `llm:ollama`, `llm:stub`, **`llm:kilo_cli`** | 0.25 d | ✅ Zarejestrowane 5 entry points |
+| 2.6 | Testy kontraktowe `ReasoningEnginePort` (health_check, complete_text, complete_structured) | 0.5 d | ✅ 19 testów przechodzi |
+| 2.7 | **BONUS: KiloCliAdapter** — integracja z Kilo CLI (free models: nvidia/nemotron-3-ultra, openrouter/free, etc.) | 0.5 d | ✅ Działa z `LLM_PROVIDER=kilo_cli KILO_MODEL=kilo/nvidia/nemotron-3-ultra-550b-a55b:free` |
 
 **Kryterium gotowości Fazy 2:**
-- ✅ `LLM_PROVIDER=litellm` / `ollama` / `vibe_cli` / `stub` działają przełącznie przez env
+- ✅ `LLM_PROVIDER=litellm` / `ollama` / `vibe_cli` / `stub` / **`kilo_cli`** działają przełącznie przez env
 - ✅ `pytest tests/test_ports_contracts.py` przechodzi (wszystkie adaptery z entry points)
 - ✅ `LLMRouter` działa: kolejka P0-P3, batching, cache TTL, health_check_all()
 - ✅ Wszystkie 165 testów główny projektu przechodzą
+- ✅ **Kilo CLI zainstalowany i skonfigurowany z darmowym modelem NVIDIA Nemotron 3 Ultra**
 
 ---
 

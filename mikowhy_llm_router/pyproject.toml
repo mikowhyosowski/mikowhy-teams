@@ -29,6 +29,7 @@ ollama = ["ollama>=0.3"]
 "llm:stub" = "mikowhy_llm_router.adapters.stub:StubLlmAdapter"
 "llm:litellm" = "mikowhy_llm_router.adapters.litellm:LiteLLMAdapter"
 "llm:ollama" = "mikowhy_llm_router.adapters.ollama:OllamaAdapter"
+"llm:kilo_cli" = "mikowhy_llm_router.adapters.kilo_cli:KiloCliAdapter"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -198,6 +198,7 @@ class HumanLoopNotifierPort(Protocol):
 **Stan na 2026-11-25:** Zarejestrowane przez `mikowhy-task-mcp` i `mikowhy-llm-router`:
 
 ```
+llm:kilo_cli = mikowhy_llm_router.adapters.kilo_cli:KiloCliAdapter
 llm:litellm = mikowhy_llm_router.adapters.litellm:LiteLLMAdapter
 llm:ollama = mikowhy_llm_router.adapters.ollama:OllamaAdapter
 llm:stub = mikowhy_llm_router.adapters.stub:StubLlmAdapter
