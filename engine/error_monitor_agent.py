@@ -428,7 +428,7 @@ def run() -> None:
     """Uruchom agenta z linii poleceń."""
     parser = argparse.ArgumentParser(description="Error Monitor Agent")
     parser.add_argument("command", nargs="?", default="run", choices=["run", "status"])
-    parser.add_argument("--port", type=int, default=8767, help="Port for HTTP API")
+    parser.add_argument("--port", type=int, default=8768, help="Port for HTTP API")
     args = parser.parse_args()
     
     if args.command == "run":

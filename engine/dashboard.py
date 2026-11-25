@@ -1254,11 +1254,11 @@ async function loadErrors() {
   
   try {
     // Pobierz błędy
-    const errRes = await fetch('http://127.0.0.1:8767/api/errors');
+    const errRes = await fetch('/api/errors');
     const errData = await errRes.json();
     
     // Pobierz wiadomości LLM
-    const llmRes = await fetch('http://127.0.0.1:8767/api/llm-messages');
+    const llmRes = await fetch('/api/llm-messages');
     const llmData = await llmRes.json();
     
     // Wyświetl błędy
@@ -2994,18 +2994,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _proxy_to_error_agent(self, path: str) -> None:
-        """Proxy request do agenta monitorowania błędów (port 8767)."""
+        """Proxy request do agenta monitorowania błędów (port 8768)."""
         import urllib.request
         try:
-            # Usunięcie /api z początku path (np. /api/errors -> /errors)
             agent_path = path.replace("/api", "", 1) if path.startswith("/api") else path
-            url = f"http://127.0.0.1:8767{agent_path}"
+            url = f"http://127.0.0.1:8768{agent_path}"
             
             with urllib.request.urlopen(url, timeout=5) as response:
                 body = response.read()
                 self.send_response(response.status)
                 self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(body)
         except Exception as e:
@@ -3044,10 +3044,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(snapshot(), ensure_ascii=False, default=str).encode(),
                        "application/json; charset=utf-8")
         elif u.path.startswith("/api/errors"):
-            # Proxy do agenta monitorowania błędów (port 8767)
+            # Proxy do agenta monitorowania błędów (port 8768)
             self._proxy_to_error_agent(u.path)
         elif u.path.startswith("/api/llm-messages"):
-            # Proxy do agenta monitorowania błędów (port 8767)
+            # Proxy do agenta monitorowania błędów (port 8768)
             self._proxy_to_error_agent(u.path)
         elif u.path == "/api/firma":
             # FIRMA-002: świat „firma” (osiedle→biura→pokoje→biurka) + config widoku
