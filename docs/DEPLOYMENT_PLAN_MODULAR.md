@@ -194,17 +194,17 @@ engine/adapters/notifier.py        # Telegram/Local/Slack/Webhook -> HumanLoopNo
 
 ```
 Faza 0 (walidacja) → Faza 1 (task-mcp) → Faza 2 (llm-router) → Faza 3 (process-runner)
-                                                    ↓
-                    Faza 7 (czyszczenie core) ← Faza 6 (notifier) ← Faza 5 (VCS)
-                                                    ↓
-                                            Faza 4 (UI) — niezależna, może iść równolegle
+                                                     ↓
+                     Faza 7 (czyszczenie core) ← Faza 6 (notifier) ← Faza 5 (VCS)
+                                                     ↓
+                                             Faza 4 (UI) — niezależna, może iść równolegle
 ```
 
 ---
 
 ## Definition of Done (całego epiku)
 
-1. ✅ `pytest tests/test_ports_contracts.py` przechodzi dla **wszystkich** zarejestrowanych adapterów (sqlite, memory, mcp, github, linear, vibe_cli, litellm, ollama, stub, local, docker, ssh, git_worktree, telegram, local, slack, webhook)
+1. ✅ `pytest tests/test_ports_contracts.py` przechodzi dla **wszystkich** zarejestrowanych adapterów (sqlite, memory, mcp, github, linear, vibe_cli, litellm, ollama, stub, kilo_cli, local, docker, ssh, git_worktree, telegram, local, slack, webhook)
 2. ✅ `pytest tests/` — zero regresji vs `develop`
 3. ✅ `AppContainer.from_env()` poprawnie komponuje adaptery z entry points (bez importów konkretnych klas w `container.py`)
 4. ✅ Każdy pakiet ma własne CI (GitHub Actions): testy kontraktowe, build, publish do PyPI (testowym)
