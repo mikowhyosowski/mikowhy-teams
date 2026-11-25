@@ -32,6 +32,7 @@ def _register_defaults() -> None:
     from engine.adapters.llm import VibeCliAdapter, StubLlmAdapter
     from engine.adapters.process_runner import LocalProcessRunner
     from engine.adapters.git_workspace import GitWorktreeAdapter
+    from engine.adapters.github_api import GitHubApiAdapter
     from engine.adapters.notifier import TelegramNotifierAdapter, LocalNotifierAdapter
 
     register_adapter("task", "sqlite", SqliteTaskAdapter)
@@ -40,6 +41,7 @@ def _register_defaults() -> None:
     register_adapter("llm", "stub", StubLlmAdapter)
     register_adapter("runner", "local", LocalProcessRunner)
     register_adapter("vcs", "git_worktree", GitWorktreeAdapter)
+    register_adapter("vcs", "github_api", GitHubApiAdapter)
     register_adapter("notifier", "telegram", TelegramNotifierAdapter)
     register_adapter("notifier", "local", LocalNotifierAdapter)
 

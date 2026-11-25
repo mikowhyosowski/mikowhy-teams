@@ -195,7 +195,7 @@ class HumanLoopNotifierPort(Protocol):
 
 ## Entry Points (group: `mikowhy_teams.adapters`)
 
-**Stan na 2026-11-25:** Zarejestrowane przez `mikowhy-task-mcp`, `mikowhy-llm-router`, `mikowhy-process-runner`:
+**Stan na 2026-11-25:** Zarejestrowane przez `mikowhy-task-mcp`, `mikowhy-llm-router`, `mikowhy-process-runner` + domyślne w core:
 
 ```
 llm:kilo_cli = mikowhy_llm_router.adapters.kilo_cli:KiloCliAdapter
@@ -211,6 +211,10 @@ task:linear = mikowhy_task_mcp.adapters.linear:LinearTaskAdapter
 task:mcp = mikowhy_task_mcp.adapters.mcp:McpTaskAdapter
 task:memory = mikowhy_task_mcp.adapters.memory:InMemoryTaskAdapter
 task:sqlite = mikowhy_task_mcp.adapters.sqlite:SqliteTaskAdapter
+vcs:github_api = engine.adapters.github_api:GitHubApiAdapter
+vcs:git_worktree = engine.adapters.git_workspace:GitWorktreeAdapter
+notifier:local = engine.adapters.notifier:LocalNotifierAdapter
+notifier:telegram = engine.adapters.notifier:TelegramNotifierAdapter
 ```
 
 Format: `kind:name = module.path:FactoryClass`

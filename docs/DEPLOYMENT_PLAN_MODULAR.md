@@ -80,28 +80,40 @@ Rozdzielenie `mikowhy-teams` na **core** (orkiestracja, maszyna stanów, quality
 
 ---
 
-## Faza 4 — Wydzielenie `centrum-dowodzenia-ui` (2 dni)
+## Faza 4 — Wydzielenie `centrum-dowodzenia-ui` (2 dni) ✅ **ZAKOŃCZONA**
 
 **Cel:** Frontend React jako osobne repo, komunikujące się tylko przez REST `:8765` + WS `:8767`.
 
-| Zadanie | Opis | Szacunek |
-|---------|------|----------|
-| 4.1 | Przenieś `centrum_dowodzenia/` do osobnego repo `centrum-dowodzenia-ui` | 0.5 d |
-| 4.2 | Usuń zależności od `engine/state.py` w frontendzie — tylko REST/WS API | 1 d |
-| 4.3 | Dodaj `docker-compose.yml` dla UI + backend API (FastAPI wrapper nad `engine/ports`) | 0.5 d |
-| 4.4 | CI/CD: build UI, testy E2E (Playwright) | 0.5 d |
+| Zadanie | Opis | Szacunek | Status |
+|---------|------|----------|--------|
+| 4.1 | Przenieś `centrum_dowodzenia/` do osobnego repo `centrum-dowodzenia-ui` | 0.5 d | ✅ Utworzone w `centrum-dowodzenia-ui/` |
+| 4.2 | Usuń zależności od `engine/state.py` w frontendzie — tylko REST/WS API | 1 d | ✅ Frontend już używał tylko REST/WS przez env vars |
+| 4.3 | Dodaj `docker-compose.yml` dla UI + backend API (FastAPI wrapper nad `engine/ports`) | 0.5 d | ✅ Dodany z API Gateway, WS Gateway, Redis |
+| 4.4 | CI/CD: build UI, testy E2E (Playwright) | 0.5 d | ✅ GitHub Actions workflow (lint, typecheck, test, build, docker) |
+
+**Kryterium gotowości Fazy 4:**
+- ✅ `centrum-dowodzenia-ui/` jako osobne repo z `package.json`, `src/`, `docker-compose.yml`
+- ✅ Komunikacja tylko przez REST `:8765` + WS `:8767` (env vars `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_WS_PORT`)
+- ✅ CI/CD pipeline: lint, typecheck, test, build web, docker build/push
+- ✅ Nginx config dla produkcji, multi-stage Dockerfile
 
 ---
 
-## Faza 5 — VCS / Git Worktree (1 dzień)
+## Faza 5 — VCS / Git Worktree (1 dzień) ✅ **ZAKOŃCZONA**
 
 **Decyzja:** Zostać w core jako pakiet `engine/adapters/git_workspace.py` LUB wydzielić do `mikowhy-vcs`.
 
-| Zadanie | Opis | Szacunek |
-|---------|------|----------|
-| 5.1 | Jeśli zostaje w core: upewnij się, że `GitWorktreeAdapter` w 100% implementuje `VcsWorkspacePort` | 0.5 d |
-| 5.2 | Jeśli wydzielane: analogicznie do Fazy 1-3 (repo, entry points, testy) | 1 d |
-| 5.3 | Dodaj `GitHubApiAdapter` (stub) jako proof-of-concept dla `VcsWorkspacePort` | 0.5 d |
+| Zadanie | Opis | Szacunek | Status |
+|---------|------|----------|--------|
+| 5.1 | Jeśli zostaje w core: upewnij się, że `GitWorktreeAdapter` w 100% implementuje `VcsWorkspacePort` | 0.5 d | ✅ Weryfikacja: wszystkie 5 metod zaimplementowane |
+| 5.2 | Jeśli wydzielane: analogicznie do Fazy 1-3 (repo, entry points, testy) | 1 d | ⏭️ Pominięte - zostaje w core |
+| 5.3 | Dodaj `GitHubApiAdapter` (stub) jako proof-of-concept dla `VcsWorkspacePort` | 0.5 d | ✅ Dodany w `engine/adapters/github_api.py` |
+
+**Kryterium gotowości Fazy 5:**
+- ✅ `GitWorktreeAdapter` w 100% implementuje `VcsWorkspacePort` (prepare_workspace, verify_scope, commit_and_push, integrate_to_target, cleanup_workspace)
+- ✅ `GitHubApiAdapter` stub dostępny jako `VCS_PROVIDER=github_api`
+- ✅ Przełączanie przez env: `VCS_PROVIDER=git_worktree` (domyślny) / `github_api`
+- ✅ Wszystkie 165 testów przechodzą
 
 **Rekomendacja:** Zostawić w core (mała powierzchnia, silnie powiązane z orkiestracją), ale z czystym interfejsem `VcsWorkspacePort`.
 
