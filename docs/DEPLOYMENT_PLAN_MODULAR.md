@@ -61,20 +61,22 @@ Rozdzielenie `mikowhy-teams` na **core** (orkiestracja, maszyna stanów, quality
 
 ---
 
-## Faza 3 — Wydzielenie `mikowhy-process-runner` (2 dni)
+## Faza 3 — Wydzielenie `mikowhy-process-runner` (2 dni) ✅ **ZAKOŃCZONA**
 
 **Cel:** Bezpieczny runner powłoki (PGID kill, rejestr runów, logi) — uniwersalny dla wszystkich botów.
 
-| Zadanie | Opis | Szacunek |
-|---------|------|----------|
-| 3.1 | Utwórz repo `mikowhy-process-runner` (już częściowo istnieje jako `engine/sponsor_shell.py`) | 0.5 d |
-| 3.2 | Przenieś `engine/adapters/process_runner.py` → `mikowhy_process_runner/adapters/local.py` | 0.5 d |
-| 3.3 | Dodaj `DockerProcessRunner` i `SshProcessRunner` (stuby) jako proof-of-concept | 0.5 d |
-| 3.4 | Entry points: `runner:local`, `runner:docker`, `runner:ssh` | 0.25 d |
-| 3.5 | Testy kontraktowe `ExecutionRunnerPort` (run_command, kill_execution) | 0.5 d |
+| Zadanie | Opis | Szacunek | Status |
+|---------|------|----------|--------|
+| 3.1 | Utwórz repo `mikowhy-process-runner` (już częściowo istnieje jako `engine/sponsor_shell.py`) | 0.5 d | ✅ Utworzone w `mikowhy_process_runner/` |
+| 3.2 | Przenieś `engine/adapters/process_runner.py` → `mikowhy_process_runner/adapters/local.py` | 0.5 d | ✅ Przeniesione |
+| 3.3 | Dodaj `DockerProcessRunner` i `SshProcessRunner` (stuby) jako proof-of-concept | 0.5 d | ✅ Dodane w `adapters/docker.py` i `adapters/ssh.py` |
+| 3.4 | Entry points: `runner:local`, `runner:docker`, `runner:ssh` | 0.25 d | ✅ Zarejestrowane 3 entry points |
+| 3.5 | Testy kontraktowe `ExecutionRunnerPort` (run_command, kill_execution) | 0.5 d | ✅ 11 testów przechodzi (7 local + 2 docker + 2 ssh) |
 
 **Kryterium gotowości Fazy 3:**
-- `RUNNER_PROVIDER=local` / `docker` / `ssh` przełączalne przez env
+- ✅ `RUNNER_PROVIDER=local` / `docker` / `ssh` przełączalne przez env
+- ✅ `pytest tests/test_ports_contracts.py` przechodzi (wszystkie adaptery z entry points)
+- ✅ Wszystkie 165 testów główny projektu przechodzą
 
 ---
 

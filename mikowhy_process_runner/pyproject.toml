@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mikowhy-process-runner"
+version = "0.1.0"
+description = "Process Runner with PGID kill, run registry, logs + adapters (local, docker, ssh) for mikowhy-teams"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "docker>=7.0",
+]
+
+[project.entry-points."mikowhy_teams.adapters"]
+"runner:local" = "mikowhy_process_runner.adapters.local:LocalProcessRunner"
+"runner:docker" = "mikowhy_process_runner.adapters.docker:DockerProcessRunner"
+"runner:ssh" = "mikowhy_process_runner.adapters.ssh:SshProcessRunner"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mikowhy_process_runner*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

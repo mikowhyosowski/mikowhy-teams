@@ -195,7 +195,7 @@ class HumanLoopNotifierPort(Protocol):
 
 ## Entry Points (group: `mikowhy_teams.adapters`)
 
-**Stan na 2026-11-25:** Zarejestrowane przez `mikowhy-task-mcp` i `mikowhy-llm-router`:
+**Stan na 2026-11-25:** Zarejestrowane przez `mikowhy-task-mcp`, `mikowhy-llm-router`, `mikowhy-process-runner`:
 
 ```
 llm:kilo_cli = mikowhy_llm_router.adapters.kilo_cli:KiloCliAdapter
@@ -203,6 +203,9 @@ llm:litellm = mikowhy_llm_router.adapters.litellm:LiteLLMAdapter
 llm:ollama = mikowhy_llm_router.adapters.ollama:OllamaAdapter
 llm:stub = mikowhy_llm_router.adapters.stub:StubLlmAdapter
 llm:vibe_cli = mikowhy_llm_router.adapters.vibe_cli:VibeCliAdapter
+runner:docker = mikowhy_process_runner.adapters.docker:DockerProcessRunner
+runner:local = mikowhy_process_runner.adapters.local:LocalProcessRunner
+runner:ssh = mikowhy_process_runner.adapters.ssh:SshProcessRunner
 task:github = mikowhy_task_mcp.adapters.github:GitHubTaskAdapter
 task:linear = mikowhy_task_mcp.adapters.linear:LinearTaskAdapter
 task:mcp = mikowhy_task_mcp.adapters.mcp:McpTaskAdapter
