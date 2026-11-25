@@ -1,0 +1,68 @@
+version: "3.8"
+
+services:
+  # Backend API Gateway - FastAPI wrapper nad engine/ports
+  api-gateway:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8765:8765"
+    environment:
+      - TASK_PROVIDER=sqlite
+      - LLM_PROVIDER=vibe_cli
+      - RUNNER_PROVIDER=local
+      - VCS_PROVIDER=git_worktree
+      - NOTIFIER_PROVIDER=local
+      - PYTHONPATH=/app
+    volumes:
+      - ../:/app
+      - ../.agents:/app/.agents
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # WebSocket Gateway for real-time updates
+  ws-gateway:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.ws
+    ports:
+      - "8767:8767"
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - ../:/app
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Redis for pub/sub between API and WS gateways
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # Frontend - React Native Web (served by nginx in production)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - EXPO_PUBLIC_API_URL=http://localhost:8765
+        - EXPO_PUBLIC_WS_PORT=8767
+    ports:
+      - "8081:8081"
+    environment:
+      - EXPO_PUBLIC_API_URL=http://api-gateway:8765
+      - EXPO_PUBLIC_WS_PORT=8767
+    depends_on:
+      - api-gateway
+      - ws-gateway
+    restart: unless-stopped
+
+volumes:
+  redis_data:
